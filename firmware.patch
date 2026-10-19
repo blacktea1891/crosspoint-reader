@@ -413,6 +413,63 @@ index 92b46ea6..8d12ffe0 100644
  }
  
  void ReaderActivity::prepareForSleep() { flushReaderSession(); }
+diff --git a/src/activities/util/KeyboardEntryActivity.cpp b/src/activities/util/KeyboardEntryActivity.cpp
+index 4ee0e3c3..d576c079 100644
+--- a/src/activities/util/KeyboardEntryActivity.cpp
++++ b/src/activities/util/KeyboardEntryActivity.cpp
+@@ -229,6 +229,26 @@ void KeyboardEntryActivity::moveSelectionCol(const int delta) {
+   selCol = (selCol + delta + cols) % cols;
+ }
+ 
++void KeyboardEntryActivity::moveSelectionNext() {
++  const fui::KeyboardLayout& layout = currentLayout();
++  if (layout.rowCount == 0) return;
++  clampSelection();
++  if (selCol + 1 < layout.rows[selRow].count) {
++    selCol++;
++    return;
++  }
++  // Past the row end, continue at the next row's first key; the last key wraps
++  // to the first, as row moves do.
++  for (int step = 1; step <= layout.rowCount; step++) {
++    const int row = (selRow + step) % layout.rowCount;
++    if (layout.rows[row].count > 0) {
++      selRow = row;
++      selCol = 0;
++      return;
++    }
++  }
++}
++
+ bool KeyboardEntryActivity::syncSelectionToValue(const int16_t value) {
+   const fui::KeyboardLayout& layout = currentLayout();
+   for (int r = 0; r < layout.rowCount; r++) {
+@@ -698,7 +718,12 @@ void KeyboardEntryActivity::loop() {
+ 
+   if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+     if (upHeld && !upLongHandled && !cursorMode) {
++#if FREEINK_DEVICE_PAPERDIY
++      // Two keys, no Left/Right: tap A walks the keys, tap B moves down.
++      moveSelectionNext();
++#else
+       moveSelectionRow(-1);
++#endif
+       requestUpdate();
+     }
+     upHeld = false;
+diff --git a/src/activities/util/KeyboardEntryActivity.h b/src/activities/util/KeyboardEntryActivity.h
+index b09baf95..47423c80 100644
+--- a/src/activities/util/KeyboardEntryActivity.h
++++ b/src/activities/util/KeyboardEntryActivity.h
+@@ -125,6 +125,8 @@ class KeyboardEntryActivity : public Activity {
+   void clampSelection();
+   void moveSelectionRow(int delta);
+   void moveSelectionCol(int delta);
++  // Next key in reading order, wrapping across rows (PaperDIY tap A).
++  void moveSelectionNext();
+   bool syncSelectionToValue(int16_t value);
+   // Handles one key activation (by stable key id). Returns true when the
+   // screen needs a repaint; OK/cancel finish the activity instead.
 diff --git a/src/main.cpp b/src/main.cpp
 index 607d299a..d51ffbad 100644
 --- a/src/main.cpp
@@ -455,15 +512,45 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..9c5ece76 100644
+index b0b49733..efc9a43f 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
-@@ -246,3 +246,5 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +246,6 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
 +add_test(NAME PaperDiyBoardTag COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_board_tag.py)
 +add_test(NAME PaperDiyRefreshBudget COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_budget.py)
++add_test(NAME PaperDiyKeyboardButtons COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_buttons.py)
+diff --git a/test/inx_navigation/test_unified_keyboard.py b/test/inx_navigation/test_unified_keyboard.py
+index 11496463..46d987d7 100644
+--- a/test/inx_navigation/test_unified_keyboard.py
++++ b/test/inx_navigation/test_unified_keyboard.py
+@@ -18,7 +18,7 @@ def method(name):
+ 
+ 
+ names = ('currentLayout', 'selectedKey', 'selectedLogicalIndex', 'clampSelection',
+-         'moveSelectionRow', 'moveSelectionCol', 'syncSelectionToValue', 'utf8Prev',
++         'moveSelectionRow', 'moveSelectionCol', 'moveSelectionNext', 'syncSelectionToValue', 'utf8Prev',
+          'insertUtf8', 'backspaceUtf8', 'activateValue', 'clearAllOrAltOnSelected', 'keyboardRect', 'keyboardKeysRect', 'inputStartY', 'inputLineCount',
+          'utf8Next', 'measureRange', 'lineBreakEnd', 'inputWindowStart')
+ methods = [method(name) for name in names]
+@@ -212,6 +212,15 @@ int main() {
+           kb.moveSelectionCol(1); assert(kb.selCol==0);
+           kb.moveSelectionRow(-1); assert(kb.selRow==layout.rowCount-1);
+           kb.moveSelectionRow(1); assert(kb.selRow==0);
++          // PaperDIY tap A: every key once in reading order, then back to the first.
++          int keyCount=0; for (int r=0; r<layout.rowCount; ++r) keyCount+=layout.rows[r].count;
++          for (int i=0; i<keyCount; ++i) {
++            const int r=kb.selRow, c=kb.selCol;
++            kb.moveSelectionNext();
++            if (c+1<layout.rows[r].count) assert(kb.selRow==r && kb.selCol==c+1);
++            else assert(kb.selRow==(r+1)%layout.rowCount && kb.selCol==0);
++          }
++          assert(kb.selRow==0 && kb.selCol==0);
+           kb.draw();
+           std::printf("SCENE %d %d %llu %llu\n",scene,theme,(unsigned long long)keysHash,(unsigned long long)traceHash);
+         }
 diff --git a/test/test_hal_power_sources.py b/test/test_hal_power_sources.py
 index 14a5edf5..c9712aec 100644
 --- a/test/test_hal_power_sources.py
@@ -511,9 +598,10 @@ index 14a5edf5..c9712aec 100644
      print("Metalio authoritative/unknown power and USB SOF fallback; LilyGo USB cold boot passed")
 diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
+index 00000000..3f7069c3
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,106 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: local development target. CrossMux has not been flashed or accepted on
@@ -573,6 +661,9 @@ new file mode 100644
 +- Tap A: Up / previous page; hold A: Back.
 +- Tap B: Down / next page; hold B: Confirm / menu.
 +- Hold both: logical Power, using the existing two-button classifier.
++- Keyboard (PaperDIY only): tap A selects the next key; at a row end it moves
++  to the first key of the next row, and the last key wraps to the first. Tap B
++  moves down one row. Holds are unchanged: A cancels, B types the selected key.
 +- The PMIC click is a one-shot logical Power event. Default Ignore retains
 +  shutdown behavior; explicit alternate short-power bindings still apply.
 +- Shutdown requests M5PM1 power-off. If USB retains power, turn off the panel
@@ -693,6 +784,194 @@ new file mode 100644
 +                    str(work / "check.cpp"), "-o", str(executable)], check=True)
 +    subprocess.run([str(executable)], check=True)
 +print("PaperDIY board identity and wrong-board rejection passed")
+diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboard_buttons.py
+new file mode 100644
+index 00000000..5b7a0cfa
+--- /dev/null
++++ b/test/test_paperdiy_keyboard_buttons.py
+@@ -0,0 +1,182 @@
++"""Drive the production keyboard button handling with PaperDIY two-key frames.
++
++Frames follow the SDK DigitalTwoButton classifier (see
++freeink-sdk/libs/hardware/InputManager/test/host/test_paperdiy.cpp): a tap emits
++Up or Down pressed and released in one update; a hold emits only Back (A) or
++Confirm (B). The same code is also built for other boards, where Up keeps
++moving one row up.
++"""
++from pathlib import Path
++import os
++import re
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++SDK = Path(os.environ.get("FREEINK_SDK_ROOT", ROOT / "freeink-sdk"))
++UI = SDK / "libs/ui/FreeInkUI"
++source = (ROOT / "src/activities/util/KeyboardEntryActivity.cpp").read_text()
++
++
++def method(name):
++    match = re.search(r"^[^\n]*KeyboardEntryActivity::" + name + r"\(.*?\n}", source, re.M | re.S)
++    return match.group() if match else ""
++
++
++def between(start, end):
++    return source[source.index(start):source.index(end)]
++
++
++methods = [m for m in (method(n) for n in ("selectedKey", "clampSelection", "moveSelectionRow",
++                                           "moveSelectionCol", "moveSelectionNext")) if m]
++declarations = "\n".join(m.split("{", 1)[0].replace("KeyboardEntryActivity::", "") + ";" for m in methods)
++vertical = between("  if (!cursorMode && mappedInput.wasPressed(MappedInputManager::Button::Up))",
++                   "  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}")
++confirm_back = between("  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm))",
++                       "  if (hintVisible && !cursorMode")
++
++harness = r'''
++#include <components/keyboard/keyboard.h>
++#include <cassert>
++#include <cstdio>
++#include <string>
++#include <vector>
++namespace fui = freeink::ui;
++enum class InputType { Text, Password, Url };
++unsigned long nowMs = 1000;
++unsigned long millis() { return nowMs; }
++struct MappedInputManager {
++  enum class Button { Back, Confirm, Up, Down };
++  unsigned pressed = 0, released = 0, held = 0;
++  unsigned long heldMs = 0;
++  static unsigned bit(Button b) { return 1u << static_cast<int>(b); }
++  bool wasPressed(Button b) const { return pressed & bit(b); }
++  bool wasReleased(Button b) const { return released & bit(b); }
++  bool isPressed(Button b) const { return held & bit(b); }
++  unsigned long getHeldTime() const { return heldMs; }
++};
++using B = MappedInputManager::Button;
++struct KeyboardEntryActivity {
++  InputType inputType = InputType::Password;
++  bool cursorMode = false, togglePos = false, passwordVisible = false, hintVisible = false;
++  bool upHeld = false, upLongHandled = false, downHeld = false, downLongHandled = false;
++  bool confirmHeld = false, confirmLongHandled = false;
++  int selRow = 0, selCol = 0;
++  unsigned long hintShowTime = 0;
++  std::vector<int> activated;
++  int cancels = 0, alts = 0;
++  MappedInputManager mappedInput;
++  static constexpr unsigned long LONG_PRESS_MS = 500, DEL_LONG_PRESS_MS = 1500;
++  const fui::KeyboardLayout& currentLayout() const {
++    return fui::builtinKeyboardLayout(fui::KeyboardLayoutId::QwertyEn, false, false, true, true);
++  }
++  void requestUpdate() {}
++  void onCancel() { ++cancels; }
++  bool activateValue(int16_t value, bool) { activated.push_back(value); return true; }
++  bool clearAllOrAltOnSelected() { ++alts; return true; }
++  @DECLARATIONS@
++  void step(unsigned pressed, unsigned released, unsigned held, unsigned long heldMs) {
++    mappedInput = {pressed, released, held, heldMs};
++    @VERTICAL@
++    @CONFIRM_BACK@
++  }
++  void tap(B b) { step(MappedInputManager::bit(b), MappedInputManager::bit(b), 0, 40); }
++  // A logical hold: emitted once the classifier threshold passes, then released.
++  void hold(B b, unsigned long releaseAfterMs) {
++    const unsigned m = MappedInputManager::bit(b);
++    step(m, 0, m, 0);
++    step(0, 0, m, releaseAfterMs);
++    step(0, m, 0, releaseAfterMs);
++  }
++  int16_t selected() const { return selectedKey()->value; }
++};
++@METHODS@
++int main() {
++  KeyboardEntryActivity kb;
++  const auto& layout = kb.currentLayout();
++  assert(layout.rowCount >= 4);
++#if FREEINK_DEVICE_PAPERDIY
++  // Short A walks every key once in reading order and wraps to the first key.
++  int total = 0;
++  for (int r = 0; r < layout.rowCount; ++r) total += layout.rows[r].count;
++  bool seenDelete = false, seenShift = false, seenMode = false, seenLang = false, seenSpace = false, seenOk = false, seenDigit = false, seenLetter = false;
++  for (int i = 0; i < total; ++i) {
++    const int r = kb.selRow, c = kb.selCol;
++    assert(r >= 0 && r < layout.rowCount && c >= 0 && c < layout.rows[r].count);
++    assert(kb.selectedKey() == &layout.rows[r].keys[c]);
++    const int16_t v = kb.selected();
++    seenDelete |= v == fui::QWERTY_KEY_BACKSPACE;
++    seenShift |= v == fui::QWERTY_KEY_SHIFT;
++    seenMode |= v == fui::QWERTY_KEY_MODE;
++    seenLang |= v == fui::QWERTY_KEY_LANG;
++    seenSpace |= v == fui::QWERTY_KEY_SPACE;
++    seenOk |= v == fui::QWERTY_KEY_ENTER;
++    seenDigit |= v == '7';
++    seenLetter |= v == 'p';
++    kb.tap(B::Up);
++    if (c + 1 < layout.rows[r].count) {
++      assert(kb.selRow == r && kb.selCol == c + 1);
++    } else {
++      // Row end continues at the first key of the next row.
++      assert(kb.selRow == (r + 1) % layout.rowCount && kb.selCol == 0);
++    }
++  }
++  assert(kb.selRow == 0 && kb.selCol == 0);
++  assert(seenDelete && seenShift && seenMode && seenLang && seenSpace && seenOk && seenDigit && seenLetter);
++  // Out-of-range selection (left by a layer change) is clamped, never skipped past.
++  kb.selRow = 1; kb.selCol = 99;
++  kb.tap(B::Up);
++  assert(kb.selRow == 2 && kb.selCol == 0);
++#else
++  kb.selRow = 1; kb.selCol = 0;
++  kb.tap(B::Up);
++  assert(kb.selRow == 0 && kb.selCol == 0);
++  kb.tap(B::Up);
++  assert(kb.selRow == layout.rowCount - 1);
++#endif
++  // Short B moves down a row with the existing column mapping and wrap.
++  kb.selRow = 0; kb.selCol = 3;
++  kb.tap(B::Down);
++  assert(kb.selRow == 1 && kb.selCol == 3 * layout.rows[1].count / layout.rows[0].count);
++  kb.selRow = layout.rowCount - 1; kb.selCol = 0;
++  kb.tap(B::Down);
++  assert(kb.selRow == 0 && kb.selCol == 0);
++  // Taps never type, cancel or insert alternates.
++  assert(kb.activated.empty() && kb.cancels == 0 && kb.alts == 0);
++
++  // Hold B types the selected key exactly once; the selection stays put.
++  kb.selRow = 1; kb.selCol = 2;
++  const int16_t picked = kb.selected();
++  kb.hold(B::Confirm, 100);
++  assert(kb.activated.size() == 1 && kb.activated[0] == picked);
++  assert(kb.selRow == 1 && kb.selCol == 2 && kb.cancels == 0);
++  // Hold A cancels once without moving or typing.
++  kb.hold(B::Back, 100);
++  assert(kb.cancels == 1 && kb.activated.size() == 1 && kb.selRow == 1 && kb.selCol == 2);
++  // Taps after holds still move exactly one step.
++  kb.tap(B::Up);
++  kb.tap(B::Down);
++  assert(kb.activated.size() == 1 && kb.cancels == 1 && kb.alts == 0);
++#if FREEINK_DEVICE_PAPERDIY
++  assert(kb.selRow == 2 && kb.selCol == 3 * layout.rows[2].count / layout.rows[1].count);
++#else
++  assert(kb.selRow == 1 && kb.selCol == 2 * layout.rows[1].count / layout.rows[0].count);
++#endif
++  std::puts("ok");
++}
++'''
++for name, code in {"DECLARATIONS": declarations, "VERTICAL": vertical, "CONFIRM_BACK": confirm_back,
++                   "METHODS": "\n".join(methods)}.items():
++    harness = harness.replace("@" + name + "@", code)
++
++with tempfile.TemporaryDirectory(prefix="paperdiy-keyboard-", dir=os.environ.get("TMPDIR")) as directory:
++    work = Path(directory)
++    cpp = work / "keyboard.cpp"
++    cpp.write_text(harness)
++    for paperdiy in (1, 0):
++        binary = work / f"keyboard{paperdiy}"
++        subprocess.run(["c++", "-std=c++20", f"-DFREEINK_DEVICE_PAPERDIY={paperdiy}",
++                        f"-I{UI / 'include'}", str(cpp), str(UI / "src/FreeInkUI.cpp"), "-o", str(binary)],
++                       check=True)
++        subprocess.run([str(binary)], check=True)
++print("PaperDIY A steps through every key, B moves down, holds keep Back/Confirm; other boards keep Up")
 diff --git a/test/test_paperdiy_refresh_budget.py b/test/test_paperdiy_refresh_budget.py
 new file mode 100644
 --- /dev/null
