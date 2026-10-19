@@ -1,0 +1,106 @@
+name: Build PaperDIY experimental
+on:
+  workflow_dispatch:
+  push:
+    branches: [paperdiy-bringup-20261019]
+permissions:
+  contents: read
+env:
+  PYTHONUTF8: '1'
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: prateek/crosspoint-reader
+          ref: 268216cdc3f5e7c5a016f476f57fa26d75047ebb
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install upstream build tools
+        run: |
+          python -m pip install 'pioarduino==6.1.19' 'littlefs-python>=0.16.0' 'fatfs-ng>=0.1.14' 'pyyaml>=6.0.2' 'rich-click>=1.8.6' 'zopfli>=0.2.2' 'intelhex>=2.3.0' 'rich>=14.0.0' 'urllib3<2' 'cryptography>=45.0.3' 'certifi>=2025.8.3' 'ecdsa>=0.19.1' 'bitstring>=4.3.1' 'reedsolo>=1.5.3,<1.8' 'esp-idf-size>=2.0.0' 'esp-coredump>=1.14.0'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: paperdiy-pio-${{ runner.os }}-55.03.311-v1
+      - name: Build PaperDIY only (no upload)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pio pkg install -e paperdiy 2>&1 | tee dependency-install.log
+          python -m pip --python ~/.platformio/penv/bin/python install 'pioarduino==6.1.19'
+          pio run -e paperdiy 2>&1 | tee firmware-build.log
+      - name: Collect firmware and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          test -f .pio/build/paperdiy/firmware.bin
+          cp .pio/build/paperdiy/*.bin artifacts/
+          cp .pio/build/paperdiy/firmware.elf artifacts/
+          cp platformio.ini partitions.csv artifacts/
+          git rev-parse HEAD > artifacts/firmware-commit.txt
+          git submodule status --recursive > artifacts/submodules.txt
+          cp firmware-build.log artifacts/
+          (cd artifacts && sha256sum *.bin firmware.elf > SHA256SUMS)
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: PaperDIY-firmware-268216c
+          path: |
+            artifacts/
+            firmware-build.log
+            dependency-install.log
+          if-no-files-found: warn
+          retention-days: 30
+  host-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: prateek/crosspoint-reader
+          ref: 268216cdc3f5e7c5a016f476f57fa26d75047ebb
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: prateek/crosspoint-simulator
+          ref: c973d7520e12243f352c6fea90a1a9fecb55bd27
+          path: simulator-tests
+          persist-credentials: false
+      - name: PaperDIY hardware logic test
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh freeink-sdk/libs/hardware/InputManager/test/host/run_paperdiy.sh 2>&1 | tee paperdiy-input-test.log
+      - name: Configure and build host suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S test -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | tee host-configure.log
+          cmake --build build/test -j 2 2>&1 | tee host-build.log
+      - name: Run host suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/test --output-on-failure -j 2 2>&1 | tee host-tests.log
+      - name: Simulator HTTP integration tests
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 simulator-tests/tests/test_http_redirects.py 2>&1 | tee simulator-http-tests.log
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: PaperDIY-test-logs-268216c
+          path: |
+            *.log
+            build/test/Testing/Temporary/LastTest.log
+          retention-days: 30
