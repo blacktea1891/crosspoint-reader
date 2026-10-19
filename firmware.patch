@@ -152,6 +152,95 @@ index 89cbf2f6..fdcfe66c 100644
                          self.assertFalse(resolve(section, "custom_sdkconfig"))
                          self.assertEqual(resolve(section, "board_build.arduino.memory_type"), "dio_opi")
                      else:
+diff --git a/scripts/tests/test_reading_ui_regressions.py b/scripts/tests/test_reading_ui_regressions.py
+index 109cd50f..8b077d08 100644
+--- a/scripts/tests/test_reading_ui_regressions.py
++++ b/scripts/tests/test_reading_ui_regressions.py
+@@ -33,6 +33,63 @@ def run_cpp(program, include_dirs=(), defines=()):
+ 
+ 
+ class ReadingUiRegressionTest(unittest.TestCase):
++    def test_home_plugin_slot_labels_match_confirm_targets_without_opds(self):
++        home = (ROOT / 'src/activities/home/HomeActivity.cpp').read_text()
++        header = (ROOT / 'src/activities/home/HomeActivity.h').read_text()
++        entries = home.split('namespace {', 1)[1].split('}  // namespace', 1)[0]
++        render = method(home, 'void HomeActivity::render(')
++        menu_build = render[render.index('const int homeMenuItemCount ='):render.index('const Rect headerRect')]
++        slot = method(header, 'bool hasLibrarySlot()')
++        run_cpp(r'''
++#include <cassert>
++#include <cstring>
++#include <vector>
++enum class HomeMenuItem { NONE, FILE_BROWSER, LIBRARY, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU, APPS };
++enum class StrId { STR_BROWSE_FILES, STR_LIBRARY, STR_OPDS_BROWSER, STR_FILE_TRANSFER,
++                   STR_SETTINGS_TITLE, STR_APPS_TITLE, STR_MENU_RECENT_BOOKS, STR_CONTINUE_READING };
++enum UIIcon { Folder, Library, Blocks, Transfer, Settings, Apps, Recent, Plugins, Book };
++struct {
++  const char* get(StrId id) const {
++    static const char* labels[] = {"files", "library", "opds", "transfer", "settings", "apps", "recent", "continue"};
++    return labels[static_cast<int>(id)];
++  }
++} I18N;
++#define tr(id) I18N.get(StrId::id)
++''' + entries + r'''
++struct HomeActivity {
++  bool hasOpdsServers = false, hasPlugins = false;
++  std::vector<int> recentBooks;
++''' + slot + r'''
++  void check(bool isCarousel, bool continueReading) {
++    struct { bool homeContinueReadingInMenu; } metrics{continueReading};
++''' + menu_build + r'''
++    const int offset = continueReading && !recentBooks.empty();
++    const int count = hasLibrarySlot() ? 6 : 5;
++    assert(menuItems.size() == static_cast<size_t>(count + offset));
++    assert(menuIcons.size() == menuItems.size());
++    for (int i = 0; i < count; ++i) {
++      const auto* target = menuEntryAtIndex(i, hasLibrarySlot(), isCarousel);
++      assert(target);
++      assert(target->item == indexToMenuItem(i, hasLibrarySlot(), isCarousel));
++      assert(std::strcmp(menuItems[offset + i], I18N.get(target->label)) == 0);
++      assert(menuIcons[offset + i] == (target->item == HomeMenuItem::OPDS_BROWSER && hasPlugins ? Plugins : target->icon));
++      assert(menuItemToIndex(target->item, hasLibrarySlot(), isCarousel) == i);
++    }
++  }
++};
++int main() {
++  for (bool plugins : {false, true}) for (bool opds : {false, true})
++  for (bool carousel : {false, true}) for (bool continueReading : {false, true})
++  for (int recentCount : {0, 2}) {
++    HomeActivity home;
++    home.hasPlugins = plugins;
++    home.hasOpdsServers = opds;
++    home.recentBooks.resize(recentCount);
++    home.check(carousel, continueReading);
++  }
++}
++''')
++
+     def test_home_grid_repairs_empty_xtc_and_preserves_epub_markers(self):
+         home = (ROOT / 'src/activities/home/HomeActivity.cpp').read_text()
+         ui = (ROOT / 'src/components/UITheme.cpp').read_text()
+diff --git a/src/activities/home/HomeActivity.cpp b/src/activities/home/HomeActivity.cpp
+index e430f7d4..2ee455da 100644
+--- a/src/activities/home/HomeActivity.cpp
++++ b/src/activities/home/HomeActivity.cpp
+@@ -698,14 +698,14 @@ void HomeActivity::render(RenderLock&&) {
+       static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
+ 
+   const Rect content = isCarousel ? Rect{0, 0, pageWidth, pageHeight} : UITheme::getContentArea(renderer);
+-  const int homeMenuItemCount = hasOpdsServers ? kHomeMenuItemCount : kHomeMenuItemCount - 1;
++  const int homeMenuItemCount = hasLibrarySlot() ? kHomeMenuItemCount : kHomeMenuItemCount - 1;
+   const bool showContinueReading = metrics.homeContinueReadingInMenu && !recentBooks.empty();
+   std::vector<const char*> menuItems;
+   std::vector<UIIcon> menuIcons;
+   menuItems.reserve(homeMenuItemCount + (showContinueReading ? 1 : 0));
+   menuIcons.reserve(homeMenuItemCount + (showContinueReading ? 1 : 0));
+   for (int i = 0; i < homeMenuItemCount; ++i) {
+-    const HomeMenuEntry* entry = menuEntryAtIndex(i, hasOpdsServers, isCarousel);
++    const HomeMenuEntry* entry = menuEntryAtIndex(i, hasLibrarySlot(), isCarousel);
+     menuItems.push_back(I18N.get(entry->label));
+     menuIcons.push_back(entry->item == HomeMenuItem::OPDS_BROWSER && hasPlugins ? Plugins : entry->icon);
+   }
 diff --git a/src/main.cpp b/src/main.cpp
 index 607d299a..d51ffbad 100644
 --- a/src/main.cpp

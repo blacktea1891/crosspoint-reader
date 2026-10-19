@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       max-parallel: 10
       matrix:
-        target: [paperdiy]
+        target: [paperdiy, default, sticky, x4pro, papermono, eego_a4, murphy_m4, waveshare_epaper_397, readpico, lilygo_t5s3]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -139,7 +139,7 @@ jobs:
           set -euo pipefail
           python freeink-sdk/libs/display/EpdiyLcd/test/host/test_transactions.py 2>&1 | tee epd-transactions.log
       - name: Run cppcheck
-        if: false # Already passed with identical production sources in run 39203408281.
+        if: always()
         run: |
           set -euo pipefail
           python scripts/patch_pioarduino_cache.py --prepare-platform
