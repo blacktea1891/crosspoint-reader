@@ -679,7 +679,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,153 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -789,11 +789,24 @@ new file mode 100644
 +
 +For PaperDIY only, normal-context FAST compares the next B/W frame with the
 +existing 8-bit canvas. The foreground clips its FAST transfer to changed regions;
-+it does not run the erasing bank for every selection. Dirty native 32-row bands
-+retain the union of every visited region, including selection round trips, in
-+128 bytes plus a pending flag. No extra framebuffer or dynamic allocation is
-+added. Up to eight foreground rectangles are planned on the stack (<100 bytes).
-+Large content changes still get one clean and reset the backlog.
++it does not run the erasing bank for every selection. Each native 32-row band
++keeps its separate changed spans, so two distant islands (the old and new
++selection bar on a last-to-first wrap) stay two rectangles instead of one box
++across the blank gap. Up to eight rectangles are planned on the stack (~200
++bytes); with no free slot a span folds into the rectangle that grows least.
++All rectangles of one update are queued, then the driver waits once. This
++removes the old wait after each rectangle, so rectangles can overlap instead of
++always running one after another. It does not make them start together:
++Panel_EPD's update task may scan the first request before the next is queued.
++Whether the old/new bar transition looks better is unverified on hardware.
++Up to eight dirty rectangles (66 bytes) retain every visited region until the
++idle clean, including selection round trips. Distant islands stay separate, but
++a join may cover a small unchanged gap (union up to 1.25 times the two areas),
++and with all slots used a new region folds into the rectangle that grows least,
++with no area limit. Unchanged dark content inside such a rectangle is
++re-driven by the clean; no static area (such as the cover) is guaranteed to stay
++out of it. No extra framebuffer or dynamic allocation is added. Changes whose planned area exceeds half the panel still get one clean
++and reset the backlog.
 +
 +The existing render task schedules optional maintenance after a 1200-ms quiet
 +interval. Physical press/hold/release cancels and re-arms the quiet attempt via
@@ -801,8 +814,7 @@ new file mode 100644
 +400-ms cache pass) retains its original delay before display maintenance.
 +Cleanup uses RenderLock and the power lock, clips both transfer and activation,
 +and paints from the last committed canvas. Input during cleanup may postpone
-+remaining rectangles after the current waveform finishes; no running waveform
-+is interrupted. This uses an atomic cancellation generation, not a second task.
++rectangles not yet queued; a queued waveform always finishes. This uses an atomic cancellation generation, not a second task.
 +Idle timeouts never acknowledge a foreground render waiter.
 +
 +Identical targets request no waveform. Explicit Half/Full, reading and grayscale
@@ -1267,7 +1279,7 @@ diff --git a/test/test_paperdiy_local_clean.py b/test/test_paperdiy_local_clean.
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_local_clean.py
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,403 @@
 +"""Compile the complete LGFX driver against a recording M5GFX boundary."""
 +from pathlib import Path
 +import os
@@ -1300,11 +1312,17 @@ new file mode 100644
 +namespace epd_mode { enum epd_mode_t { epd_quality, epd_text, epd_fast, epd_fastest }; }
 +namespace color_depth_t { enum type { grayscale_8bit }; }
 +struct Rect { int x,y,w,h; };
-+struct Record { Rect rect; epd_mode::epd_mode_t mode; };
++struct Record { Rect rect; epd_mode::epd_mode_t mode; int waitsBefore; int startFrame; };
 +inline std::vector<Record> updates;
 +inline std::vector<uint8_t> glass;
 +inline bool missingCanvas = false;
 +inline int sleeps = 0;
++// Panel_EPD's update task runs on the other core. Model only what the driver
++// can rely on: display() queues one request, and the consumer may scan frames
++// before the next request is queued. Nothing here starts requests together.
++inline int waits = 0;
++inline int frameClock = 0;
++inline int framesBetweenRequests = 0;
 +inline void (*afterUpdate)() = nullptr;
 +struct Bus_EPD {
 +  struct Config { int bus_speed=0, pin_data[8]{},pin_pwr=0,pin_sph=0,pin_spv=0,pin_oe=0,pin_le=0,pin_cl=0,pin_ckv=0,bus_width=0; };
@@ -1344,7 +1362,7 @@ new file mode 100644
 +  int height() const { return panel->value.panel_height; }
 +  void setRotation(int r) { assert(r==0); }
 +  void setEpdMode(epd_mode::epd_mode_t m) { mode=m; }
-+  void waitDisplay() {}
++  void waitDisplay() { ++waits; }
 +  void sleep() { ++sleeps; }
 +  uint32_t color888(int r,int,int) { return r; }
 +  void setAutoDisplay(bool v) { autoDisplay=v; }
@@ -1369,7 +1387,7 @@ new file mode 100644
 +  void display(int x=0,int y=0,int w=0,int h=0) {
 +    if(w>0 && h>0) mark({x,y,w,h});
 +    if(!pending) return;
-+    updates.push_back({dirty,mode});
++    updates.push_back({dirty,mode,waits,frameClock}); frameClock+=framesBetweenRequests;
 +    for(int row=dirty.y;row<dirty.y+dirty.h;++row)
 +      for(int col=dirty.x;col<dirty.x+dirty.w;++col) glass[row*width()+col]=buffer[row*width()+col];
 +    pending=false;
@@ -1424,6 +1442,19 @@ new file mode 100644
 +  assert(u.rect.x==0 && u.rect.y==0 && u.rect.w==W && u.rect.h==H);
 +  assert(u.mode==lgfx::epd_mode::epd_text);
 +}
++// Call-level contract only: no waitDisplay() between one batch's requests.
++void queuedWithoutWait() {
++  for(const auto u:lgfx::updates) assert(u.waitsBefore==lgfx::updates.front().waitsBefore);
++}
++#if FREEINK_DEVICE_PAPERDIY
++bool covers(const detail::LgfxUiRect* rects,int count,int x,int y) {
++  for(int i=0;i<count;++i) if(x>=rects[i].x && x<rects[i].x+rects[i].w && y>=rects[i].y && y<rects[i].y+rects[i].h) return true;
++  return false;
++}
++void inPanel(const detail::LgfxUiRect* rects,int count) {
++  for(int i=0;i<count;++i) assert(rects[i].w>0 && rects[i].h>0 && rects[i].x+rects[i].w<=W && rects[i].y+rects[i].h<=H);
++}
++#endif
 +void localOnly(lgfx::epd_mode::epd_mode_t mode=lgfx::epd_mode::epd_fast) {
 +  assert(!lgfx::updates.empty() && lgfx::updates.size()<=8);
 +  int area=0;
@@ -1434,15 +1465,17 @@ new file mode 100644
 +    area+=u.rect.w*u.rect.h;
 +  }
 +  assert(area<=W*H/2);
++  queuedWithoutWait();
 +  equalFrame();
 +}
++bool touches(const lgfx::Rect& r,int left,int right) { return r.x<right && left<r.x+r.w; }
 +int main() {
 +  EpdBus bus;
 +  LgfxEpdDriver d(config()); d.begin(bus);
 +  frame.fill(255);
 +  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
 +#if FREEINK_DEVICE_PAPERDIY
-+  static_assert(sizeof(detail::LgfxUiDirtyBands)<=132);
++  static_assert(sizeof(detail::LgfxUiDirtyRects)<=132);
 +  fullClean(); assert(d.displayCommitted());
 +  lgfx::updates.clear();
 +  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
@@ -1466,11 +1499,88 @@ new file mode 100644
 +    for(const auto u:lgfx::updates) covered|=x>=u.rect.x && x<u.rect.x+u.rect.w;
 +    assert(covered);
 +  }
-+  equalFrame(); lgfx::updates.clear(); d.runMaintenance(bus); assert(lgfx::updates.empty());
-+  // Input during a waveform leaves the remaining work queued. It may stop
-+  // between rectangles, never halfway through a panel waveform.
-+  paint(0,0,8,8,false); paint(900,500,8,8,false);
++  queuedWithoutWait(); equalFrame(); lgfx::updates.clear(); d.runMaintenance(bus); assert(lgfx::updates.empty());
++  {
++    // Two distant bars, one removed and one added: 7.4% of the panel. The
++    // planner keeps them as two exact islands instead of one half-screen box.
++    std::array<uint8_t,W*H/8> next; next.fill(255);
++    std::vector<uint8_t> previous(W*H,255);
++    for(int y=32;y<512;++y) for(int dx=0;dx<40;++dx) {
++      previous[y*W+128+dx]=0; const int x=704+dx; next[y*(W/8)+x/8]&=static_cast<uint8_t>(~(0x80>>(x%8)));
++    }
++    const auto r=detail::LgfxUiRegions::find(next.data(),previous.data(),W,H);
++    assert(!r.large && r.count==2);
++    assert(r.rects[0].x==128 && r.rects[0].w==40 && r.rects[0].y==32 && r.rects[0].h==480);
++    assert(r.rects[1].x==704 && r.rects[1].w==40 && r.rects[1].y==32 && r.rects[1].h==480);
++  }
++  {
++    // Bounded degradation, recorded exactly. A join may cover a small unchanged
++    // gap: 64x32 islands 16 px apart become one 144x32 rectangle (+12.5%).
++    detail::LgfxUiDirtyRects dirty; detail::LgfxUiRegions r; r.count=2;
++    r.rects[0]={0,0,64,32}; r.rects[1]={80,0,64,32}; dirty.add(r);
++    assert(dirty.size()==1);
++    const auto j=dirty.data()[0]; assert(j.x==0 && j.y==0 && j.w==144 && j.h==32);
++    assert(covers(dirty.data(),dirty.size(),72,16));  // unchanged gap is cleaned
++    // A ninth distant island with all eight slots used folds into the rectangle
++    // that grows least, without the join limit: unchanged x=792..895 is covered.
++    dirty.clear(); r.count=1;
++    for(int i=0;i<9;++i) { r.rects[0]={static_cast<uint16_t>(i*112),0,8,32}; dirty.add(r); }
++    assert(dirty.size()==8); inPanel(dirty.data(),dirty.size());
++    for(int i=0;i<9;++i) assert(covers(dirty.data(),dirty.size(),i*112,0) && covers(dirty.data(),dirty.size(),i*112+7,31));
++    int folded=0;
++    for(int i=0;i<8;++i) { const auto f=dirty.data()[i]; if(f.w!=8) { ++folded; assert(f.x==784 && f.y==0 && f.w==120 && f.h==32); } }
++    assert(folded==1 && covers(dirty.data(),dirty.size(),850,16));
++    // The planner degrades the same way for nine islands in one band.
++    std::array<uint8_t,W*H/8> next; next.fill(255);
++    std::vector<uint8_t> previous(W*H,255);
++    for(int i=0;i<9;++i) for(int y=0;y<32;++y) for(int dx=0;dx<8;++dx) previous[y*W+i*112+dx]=0;
++    const auto p=detail::LgfxUiRegions::find(next.data(),previous.data(),W,H);
++    assert(!p.large && p.count==8); inPanel(p.rects.data(),p.count);
++    for(int i=0;i<9;++i) assert(covers(p.rects.data(),p.count,i*112,0) && covers(p.rects.data(),p.count,i*112+7,31));
++    assert(covers(p.rects.data(),p.count,850,16));
++  }
++  // A six-row menu spanning the native width, wrapping last -> first three
++  // times, with a static cover block in the middle of the screen. Every move,
++  // including the wrap, is a fast local update with no wait between its
++  // requests. This layout only; other layouts can fold or join over content.
++  frame.fill(255); paint(300,0,304,H,false); d.display(bus,frame.data(),nullptr,RefreshMode::Full,false);
++  const int rows[]={16,128,240,640,752,864};
++  int at=rows[0]; paint(at,40,64,460,false);
++  for(int i=1;i<=18;++i) {
++    paint(at,40,64,460,true); at=rows[i%6]; paint(at,40,64,460,false);
++    lgfx::updates.clear();
++    d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++    localOnly();
++    for(const auto u:lgfx::updates) assert(!touches(u.rect,304,600));  // cover unchanged
++  }
++  // In this layout the idle clean covers the visited rows only, not the cover
++  // between them, and still the first row after a round trip back to it.
++  lgfx::updates.clear(); d.runMaintenance(bus); assert(!d.hasPendingMaintenance());
++  assert(!lgfx::updates.empty()); queuedWithoutWait();
++  for(const auto u:lgfx::updates) { assert(u.mode==lgfx::epd_mode::epd_text); assert(!touches(u.rect,304,600)); }
++  for(int row: rows) {
++    bool covered=false;
++    for(const auto u:lgfx::updates) covered|=touches(u.rect,row,row+64);
++    assert(covered);
++  }
++  equalFrame();
++  // The update task may scan frames before the next request is queued. The
++  // driver then still queues both bars without waiting and paints the right
++  // image, but the second bar starts later: no simultaneous start is claimed.
++  lgfx::framesBetweenRequests=3;
++  paint(at,40,64,460,true); at=rows[5]; paint(at,40,64,460,false);
++  lgfx::updates.clear();
 +  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++  assert(lgfx::updates.size()==2); localOnly();
++  assert(lgfx::updates[1].startFrame>lgfx::updates[0].startFrame);
++  lgfx::framesBetweenRequests=0;
++  frame.fill(255); d.display(bus,frame.data(),nullptr,RefreshMode::Full,false);
++  // Input during cleanup leaves the rectangles not yet queued pending. A
++  // queued waveform always runs to completion.
++  paint(0,0,8,8,false); paint(900,500,8,8,false);
++  lgfx::updates.clear();
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++  assert(lgfx::updates.size()==2); localOnly();  // two islands, queued without a wait
 +  lgfx::updates.clear(); cancelDriver=&d; lgfx::afterUpdate=interruptClean;
 +  d.runMaintenance(bus);
 +  assert(lgfx::updates.size()==1 && d.hasPendingMaintenance());
