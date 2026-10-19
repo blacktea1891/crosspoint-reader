@@ -39,72 +39,6 @@ index a4b35fd7..8afdda5d 100644
  STR_FILE_TRANSFER: "文件传输"
  STR_APPS_TITLE: "应用"
  STR_APP_VISIBILITY: "隐藏应用"
-diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..8b48f0f9 100644
---- a/lib/hal/HalDisplay.cpp
-+++ b/lib/hal/HalDisplay.cpp
-@@ -1,6 +1,13 @@
- #include <HalDisplay.h>
- #include <HalGPIO.h>
- 
-+#if FREEINK_DEVICE_PAPERDIY
-+#include "PaperDiyRefreshBudget.h"
-+namespace {
-+PaperDiyRefreshBudget paperDiyRefreshBudget;
-+}
-+#endif
-+
- #if FREEINK_DEVICE_READPICO
- #include <BoardReadPico.h>
- #include <Logging.h>
-@@ -112,19 +119,31 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
- }  // namespace
- 
- void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen, DisplayRefreshContext context) {
-+#if FREEINK_DEVICE_PAPERDIY
-+  const bool normalContext = context == DisplayRefreshContext::Normal;
-+  if (paperDiyRefreshBudget.needsClean(mode == FAST_REFRESH, normalContext)) mode = HALF_REFRESH;
-+#endif
-   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
-     einkDisplay.requestResync(1);
-   }
- 
-   einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen, convertRefreshContext(context));
-+#if FREEINK_DEVICE_PAPERDIY
-+  paperDiyRefreshBudget.completed(mode == FAST_REFRESH, normalContext, einkDisplay.displayCommitted());
-+#endif
- }
- 
- void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode, DisplayRefreshContext context) {
-+#if FREEINK_DEVICE_PAPERDIY
-+  // The LGFX driver is synchronous; keep both entrypoints on the same budget.
-+  displayBuffer(mode, false, context);
-+#else
-   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
-     einkDisplay.requestResync(1);
-   }
- 
-   einkDisplay.displayBufferAsyncNoShadow(convertRefreshMode(mode), convertRefreshContext(context));
-+#endif
- }
- 
- void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
-@@ -138,11 +157,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
- bool HalDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
- 
- void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
-+#if FREEINK_DEVICE_PAPERDIY
-+  displayBuffer(mode, turnOffScreen);
-+#else
-   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
-     einkDisplay.requestResync(1);
-   }
- 
-   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
-+#endif
- }
- 
- void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
 diff --git a/lib/hal/HalGPIO.cpp b/lib/hal/HalGPIO.cpp
 index 4aeb2553..de687d8b 100644
 --- a/lib/hal/HalGPIO.cpp
@@ -541,16 +475,17 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..efc9a43f 100644
+index b0b49733..0a2a7933 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
-@@ -246,3 +246,6 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +246,7 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
 +add_test(NAME PaperDiyBoardTag COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_board_tag.py)
-+add_test(NAME PaperDiyRefreshBudget COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_budget.py)
++add_test(NAME PaperDiyRefreshRouting COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_routing.py)
 +add_test(NAME PaperDiyKeyboardButtons COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_buttons.py)
++add_test(NAME PaperDiyLocalClean COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_local_clean.py)
 diff --git a/test/inx_navigation/test_unified_keyboard.py b/test/inx_navigation/test_unified_keyboard.py
 index 11496463..be5f5962 100644
 --- a/test/inx_navigation/test_unified_keyboard.py
@@ -631,16 +566,16 @@ index 14a5edf5..c9712aec 100644
      print("Metalio authoritative/unknown power and USB SOF fallback; LilyGo USB cold boot passed")
 diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
-index 00000000..e829865c
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,131 @@
 +# M5Stack PaperDIY experimental port
 +
-+Status: local development target. CrossMux has not been flashed or accepted on
-+the device yet. The donor CrossPoint PaperDIY build passed boot, SD, reading,
-+buttons and menu smoke tests on this user's unit; that evidence does not validate
-+this CrossMux binary. Sleep current is unmeasured.
++Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
++buttons and the corrected Apps entry on this user's unit. Periodic menu cleaning
++removed accumulated ghosting but its full-screen flashing was uncomfortable.
++The current candidate replaces that workaround with region cleaning; optical
++acceptance of this candidate is pending. Sleep current is unmeasured.
 +
 +## Hardware and route
 +
@@ -682,8 +617,8 @@ index 00000000..e829865c
 +and application LTO. The pinned M5GFX commit is
 +`d8074bbac8b75d22149d128d71d55b6a34dbc808`. Outputs are
 +`.pio/build/paperdiy/firmware.bin` (application) and `firmware.factory.bin`
-+(merged installation). Build and test results are pending and will be recorded
-+in the handoff report with hashes and logs.
++(merged installation). Record exact candidate build/test results, hashes and
++physical acceptance separately in the handoff report.
 +
 +The board tag is `paperdiy`; tagged images for other boards are rejected by the
 +existing scanner. This target is not enrolled in release/OTA indexes. Do not
@@ -736,47 +671,35 @@ index 00000000..e829865c
 +The panel photo showed old reading text on the home background, while a serial
 +framebuffer capture had clean white pixels there. Manual forced refresh visibly
 +cleared the residue. Repeated home-menu fast updates also accumulated ghosting.
-+The next candidate therefore queues one full refresh on PaperDIY reader exit and
-+uses a PaperDIY-only UI budget. A three-fast/one-clean trial stopped accumulation
-+but the user found it too frequent; the next trial uses seven normal-context fast
-+paints, then one clean paint. Eight is experimental, not a calibrated optimum.
-+Continuous-reading/AA/image contexts keep their existing reader cadence. Explicit
-+Half/Full requests are retained; failed commits do not consume a due cleanup.
-+The budget adds one static byte and no allocation. Existing panel waveforms and
-+SDK display driver code are unchanged. Ghosting acceptance is pending this new
-+candidate's physical tests; the initial image is not accepted for UI cleanliness.
-diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
-new file mode 100644
---- /dev/null
-+++ b/lib/hal/PaperDiyRefreshBudget.h
-@@ -0,0 +1,27 @@
-+#pragma once
++The reader-exit one-shot clean remains. The previous three-fast/one-clean and
++seven-fast/one-clean normal-UI trials are superseded: there is no periodic menu
++counter in this candidate.
 +
-+#include <stdint.h>
++For PaperDIY only, the SDK compares a normal-context FAST target with its
++existing 8-bit canvas. Changed pixels are collected into 32-row bands, aligned
++to eight pixels horizontally, and adjacent bands are merged when the bounding
++area grows by no more than 25 percent. At most eight rectangles are kept on the
++stack (under 100 bytes); no additional framebuffer or heap allocation is added.
++Each rectangle is transferred with clipping and cleaned with the existing stock
++text bank. Identical frames trigger no waveform. This is local cleaning, not a
++new gentle full-screen waveform: the affected region may still visibly blink.
 +
-+// Experimental PaperDIY UI cadence: cap successive fast menu paints at seven,
-+// then use the clean refresh already verified on this panel. Reader refresh
-+// contexts keep their own page cadence. One byte of state, no allocation.
-+class PaperDiyRefreshBudget {
-+ public:
-+  static constexpr uint8_t FAST_UI_LIMIT = 8;
++A change covering over half the panel, or exceeding the rectangle bound, gets
++one full-frame clean. Unknown baselines after initialization, grayscale output,
++canvas-only grayscale cleanup or deep sleep also get one clean before local UI
++updates resume. These conservative limits are experimental, not panel calibration.
++Reading/AA/image contexts and explicit Half/Full requests bypass the region
++policy and retain their existing behavior. A missing canvas reports no commit;
++M5GFX's blocking wait API does not expose a separate waveform-success result.
++Other boards retain their original driver routing. SDK waveform tables, voltage
++and rail sequencing are unchanged.
 +
-+  bool needsClean(bool fast, bool normalContext) const {
-+    return fast && normalContext && fastUiPaints >= FAST_UI_LIMIT - 1;
-+  }
-+
-+  void completed(bool fast, bool normalContext, bool committed) {
-+    if (!committed) return;
-+    if (!fast) {
-+      fastUiPaints = 0;
-+    } else if (normalContext && fastUiPaints < FAST_UI_LIMIT) {
-+      ++fastUiPaints;
-+    }
-+  }
-+
-+ private:
-+  uint8_t fastUiPaints = 0;
-+};
++Host tests compile the complete LGFX driver with a recording M5GFX boundary and
++check repeated portrait/landscape menu changes, distant status changes, clipping,
++edge coordinates, identical targets, grayscale transitions, manual cleaning,
++canvas failure and the non-PaperDIY driver. Hardware acceptance must still check
++home, lists, settings and keyboard navigation, reader exit and manual refresh;
++record local/global clean logs and the user's optical observations separately.
 diff --git a/test/test_paperdiy_board_tag.py b/test/test_paperdiy_board_tag.py
 new file mode 100644
 --- /dev/null
@@ -823,7 +746,6 @@ new file mode 100644
 +print("PaperDIY board identity and wrong-board rejection passed")
 diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboard_buttons.py
 new file mode 100644
-index 00000000..a911f9d3
 --- /dev/null
 +++ b/test/test_paperdiy_keyboard_buttons.py
 @@ -0,0 +1,252 @@
@@ -1079,11 +1001,286 @@ index 00000000..a911f9d3
 +                       check=True)
 +        subprocess.run([str(binary)], check=True)
 +print("PaperDIY A cycles within the row, B cycles within the column, holds keep Back/Confirm, hints show right/down; other boards unchanged")
-diff --git a/test/test_paperdiy_refresh_budget.py b/test/test_paperdiy_refresh_budget.py
+diff --git a/test/test_paperdiy_local_clean.py b/test/test_paperdiy_local_clean.py
 new file mode 100644
 --- /dev/null
-+++ b/test/test_paperdiy_refresh_budget.py
-@@ -0,0 +1,122 @@
++++ b/test/test_paperdiy_local_clean.py
+@@ -0,0 +1,270 @@
++"""Compile the complete LGFX driver against a recording M5GFX boundary."""
++from pathlib import Path
++import os
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++SDK = Path(os.environ.get("FREEINK_SDK_ROOT", ROOT / "freeink-sdk"))
++DISPLAY = SDK / "libs/display/FreeInkDisplay"
++
++ARDUINO = r'''
++#pragma once
++#include <cstddef>
++#include <cstdint>
++#define HIGH 1
++#define LOW 0
++inline int digitalRead(int) { return HIGH; }
++inline void delay(unsigned) {}
++struct SerialStub { template<class... T> void printf(const char*, T...) {} };
++inline SerialStub Serial;
++'''
++
++M5GFX = r'''
++#pragma once
++#include <algorithm>
++#include <cassert>
++#include <cstdint>
++#include <vector>
++namespace lgfx {
++namespace epd_mode { enum epd_mode_t { epd_quality, epd_text, epd_fast, epd_fastest }; }
++namespace color_depth_t { enum type { grayscale_8bit }; }
++struct Rect { int x,y,w,h; };
++struct Record { Rect rect; epd_mode::epd_mode_t mode; };
++inline std::vector<Record> updates;
++inline std::vector<uint8_t> glass;
++inline bool missingCanvas = false;
++inline int sleeps = 0;
++struct Bus_EPD {
++  struct Config { int bus_speed=0, pin_data[8]{},pin_pwr=0,pin_sph=0,pin_spv=0,pin_oe=0,pin_le=0,pin_cl=0,pin_ckv=0,bus_width=0; };
++  Config value;
++  virtual ~Bus_EPD() = default;
++  virtual bool init() { return true; }
++  virtual bool powerControl(bool on) { _pwr_on=on; return true; }
++  Config config() { return value; }
++  void config(Config c) { value=c; }
++  void wait() {}
++protected:
++  bool _pwr_on=false;
++};
++struct Panel_EPD {
++  struct Detail {
++    int line_padding=0;
++    const uint32_t *lut_quality=nullptr,*lut_text=nullptr,*lut_fast=nullptr,*lut_fastest=nullptr;
++    size_t lut_quality_step=0,lut_text_step=0,lut_fast_step=0,lut_fastest_step=0;
++  } detail;
++  struct Config { int memory_width=0,panel_width=0,memory_height=0,panel_height=0,offset_rotation=0,offset_x=0,offset_y=0; bool bus_shared=false; } value;
++  void setBus(Bus_EPD*) {}
++  Detail config_detail() { return detail; }
++  void config_detail(Detail c) { detail=c; }
++  Config config() { return value; }
++  void config(Config c) { value=c; }
++};
++class LGFX_Device {
++public:
++  Panel_EPD* panel=nullptr;
++  epd_mode::epd_mode_t mode=epd_mode::epd_fast;
++  bool autoDisplay=true, clipped=false, pending=false;
++  Rect clip{},dirty{};
++  std::vector<uint8_t> buffer;
++  void setPanel(Panel_EPD* p) { panel=p; }
++  bool init() { buffer.assign(width()*height(),255); glass=buffer; return true; }
++  int width() const { return panel->value.panel_width; }
++  int height() const { return panel->value.panel_height; }
++  void setRotation(int r) { assert(r==0); }
++  void setEpdMode(epd_mode::epd_mode_t m) { mode=m; }
++  void waitDisplay() {}
++  void sleep() { ++sleeps; }
++  uint32_t color888(int r,int,int) { return r; }
++  void setAutoDisplay(bool v) { autoDisplay=v; }
++  void setClipRect(int x,int y,int w,int h) { clipped=true; clip={x,y,w,h}; }
++  void clearClipRect() { clipped=false; }
++  void mark(Rect r) {
++    if(!pending) { dirty=r; pending=true; }
++    else {
++      const int right=std::max(dirty.x+dirty.w,r.x+r.w),bottom=std::max(dirty.y+dirty.h,r.y+r.h);
++      dirty.x=std::min(dirty.x,r.x); dirty.y=std::min(dirty.y,r.y);
++      dirty.w=right-dirty.x; dirty.h=bottom-dirty.y;
++    }
++  }
++  void transfer(const uint8_t* source) {
++    const Rect r=clipped?clip:Rect{0,0,width(),height()};
++    assert(r.x>=0 && r.y>=0 && r.x+r.w<=width() && r.y+r.h<=height());
++    for(int y=r.y;y<r.y+r.h;++y) for(int x=r.x;x<r.x+r.w;++x) buffer[y*width()+x]=source[y*width()+x];
++    mark(r);
++    if(autoDisplay) display();
++  }
++  void fillScreen(uint32_t color) { std::fill(buffer.begin(),buffer.end(),color); mark({0,0,width(),height()}); }
++  void display(int x=0,int y=0,int w=0,int h=0) {
++    if(w>0 && h>0) mark({x,y,w,h});
++    if(!pending) return;
++    updates.push_back({dirty,mode});
++    for(int row=dirty.y;row<dirty.y+dirty.h;++row)
++      for(int col=dirty.x;col<dirty.x+dirty.w;++col) glass[row*width()+col]=buffer[row*width()+col];
++    pending=false;
++  }
++};
++class LGFX_Sprite {
++  LGFX_Device* device;
++  std::vector<uint8_t> bytes;
++public:
++  explicit LGFX_Sprite(LGFX_Device* d):device(d) {}
++  void setPsram(bool) {}
++  void setColorDepth(color_depth_t::type) {}
++  void createSprite(int w,int h) { bytes.resize(w*h); }
++  void* getBuffer() { return missingCanvas ? nullptr : bytes.data(); }
++  void pushSprite(int x,int y) { assert(x==0 && y==0); device->transfer(bytes.data()); }
++};
++}
++'''
++
++TEST = r'''
++#include <array>
++#include <cassert>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include "driver/LgfxEpdDriver.cpp"
++namespace freeink { EpdBus::~EpdBus() = default; }
++using namespace freeink;
++constexpr int W=960,H=540;
++std::array<uint8_t,W*H/8> frame;
++const LgfxEpdConfig& config() { static const LgfxEpdConfig c{}; return c; }
++namespace freeink { const LgfxEpdConfig& paperDiyLgfxConfig() { return config(); } }
++namespace freeink { const LgfxEpdConfig& m5PaperS3LgfxConfig() { return config(); } }
++void paint(int x,int y,int w,int h,bool white) {
++  for(int row=y;row<y+h;++row) for(int col=x;col<x+w;++col) {
++    auto& b=frame[row*(W/8)+col/8]; const uint8_t mask=0x80>>(col%8);
++    if(white) b|=mask; else b&=static_cast<uint8_t>(~mask);
++  }
++}
++void equalFrame() {
++  for(int y=0;y<H;++y) for(int x=0;x<W;++x)
++    assert(lgfx::glass[y*W+x]==((frame[y*(W/8)+x/8]&(0x80>>(x%8)))?255:0));
++}
++void fullClean() {
++  assert(lgfx::updates.size()==1);
++  const auto u=lgfx::updates.back();
++  assert(u.rect.x==0 && u.rect.y==0 && u.rect.w==W && u.rect.h==H);
++  assert(u.mode==lgfx::epd_mode::epd_text);
++}
++void localOnly() {
++  assert(!lgfx::updates.empty() && lgfx::updates.size()<=8);
++  int area=0;
++  for(const auto u:lgfx::updates) {
++    assert(u.mode==lgfx::epd_mode::epd_text);
++    assert(u.rect.x%8==0 && u.rect.w%8==0);
++    assert(u.rect.x>=0 && u.rect.y>=0 && u.rect.x+u.rect.w<=W && u.rect.y+u.rect.h<=H);
++    area+=u.rect.w*u.rect.h;
++  }
++  assert(area<=W*H/2);
++  equalFrame();
++}
++int main() {
++  EpdBus bus;
++  LgfxEpdDriver d(config()); d.begin(bus);
++  frame.fill(255);
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++#if FREEINK_DEVICE_PAPERDIY
++  fullClean(); assert(d.displayCommitted());
++  lgfx::updates.clear();
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++  assert(lgfx::updates.empty() && d.displayCommitted());
++  // 48 home-menu changes: portrait selection bars are vertical in native scan
++  // coordinates. None may become a periodic full-frame clean.
++  int old=0;
++  for(int i=0;i<48;++i) {
++    paint(old,0,40,H,true); old=(i%6)*72; paint(old,0,40,H,false);
++    lgfx::updates.clear();
++    d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++    localOnly();
++  }
++  // A distant status icon must not expand a selection change into a full-screen
++  // bounding rectangle. Both changed islands are covered.
++  paint(old,0,40,H,true); paint(450,0,40,H,false); paint(900,0,8,8,false);
++  lgfx::updates.clear(); d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++  localOnly();
++  // Landscape orientations turn the same selection into horizontal strips.
++  frame.fill(255); d.display(bus,frame.data(),nullptr,RefreshMode::Full,false);
++  int oldY=0;
++  for(int i=0;i<24;++i) {
++    paint(0,oldY,W,20,true); oldY=(i%6)*80; paint(0,oldY,W,20,false);
++    lgfx::updates.clear();
++    d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++    localOnly();
++  }
++  // Native extremes exercise clipping and the final short 32-row band.
++  for(auto xy: {std::pair<int,int>{0,0},{W-1,0},{0,H-1},{W-1,H-1}}) {
++    paint(xy.first,xy.second,1,1,false); lgfx::updates.clear();
++    d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++    if(!lgfx::updates.empty()) localOnly();
++  }
++  // Whole content replacement cleans once; identical repeats do not blink.
++  frame.fill(0); lgfx::updates.clear();
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal); fullClean();
++  lgfx::updates.clear(); d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,true,RefreshContext::Normal);
++  assert(lgfx::updates.empty() && lgfx::sleeps>0);
++  // Reading and manual modes retain full-frame requests, even for tiny changes.
++  for(auto context: {RefreshContext::ContinuousReading,RefreshContext::TextOnlyAntiAliasing,RefreshContext::ImageReading}) {
++    lgfx::updates.clear(); d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,context);
++    assert(lgfx::updates.size()==1 && lgfx::updates[0].mode==lgfx::epd_mode::epd_fast);
++    assert(lgfx::updates[0].rect.w==W && lgfx::updates[0].rect.h==H);
++  }
++  for(auto mode: {RefreshMode::Half,RefreshMode::Full}) {
++    lgfx::updates.clear(); d.displayWithContext(bus,frame.data(),nullptr,mode,false,RefreshContext::Normal); fullClean();
++  }
++  // Grayscale base/overlay keep the same bank. A canvas-only cleanup must not
++  // claim the gray glass is a valid black/white UI baseline.
++  frame.fill(255); d.displayGrayscaleBaseWithContext(bus,frame.data(),RefreshMode::Fast,false,RefreshContext::TextOnlyAntiAliasing);
++  std::array<uint8_t,W*H/8> plane{}; plane[100]=128;
++  d.copyGrayscaleLsb(bus,plane.data()); d.copyGrayscaleMsb(bus,plane.data());
++  lgfx::updates.clear(); d.displayGray(bus,nullptr,false,nullptr,false);
++  assert(lgfx::updates.size()==1 && lgfx::updates[0].mode==lgfx::epd_mode::epd_fast);
++  assert(lgfx::glass[800]==0x55);
++  d.cleanupGrayscaleBuffers(bus,frame.data()); lgfx::updates.clear();
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal); fullClean(); equalFrame();
++  d.deepSleep(bus); lgfx::updates.clear();
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal); fullClean();
++  // No commit is reported when the required canvas is unavailable.
++  lgfx::missingCanvas=true; lgfx::updates.clear();
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++  assert(!d.displayCommitted() && lgfx::updates.empty());
++  lgfx::missingCanvas=false;
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal); fullClean();
++#else
++  // Same production driver, with PaperDIY disabled: original full-frame FAST.
++  assert(lgfx::updates.size()==1 && lgfx::updates[0].mode==lgfx::epd_mode::epd_fast);
++  paint(0,0,8,8,false); lgfx::updates.clear();
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++  assert(lgfx::updates.size()==1 && lgfx::updates[0].rect.w==W && lgfx::updates[0].rect.h==H);
++#endif
++  std::puts("production LGFX region routing passed");
++}
++'''
++
++with tempfile.TemporaryDirectory(prefix="paperdiy-local-clean-") as directory:
++    work = Path(directory)
++    files = {
++        "Arduino.h": ARDUINO,
++        "SPI.h": "#pragma once\nstruct SPISettings {};\n",
++        "BoardConfig.h": "#pragma once\nnamespace BoardConfig { inline constexpr struct { unsigned displayWidth=960,displayHeight=540; } ACTIVE; }\n",
++        "M5GFX.h": M5GFX,
++        "esp_heap_caps.h": "#pragma once\n#include <cstdlib>\n#define MALLOC_CAP_SPIRAM 1\ninline void* heap_caps_malloc(size_t n,int) { return std::malloc(n); }\n",
++        "esp_memory_utils.h": "#pragma once\ninline bool esp_ptr_external_ram(const void*) { return true; }\n",
++        "lgfx/v1/platforms/esp32/Bus_EPD.h": '#pragma once\n#include "M5GFX.h"\n',
++        "lgfx/v1/platforms/esp32/Panel_EPD.hpp": '#pragma once\n#include "M5GFX.h"\n',
++        "check.cpp": TEST,
++    }
++    for name, code in files.items():
++        target = work / name
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_text(code, encoding="utf-8")
++    for enabled in (1, 0):
++        binary = work / f"check-{enabled}"
++        subprocess.run(["c++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-fno-exceptions",
++                        f"-DFREEINK_DEVICE_PAPERDIY={enabled}", f"-DFREEINK_DEVICE_PAPERS3={1-enabled}",
++                        "-DFREEINK_DRIVER_LGFX_EPD=1",
++                        "-I" + str(work), "-I" + str(DISPLAY / "include"), "-I" + str(DISPLAY / "src"),
++                        str(work / "check.cpp"), "-o", str(binary)], check=True)
++        subprocess.run([str(binary)], check=True)
++print("Local menu clean, clipping, repeated changes, grayscale, manual clean, canvas failure and non-DIY routing passed")
+diff --git a/test/test_paperdiy_refresh_routing.py b/test/test_paperdiy_refresh_routing.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_refresh_routing.py
+@@ -0,0 +1,120 @@
 +"""Compile the complete production HAL against a recording SDK boundary."""
 +from pathlib import Path
 +import subprocess
@@ -1145,9 +1342,7 @@ new file mode 100644
 +TEST = r'''
 +#include <cassert>
 +#include "HalDisplay.h"
-+#include "PaperDiyRefreshBudget.h"
 +int main() {
-+  static_assert(sizeof(PaperDiyRefreshBudget)==1);
 +  const auto fast=HalDisplay::FAST_REFRESH;
 +  const auto half=HalDisplay::HALF_REFRESH;
 +  const auto full=HalDisplay::FULL_REFRESH;
@@ -1157,7 +1352,7 @@ new file mode 100644
 +    if (i%3==0) display.displayBufferAsync(fast);
 +    else if (i%3==1) display.refreshDisplay(fast,true);
 +    else display.displayBuffer(fast);
-+    check(FREEINK_DEVICE_PAPERDIY && i%8==7 ? half : fast);
++    check(fast);
 +  }
 +  display.displayBuffer(full); check(full);
 +  for(int i=0;i<7;++i) { display.displayBuffer(fast); check(fast); }
@@ -1165,23 +1360,23 @@ new file mode 100644
 +                     DisplayRefreshContext::ImageReading}) {
 +    for(int i=0;i<20;++i) { display.displayBufferAsync(fast,context); check(fast); }
 +  }
-+  display.displayBuffer(fast); check(FREEINK_DEVICE_PAPERDIY ? half : fast);
-+  // Existing explicit cleaning requests keep their strength and reset the UI budget.
++  display.displayBuffer(fast); check(fast);
++  // Explicit cleaning requests keep their strength; HAL does not impose a cadence.
 +  display.displayBuffer(full); check(full);
 +  for(int i=0;i<7;++i) { display.displayBuffer(fast); check(fast); }
 +  display.displayBuffer(half,true); check(half);
 +  assert(EInkDisplay::records.back().off);
 +  for(int i=0;i<7;++i) { display.displayBuffer(fast); check(fast); }
-+  // A failed commit must not consume the due cleanup or reset its budget.
++  // Commit status must remain observable without changing the requested mode.
 +  EInkDisplay::committed=false;
-+  display.displayBuffer(fast); check(FREEINK_DEVICE_PAPERDIY ? half : fast);
++  display.displayBuffer(fast); check(fast);
 +  EInkDisplay::committed=true;
-+  display.displayBuffer(fast); check(FREEINK_DEVICE_PAPERDIY ? half : fast);
++  display.displayBuffer(fast); check(fast);
 +  display.displayBuffer(fast); check(fast);
 +}
 +'''
 +
-+with tempfile.TemporaryDirectory(prefix='paperdiy-ui-refresh-') as directory:
++with tempfile.TemporaryDirectory(prefix='paperdiy-refresh-routing-') as directory:
 +    folder = Path(directory)
 +    (folder / 'Arduino.h').write_text('#pragma once\n#include <cstdint>\n')
 +    (folder / 'BoardConfig.h').write_text('''#pragma once
@@ -1205,4 +1400,4 @@ new file mode 100644
 +                        f'-DFREEINK_DEVICE_PAPERDIY={enabled}',
 +                        str(source), str(ROOT / 'lib/hal/HalDisplay.cpp'), '-o', str(executable)], check=True)
 +        subprocess.run([str(executable)], check=True)
-+print('PaperDIY shared UI cadence, sync/async/refresh entrypoints, reader contexts, failed commits and non-DIY baseline passed')
++print('HAL keeps FAST across repeated sync/async/refresh calls; explicit cleaning, reader contexts and non-DIY routing passed')
