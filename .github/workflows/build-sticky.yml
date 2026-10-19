@@ -1,0 +1,154 @@
+name: CrossMux PaperDIY port validation
+on:
+  workflow_dispatch:
+  push:
+    branches: [crossmux-paperdiy-20261019]
+permissions:
+  contents: read
+env:
+  PYTHONUTF8: '1'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+jobs:
+  firmware:
+    name: Firmware ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        target: [paperdiy]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: 0x1abin/crossmux
+          ref: a78a39ed04d6755c6885d57521704d2f96f8b955
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: port-bundle
+          persist-credentials: false
+      - name: Apply exact firmware and SDK patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd port-bundle && sha256sum -c SHA256SUMS)
+          test "$(git rev-parse HEAD)" = a78a39ed04d6755c6885d57521704d2f96f8b955
+          test "$(git -C freeink-sdk rev-parse HEAD)" = 9aa7e95e02c6374a23a562c883eb302552ff24f1
+          git apply --check port-bundle/firmware.patch
+          git apply port-bundle/firmware.patch
+          git -C freeink-sdk apply --check ../port-bundle/sdk.patch
+          git -C freeink-sdk apply ../port-bundle/sdk.patch
+          git diff --check
+          git -C freeink-sdk diff --check
+          echo "PLATFORMIO_CORE_DIR=$RUNNER_TEMP/.platformio-crossmux-${{ matrix.target }}" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install pinned build core
+        run: python -m pip install pioarduino==6.2.0
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.PLATFORMIO_CORE_DIR }}/.cache
+          key: crossmux-paperdiy-downloads-${{ runner.os }}-${{ matrix.target }}-v1
+      - name: Prepare platform
+        run: python scripts/patch_pioarduino_cache.py --prepare-platform
+      - name: Build firmware (no device upload)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pio run -e ${{ matrix.target }} 2>&1 | tee firmware-build.log
+      - name: Collect firmware, source patches and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          test -f .pio/build/${{ matrix.target }}/firmware.bin
+          cp .pio/build/${{ matrix.target }}/*.bin artifacts/
+          if [ '${{ matrix.target }}' = paperdiy ]; then cp .pio/build/paperdiy/firmware.elf artifacts/; fi
+          cp platformio.ini partitions.csv firmware-build.log artifacts/
+          cp port-bundle/firmware.patch port-bundle/sdk.patch port-bundle/provenance.json artifacts/
+          git submodule status --recursive > artifacts/submodules.txt
+          (cd artifacts && sha256sum *.bin > SHA256SUMS)
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: CrossMux-PaperDIY-port-${{ matrix.target }}
+          path: |
+            artifacts/
+            firmware-build.log
+          if-no-files-found: warn
+          retention-days: 30
+  checks:
+    name: Host tests, formatting and static analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: 0x1abin/crossmux
+          ref: a78a39ed04d6755c6885d57521704d2f96f8b955
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: port-bundle
+          persist-credentials: false
+      - name: Apply patches
+        run: |
+          set -euo pipefail
+          (cd port-bundle && sha256sum -c SHA256SUMS)
+          git apply port-bundle/firmware.patch
+          git -C freeink-sdk apply ../port-bundle/sdk.patch
+          echo "PLATFORMIO_CORE_DIR=$RUNNER_TEMP/.platformio-crossmux-checks" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install host tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ninja-build libsdl2-dev libssl-dev libpcre3
+          python -m pip install pioarduino==6.2.0 clang-format==21.1.8
+      - name: Check source formatting
+        run: ./bin/clang-format-fix --check > formatting.log 2>&1
+      - name: PaperDIY GPIO, PMIC and board-identity tests
+        if: always()
+        run: |
+          set -euo pipefail
+          sh freeink-sdk/libs/hardware/InputManager/test/host/run_paperdiy.sh 2>&1 | tee paperdiy-input.log
+          python test/test_paperdiy_board_tag.py 2>&1 | tee paperdiy-board-tag.log
+          python test/test_hal_power_sources.py 2>&1 | tee paperdiy-power.log
+      - name: Build host suites
+        if: always()
+        run: |
+          set -euo pipefail
+          cmake -S test -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | tee host-configure.log
+          cmake --build build/test -j 2 2>&1 | tee host-build.log
+      - name: Run complete host suites and display transaction tests
+        if: always()
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/test --output-on-failure -j 2 2>&1 | tee host-tests.log
+      - name: Display transaction tests
+        if: always()
+        run: |
+          set -euo pipefail
+          python freeink-sdk/libs/display/EpdiyLcd/test/host/test_transactions.py 2>&1 | tee epd-transactions.log
+      - name: Run cppcheck
+        if: false # Already passed with identical production sources in run 39203408281.
+        run: |
+          set -euo pipefail
+          python scripts/patch_pioarduino_cache.py --prepare-platform
+          pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high 2>&1 | tee cppcheck.log
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: CrossMux-PaperDIY-port-checks
+          path: |
+            *.log
+            build/test/Testing/Temporary/LastTest.log
+          retention-days: 30

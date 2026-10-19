@@ -1,0 +1,7 @@
+{
+  "project": "CrossMux",
+  "role": "Pinned-source PaperDIY build runner; source is checked out explicitly by workflow",
+  "migrated_from": "blacktea1891/crosspoint-reader-cjk",
+  "default_branch_modified": false,
+  "firmware_base": "a78a39ed04d6755c6885d57521704d2f96f8b955"
+}

@@ -1,0 +1,426 @@
+diff --git a/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp b/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp
+index eef99ef..9e1e022 100644
+--- a/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp
++++ b/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp
+@@ -470,6 +470,12 @@ PanelDriver &lgfxEpdDriver() {
+   static LgfxEpdDriver instance(lilygoT5S3LgfxConfig());
+   return instance;
+ }
++#elif FREEINK_DEVICE_PAPERDIY && !defined(FREEINK_LGFX_EPD_CONFIG)
++const LgfxEpdConfig &paperDiyLgfxConfig();
++PanelDriver &lgfxEpdDriver() {
++  static LgfxEpdDriver instance(paperDiyLgfxConfig());
++  return instance;
++}
+ #elif FREEINK_DEVICE_PAPERS3 && !defined(FREEINK_LGFX_EPD_CONFIG)
+ const LgfxEpdConfig &m5PaperS3LgfxConfig();
+ PanelDriver &lgfxEpdDriver() {
+diff --git a/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp b/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp
+index 281fa11..32d275c 100644
+--- a/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp
++++ b/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp
+@@ -634,7 +634,7 @@ bool BatteryMonitor::hasGaugeBackend() const {
+ }
+ 
+ bool BatteryMonitor::hasM5Pm1Backend() const {
+-  return BoardConfig::isM5StackPaperColor() || BoardConfig::isPaperMono();
++  return BoardConfig::isM5StackPaperColor() || BoardConfig::isPaperMono() || BoardConfig::isPaperDiy();
+ }
+ 
+ uint16_t BatteryMonitor::readPercentage() const {
+@@ -924,6 +924,11 @@ bool BatteryMonitor::readM5Pm1Status(Status& status) const {
+   // Product semantics for Paper Mono: external supply present means charging.
+   status.chargingKnown = status.externalPowerKnown;
+   status.charging = status.externalPower;
++  if (BoardConfig::isPaperDiy()) {
++    uint8_t inputs = 0;
++    status.chargingKnown = freeink::m5pm1::readReg(freeink::m5pm1::REG_GPIO_IN, &inputs);
++    status.charging = status.chargingKnown && (inputs & 0x08) == 0;
++  }
+   return status.percentageKnown || status.millivoltsKnown || status.externalPowerKnown;
+ }
+ 
+diff --git a/libs/hardware/BoardConfig/include/BoardConfig.h b/libs/hardware/BoardConfig/include/BoardConfig.h
+index 23f9cda..ab6dffd 100644
+--- a/libs/hardware/BoardConfig/include/BoardConfig.h
++++ b/libs/hardware/BoardConfig/include/BoardConfig.h
+@@ -65,6 +65,9 @@
+ #ifndef FREEINK_DEVICE_PAPERMONO
+ #define FREEINK_DEVICE_PAPERMONO 0
+ #endif
++#ifndef FREEINK_DEVICE_PAPERDIY
++#define FREEINK_DEVICE_PAPERDIY 0
++#endif
+ #ifndef FREEINK_DEVICE_PAPERS3
+ #define FREEINK_DEVICE_PAPERS3 0
+ #endif
+@@ -102,7 +105,7 @@
+ // --- 2) Coherence: exactly one MCU family, at least one device ---------------
+ #if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC ||            \
+       FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO ||          \
+-      FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || \
++      FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERDIY || FREEINK_DEVICE_PAPERS3 || \
+       FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_WAVESHARE_EPAPER_397 ||             \
+       FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_READPICO || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_PICCO)
+ #error \
+@@ -117,7 +120,7 @@
+ #define FREEINK_MCU_S3                                                                                      \
+   (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO ||          \
+    FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || \
+-   FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4 ||                          \
++   FREEINK_DEVICE_PAPERDIY || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4 ||                          \
+    FREEINK_DEVICE_WAVESHARE_EPAPER_397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_READPICO || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_PICCO)
+ #define FREEINK_MCU_ESP32 (FREEINK_DEVICE_M5PAPER)
+ #if (FREEINK_MCU_C3 + FREEINK_MCU_C61 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32) != 1
+@@ -197,7 +200,7 @@
+ // LilyGo T5 S3 and M5Stack PaperS3: raw-parallel ED047TC1 via LovyanGFX (M5GFX).
+ // External-bus driver; each board injects its own bus pins/power in an
+ // LgfxEpdConfig (PaperS3's rails are plain GPIOs, LilyGo's ride a PMIC+expander).
+-#if FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_PAPERS3
++#if FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_PAPERDIY
+ #define FREEINK_DRIVER_LGFX_EPD 1
+ #else
+ #define FREEINK_DRIVER_LGFX_EPD 0
+@@ -397,7 +400,7 @@
+ // DRAM next to the ~56.5 KiB of internal-DMA LUT tables the Lgfx path already
+ // needs (docs/engineering/read-pico.md 2.6).
+ #ifndef FREEINK_FB_PSRAM
+-#define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_READPICO)
++#define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_READPICO || FREEINK_DEVICE_PAPERDIY)
+ #endif
+ 
+ // SD transport. de-link (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
+@@ -475,6 +478,7 @@ enum class Board : uint8_t {
+   WsEpaper397,  // SDK-managed Waveshare power and ordinary buttons.
+   MetalioEInk4,  // Upstream identity; legacy spelling retained for caller compatibility.
+   Picco,  // Onyx Picco / BOOX Tiles; SSD1677/SSD2677 auto-detection.
++  PaperDiy,
+ };
+ 
+ // How the board reports button presses.
+@@ -1818,6 +1822,19 @@ constexpr BoardProfile XTEINK_X4_PRO = {
+     {9, 7, 3, 7},
+     true};  // batteryChargeStatusActiveHigh: GPIO21 STAT is driven HIGH while charging
+ 
++// M5Stack PaperDIY K159: ED047TC1 parallel EPD, two keys, M5PM1 power.
++constexpr BoardProfile PAPER_DIY = {
++    Board::PaperDiy, "paperdiy", InputStyle::DigitalTwoButton, DisplayController::LgfxEpd,
++    960, 540,
++    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED,
++     PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED},
++    0,
++    {39, 40, 38, 47, PIN_UNASSIGNED, false, 0},
++    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 4, 3, PIN_UNASSIGNED, false},
++    PIN_UNASSIGNED, PIN_UNASSIGNED, 1.0f, PIN_UNASSIGNED,
++    NO_TOUCH, NO_FRONTLIGHT, NO_AUDIO, NO_LEDS, NO_FLIP, NO_SDMMC,
++    NO_GAUGE, NO_MIC, NO_SENSORS, 1.0f, {}};
++
+ // --- EEGO Reader A4 — ESP32-S3 N16R8, UC8279C (768x552) + GSLX680 touch -------
+ // CrossPoint fork device; pins/resolution/calibration from stock-firmware RE,
+ // none hardware-confirmed. See docs/eego-a4-support.md.
+@@ -2243,7 +2260,7 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES_COMPILED_IN = cmax(cmax(cmax(cmax(FREEI
+ // existing term keeps its meaning; the Read Pico term (1216/8 x 684 = 103,968 B)
+ // is folded in as the outer call's second argument.
+ constexpr uint32_t MAX_FRAMEBUFFER_BYTES =
+-    cmax(cmax(MAX_FRAMEBUFFER_BYTES_COMPILED_IN, FREEINK_DEVICE_PICCO ? panelBytes(PICCO) : 0u),
++    cmax(cmax(cmax(MAX_FRAMEBUFFER_BYTES_COMPILED_IN, FREEINK_DEVICE_PICCO ? panelBytes(PICCO) : 0u), FREEINK_DEVICE_PAPERDIY ? panelBytes(PAPER_DIY) : 0u),
+          FREEINK_DEVICE_READPICO ? panelBytes(READ_PICO) : 0u);
+ 
+ // Compile-time default device — the profile ACTIVE starts as. With a single
+@@ -2271,6 +2288,8 @@ constexpr BoardProfile DEFAULT_DEVICE = DE_LINK;
+ constexpr BoardProfile DEFAULT_DEVICE = LILYGO_T5S3;
+ #elif FREEINK_DEVICE_M5PAPER
+ constexpr BoardProfile DEFAULT_DEVICE = M5PAPER_V11;
++#elif FREEINK_DEVICE_PAPERDIY
++constexpr BoardProfile DEFAULT_DEVICE = PAPER_DIY;
+ #elif FREEINK_DEVICE_PAPERS3
+ constexpr BoardProfile DEFAULT_DEVICE = M5PAPER_S3;
+ #elif FREEINK_DEVICE_STICKY
+@@ -2368,6 +2387,11 @@ inline bool selectDevice(Board which) {
+       ACTIVE = PAPER_MONO;
+       return true;
+ #endif
++#if FREEINK_DEVICE_PAPERDIY
++    case Board::PaperDiy:
++      ACTIVE = PAPER_DIY;
++      break;
++#endif
+ #if FREEINK_DEVICE_PAPERS3
+     case Board::M5PaperS3:
+       ACTIVE = M5PAPER_S3;
+@@ -2428,6 +2452,7 @@ inline bool isM5PaperS3() { return ACTIVE.board == Board::M5PaperS3; }
+ inline bool isSticky() { return ACTIVE.board == Board::Sticky; }
+ inline bool isX4Pro() { return ACTIVE.board == Board::XteinkX4Pro; }
+ inline bool isX4Classic() { return ACTIVE.board == Board::XteinkX4Classic; }
++inline bool isPaperDiy() { return ACTIVE.board == Board::PaperDiy; }
+ inline bool isPaperMono() { return ACTIVE.board == Board::PaperMono; }
+ inline bool isEegoA4() { return ACTIVE.board == Board::EegoA4; }
+ inline bool isMetalioEInk4() { return ACTIVE.board == Board::MetalioEInk4; }
+diff --git a/libs/hardware/BoardConfig/include/M5Pm1.h b/libs/hardware/BoardConfig/include/M5Pm1.h
+index 4c2ce96..ab525e5 100644
+--- a/libs/hardware/BoardConfig/include/M5Pm1.h
++++ b/libs/hardware/BoardConfig/include/M5Pm1.h
+@@ -29,6 +29,8 @@ constexpr uint8_t ADDR = 0x6E;
+ #ifndef FREEINK_M5PM1_SDA
+ #if FREEINK_DEVICE_PAPERMONO
+ #define FREEINK_M5PM1_SDA 47
++#elif FREEINK_DEVICE_PAPERDIY
++#define FREEINK_M5PM1_SDA 41
+ #else
+ #define FREEINK_M5PM1_SDA 3
+ #endif
+@@ -36,6 +38,8 @@ constexpr uint8_t ADDR = 0x6E;
+ #ifndef FREEINK_M5PM1_SCL
+ #if FREEINK_DEVICE_PAPERMONO
+ #define FREEINK_M5PM1_SCL 48
++#elif FREEINK_DEVICE_PAPERDIY
++#define FREEINK_M5PM1_SCL 42
+ #else
+ #define FREEINK_M5PM1_SCL 2
+ #endif
+@@ -54,6 +58,7 @@ constexpr uint8_t REG_WDT_CNT = 0x0A;    // seconds; 0 disables the PMIC watchdo
+ constexpr uint8_t REG_SYS_CMD = 0x0C;    // KEY=0xA in high nibble; 1=off, 2=reset, 3=download
+ constexpr uint8_t REG_GPIO_MODE = 0x10;  // 1 = output
+ constexpr uint8_t REG_GPIO_OUT = 0x11;   // output level
++constexpr uint8_t REG_GPIO_IN = 0x12;
+ constexpr uint8_t REG_GPIO_DRV = 0x13;   // 0 = push-pull
+ constexpr uint8_t REG_GPIO_PULL0 = 0x14;
+ constexpr uint8_t REG_GPIO_FUNC0 = 0x16;  // 0 = plain GPIO (vs alt function)
+diff --git a/libs/hardware/InputManager/src/InputManager.cpp b/libs/hardware/InputManager/src/InputManager.cpp
+index 592795b..dded269 100644
+--- a/libs/hardware/InputManager/src/InputManager.cpp
++++ b/libs/hardware/InputManager/src/InputManager.cpp
+@@ -1,5 +1,9 @@
+ #include "InputManager.h"
+ 
++#if FREEINK_DEVICE_PAPERDIY
++#include <PaperDiyBoard.h>
++#endif
++
+ #include <algorithm>
+ 
+ #include "MultiTouchGestureMath.h"
+@@ -103,6 +107,9 @@ InputManager::InputManager()
+       twoButtonLongPressActive(false) {}
+ 
+ void InputManager::begin() {
++#if FREEINK_DEVICE_PAPERDIY
++  freeink::paperdiy::ensureBooted();
++#endif
+ #if FREEINK_DEVICE_METALIO_EINK4
+   if (BoardConfig::isMetalioEInk4())
+     freeink::metalio::ensureBooted();
+@@ -722,6 +729,12 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
+   }
+ #endif
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  if (freeink::paperdiy::pollPowerButtonClicked(currentTime)) {
++    auxiliaryState |= static_cast<uint8_t>(1u << BTN_POWER);
++  }
++#endif
++
+   if (physical != twoButtonPhysicalState) {
+     const uint8_t releasedPhysical = twoButtonPhysicalState;
+     const bool emitShort = physical == 0 && !twoButtonLongPressActive;
+diff --git a/libs/hardware/BoardConfig/include/PaperDiyBoard.h b/libs/hardware/BoardConfig/include/PaperDiyBoard.h
+new file mode 100644
+--- /dev/null
++++ b/libs/hardware/BoardConfig/include/PaperDiyBoard.h
+@@ -0,0 +1,35 @@
++#pragma once
++
++#include <M5Pm1.h>
++
++namespace freeink::paperdiy {
++
++inline bool ensureBooted() {
++  static bool ready = false;
++  if (ready) return true;
++  using namespace m5pm1;
++  beginBus();
++  // PYG2 supplies the EPD; PYG3 is the active-low charger status input.
++  ready = updateRegChecked(REG_GPIO_FUNC0, 0xF0, 0) && updateRegChecked(REG_GPIO_MODE, 0x08, 0x04) &&
++          updateRegChecked(REG_GPIO_DRV, 0x04, 0) && updateRegChecked(REG_GPIO_PULL0, 0xC0, 0x40) &&
++          configureAppPowerButton();
++  return ready;
++}
++
++inline bool setEpdPower(bool enabled) {
++  if (!ensureBooted()) return false;
++  if (!m5pm1::updateRegChecked(m5pm1::REG_GPIO_OUT, 0x04, enabled ? 0x04 : 0)) return false;
++  delay(10);
++  return true;
++}
++
++inline bool pollPowerButtonClicked(unsigned long nowMs) {
++  static unsigned long lastPollMs = 0;
++  if (nowMs - lastPollMs < 250) return false;
++  lastPollMs = nowMs;
++  if (!ensureBooted()) return false;
++  uint8_t status = 0;
++  return m5pm1::readButtonStatus(&status) && (status & m5pm1::BTN_EVENT) != 0;
++}
++
++}  // namespace freeink::paperdiy
+diff --git a/libs/hardware/BoardPaperDIY/library.json b/libs/hardware/BoardPaperDIY/library.json
+new file mode 100644
+--- /dev/null
++++ b/libs/hardware/BoardPaperDIY/library.json
+@@ -0,0 +1,8 @@
++{
++  "name": "BoardPaperDIY",
++  "version": "0.1.0",
++  "description": "M5Stack PaperDIY parallel EPD and M5PM1 power support",
++  "dependencies": {"BoardConfig": "*", "EInkDisplay": "*"},
++  "platforms": "espressif32",
++  "frameworks": ["arduino"]
++}
+diff --git a/libs/hardware/BoardPaperDIY/src/PaperDiyLgfxConfig.cpp b/libs/hardware/BoardPaperDIY/src/PaperDiyLgfxConfig.cpp
+new file mode 100644
+--- /dev/null
++++ b/libs/hardware/BoardPaperDIY/src/PaperDiyLgfxConfig.cpp
+@@ -0,0 +1,16 @@
++#include <LgfxEpdConfig.h>
++#include <PaperDiyBoard.h>
++
++namespace {
++bool prepareEpdPower() { return freeink::paperdiy::setEpdPower(true); }
++}  // namespace
++
++namespace freeink {
++const LgfxEpdConfig& paperDiyLgfxConfig() {
++  // M5GFX board_M5PaperDIY: stock Bus_EPD sequences OE, boost and SPV.
++  static const LgfxEpdConfig config = {
++      {6, 14, 7, 12, 9, 11, 8, 10}, 13, 17, 45, 15, 16, 18, 46, 16000000, 8, 0, {&prepareEpdPower, nullptr, nullptr},
++  };
++  return config;
++}
++}  // namespace freeink
+diff --git a/libs/hardware/InputManager/test/host/paperdiy_stubs/Wire.h b/libs/hardware/InputManager/test/host/paperdiy_stubs/Wire.h
+new file mode 100644
+--- /dev/null
++++ b/libs/hardware/InputManager/test/host/paperdiy_stubs/Wire.h
+@@ -0,0 +1,34 @@
++#pragma once
++#include <array>
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++struct WireStub {
++  std::array<uint8_t, 256> registers{};
++  std::vector<uint8_t> tx;
++  bool fail = false;
++  int sda = -1, scl = -1;
++  uint8_t reg = 0;
++  bool begin(int a, int b, uint32_t) {
++    sda = a;
++    scl = b;
++    return !fail;
++  }
++  void setTimeOut(int) {}
++  void beginTransmission(uint8_t) { tx.clear(); }
++  void write(uint8_t b) { tx.push_back(b); }
++  int endTransmission(bool = true) {
++    if (fail) return 1;
++    reg = tx.at(0);
++    for (size_t i = 1; i < tx.size(); ++i) registers.at(reg + i - 1) = tx[i];
++    return 0;
++  }
++  int requestFrom(uint8_t, uint8_t count) { return fail ? 0 : count; }
++  uint8_t read() {
++    auto value = registers.at(reg);
++    if (reg == 0x48) registers.at(reg) &= 0x7f;
++    ++reg;
++    return value;
++  }
++};
++inline WireStub Wire;
+diff --git a/libs/hardware/InputManager/test/host/run_paperdiy.sh b/libs/hardware/InputManager/test/host/run_paperdiy.sh
+new file mode 100644
+--- /dev/null
++++ b/libs/hardware/InputManager/test/host/run_paperdiy.sh
+@@ -0,0 +1,10 @@
++#!/bin/sh
++set -eu
++cd "$(dirname "$0")"
++BUILD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/freeink-paperdiy.XXXXXX")
++trap 'rm -rf "$BUILD_DIR"' EXIT
++c++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
++  -DFREEINK_DEVICE_PAPERDIY=1 -DARDUINO_USB_CDC_ON_BOOT=1 \
++  -Ipaperdiy_stubs -Imetalio_stubs -I../../include -I../../../BoardConfig/include \
++  test_paperdiy.cpp ../../src/InputManager.cpp -o "$BUILD_DIR/test_paperdiy"
++"$BUILD_DIR/test_paperdiy"
+diff --git a/libs/hardware/InputManager/test/host/test_paperdiy.cpp b/libs/hardware/InputManager/test/host/test_paperdiy.cpp
+new file mode 100644
+--- /dev/null
++++ b/libs/hardware/InputManager/test/host/test_paperdiy.cpp
+@@ -0,0 +1,68 @@
++#include <BoardConfig.h>
++#include <InputManager.h>
++#include <PaperDiyBoard.h>
++#include <Wire.h>
++
++#include <algorithm>
++#include <cassert>
++#include <cstdio>
++
++int main() {
++  static_assert(BoardConfig::MAX_FRAMEBUFFER_BYTES == 64800);
++  static_assert(FREEINK_MCU_S3 && FREEINK_DRIVER_LGFX_EPD && FREEINK_FB_PSRAM);
++  static_assert(!FREEINK_CAP_TOUCH && !FREEINK_CAP_RTC && !FREEINK_CAP_AUDIO);
++  static_assert(!FREEINK_CAP_FRONTLIGHT && !FREEINK_SD_SDMMC);
++  static_assert(BoardConfig::DEFAULT_DEVICE.input.up == 4);
++  static_assert(BoardConfig::DEFAULT_DEVICE.input.down == 3);
++  static_assert(BoardConfig::DEFAULT_DEVICE.sd.cs == 47);
++  std::fill(std::begin(gpioLevels), std::end(gpioLevels), HIGH);
++  Wire.fail = true;
++  assert(!freeink::paperdiy::ensureBooted());
++  Wire.fail = false;
++  Wire.registers[0x49] = 0xB6;
++  Wire.registers[0x4A] = 0x20;
++  assert(freeink::paperdiy::ensureBooted());
++  assert(Wire.sda == 41 && Wire.scl == 42);
++  assert(Wire.registers[0x49] == 0x37);
++  assert(Wire.registers[0x4A] == 0x20);
++  assert((Wire.registers[0x10] & 0x0C) == 0x04);
++  assert((Wire.registers[0x14] & 0xC0) == 0x40);
++  assert(freeink::paperdiy::setEpdPower(true));
++  assert(Wire.registers[0x11] & 4);
++  assert(freeink::paperdiy::setEpdPower(false));
++  assert(!(Wire.registers[0x11] & 4));
++  InputManager input;
++  input.begin();
++  input.update();
++  gpioLevels[4] = LOW;
++  fakeNow += 30;
++  input.update();
++  gpioLevels[4] = HIGH;
++  fakeNow += 100;
++  input.update();
++  assert(input.wasPressed(InputManager::BTN_UP));
++  assert(input.wasReleased(InputManager::BTN_UP));
++  input.update();
++  gpioLevels[3] = LOW;
++  fakeNow += 30;
++  input.update();
++  fakeNow += 1500;
++  input.update();
++  assert(input.isPressed(InputManager::BTN_CONFIRM));
++  gpioLevels[3] = HIGH;
++  fakeNow += 30;
++  input.update();
++  assert(input.wasReleased(InputManager::BTN_CONFIRM));
++  assert(!input.wasPressed(InputManager::BTN_DOWN));
++  fakeNow += 300;
++  Wire.registers[0x48] = 0x80;
++  input.update();
++  assert(input.wasPressed(InputManager::BTN_POWER));
++  fakeNow += 30;
++  input.update();
++  assert(input.wasReleased(InputManager::BTN_POWER));
++  fakeNow += 300;
++  input.update();
++  assert(!input.wasPressed(InputManager::BTN_POWER));
++  puts("PaperDIY profile, PMIC recovery, display rail, buttons and one-shot power click passed");
++}

@@ -1,0 +1,13 @@
+{
+  "firmware_repository": "0x1abin/crossmux",
+  "firmware_base": "a78a39ed04d6755c6885d57521704d2f96f8b955",
+  "sdk_repository": "0x1abin/freeink-sdk",
+  "sdk_base": "9aa7e95e02c6374a23a562c883eb302552ff24f1",
+  "target": "paperdiy",
+  "source_commits_created": false,
+  "flashing_authorized_for_this_candidate": false,
+  "patches": {
+    "firmware.patch": "117c29de7d88192b014aa6a7687913a197444ac7df9ce9da2b16991946e1c013",
+    "sdk.patch": "715f8dd899a1968ab4ea6900c54fc87adc34e57504a6c1fe95bfd9c5d6f0ff03"
+  }
+}
