@@ -378,6 +378,158 @@ index 109cd50f..89efbf0c 100644
      def test_home_grid_repairs_empty_xtc_and_preserves_epub_markers(self):
          home = (ROOT / 'src/activities/home/HomeActivity.cpp').read_text()
          ui = (ROOT / 'src/components/UITheme.cpp').read_text()
+diff --git a/scripts/tests/test_weread_shelf_input.py b/scripts/tests/test_weread_shelf_input.py
+index 141fc9cd..283c337e 100644
+--- a/scripts/tests/test_weread_shelf_input.py
++++ b/scripts/tests/test_weread_shelf_input.py
+@@ -5,6 +5,114 @@ from test_reading_ui_regressions import ROOT, WEREAD, method, run_cpp
+ 
+ 
+ class WeReadShelfInputTest(unittest.TestCase):
++    def test_tab_and_manage_two_button_path(self):
++        source = (WEREAD / "WeReadActivity.cpp").read_text()
++        program = r'''
++#include <atomic>
++#include <cassert>
++#include <initializer_list>
++struct Rect {};
++struct MappedInputManager {
++  enum class Button { Confirm=1,Up=2,Down=4,Left=8,Right=16,NavPrevious,NavNext };
++  enum class RowTouch { None,Tap };
++  int released=0;
++  bool swapped=false;
++  bool isNavDirectionSwapped() const { return swapped; }
++  bool wasReleased(Button b) const {
++    if (b==Button::NavPrevious) return released & (swapped ? 4|16 : 2|8);
++    if (b==Button::NavNext) return released & (swapped ? 2|8 : 4|16);
++    return released & int(b);
++  }
++  RowTouch rowTouch(int&,int,int,int,int,int,int) { return RowTouch::None; }
++};
++enum class ManageAction { Refresh,ClearCache,Logout };
++struct Entry { ManageAction action; };
++constexpr Entry kManageEntries[]={{ManageAction::Refresh},{ManageAction::ClearCache},{ManageAction::Logout}};
++constexpr int kManageEntryCount=3;
++struct ButtonNavigator { static int nextIndex(int index,int count) { return (index+1)%count; } };
++struct {
++  struct Geometry { int firstRowY=0,rowStep=0,pageCount=0,xStart=0,xEnd=0,rowHeight=0,pageStart=0; };
++  Geometry getMenuRowGeometry(int,Rect,int,int) { return {}; }
++} GUI;
++struct WeReadActivity {
++  enum class MainFocus { Tabs,Content };
++  enum class MainTab { Shelf,Manage };
++  std::atomic<MainFocus> mainFocus_{MainFocus::Tabs};
++  std::atomic<MainTab> mainTab_{MainTab::Shelf};
++  MappedInputManager mappedInput;
++  int renderer=0,manageSelected_=0,updates=0,resets=0,refreshes=0,clears=0,logouts=0;
++  Rect mainContentBounds() const { return {}; }
++  void requestUpdate() { ++updates; }
++  void resetShelfCoverLoading() { ++resets; }
++  void showShelfRefreshPopup() { ++refreshes; }
++  void promptClearCache() { ++clears; }
++  void promptLogout() { ++logouts; }
++  void selectMainTab(MainTab);
++  void handleMainTabInput();
++  void handleManageInput();
++};
++'''
++        for name in ("void WeReadActivity::selectMainTab(",
++                     "void WeReadActivity::handleMainTabInput()",
++                     "void WeReadActivity::handleManageInput()"):
++            program += method(source, name) + "\n"
++        program += r'''
++int main() {
++  using Focus=WeReadActivity::MainFocus;
++  using Tab=WeReadActivity::MainTab;
++  using Button=MappedInputManager::Button;
++  for (bool swapped : {false,true}) {
++    WeReadActivity page;
++    page.mappedInput.swapped=swapped;
++    // PaperDIY has Up/Down short releases, no physical Left/Right.
++    // Other targets keep their horizontal tab and Down-to-content behavior.
++    const auto next=FREEINK_DEVICE_PAPERDIY ? (swapped ? Button::Up : Button::Down)
++                                         : (swapped ? Button::Left : Button::Right);
++    page.mappedInput.released=int(next);
++    page.handleMainTabInput();
++    assert(page.mainTab_==Tab::Manage && page.mainFocus_==Focus::Tabs);
++    assert(page.updates==1 && page.resets==1);
++    // Holding B emits no short navigation; its logical Confirm release enters
++    // content once and does not also toggle the tab.
++    page.mappedInput.released=0;
++    page.handleMainTabInput();
++    assert(page.mainFocus_==Focus::Tabs && page.updates==1);
++    page.mappedInput.released=int(Button::Confirm);
++    page.handleMainTabInput();
++    assert(page.mainTab_==Tab::Manage && page.mainFocus_==Focus::Content);
++    assert(page.updates==2 && page.refreshes==0 && page.clears==0 && page.logouts==0);
++    page.mappedInput.released=int(Button::Down);
++    page.handleManageInput();
++    assert(page.manageSelected_==1 && page.clears==0);
++    page.handleManageInput();
++    assert(page.manageSelected_==2 && page.logouts==0);
++    page.mappedInput.released=int(Button::Up);
++    page.handleManageInput();
++    page.handleManageInput();
++    assert(page.manageSelected_==0 && page.mainFocus_==Focus::Content);
++    page.handleManageInput();
++    assert(page.mainFocus_==Focus::Tabs);
++    page.mappedInput.released=int(next);
++    page.handleMainTabInput();
++    assert(page.mainTab_==Tab::Shelf && page.mainFocus_==Focus::Tabs);
++    page.mappedInput.released=int(Button::Confirm);
++    page.handleMainTabInput();
++    assert(page.mainFocus_==Focus::Content);
++    assert(page.refreshes==0 && page.clears==0 && page.logouts==0);
++  }
++  WeReadActivity page;
++  page.mappedInput.released=int(Button::Down);
++  page.handleMainTabInput();
++  if (FREEINK_DEVICE_PAPERDIY) {
++    assert(page.mainTab_==Tab::Manage && page.mainFocus_==Focus::Tabs);
++  } else {
++    assert(page.mainTab_==Tab::Shelf && page.mainFocus_==Focus::Content);
++  }
++}
++'''
++        for paperdiy in (0, 1):
++            run_cpp(program, defines=(f"FREEINK_DEVICE_PAPERDIY={paperdiy}",))
++
+     def test_release_only_taps_and_holds(self):
+         source = (WEREAD / "WeReadActivity.cpp").read_text()
+         navigation = (ROOT / "src/util/ButtonNavigator.cpp").read_text()
+diff --git a/src/activities/apps/weread/webapi/WeReadActivity.cpp b/src/activities/apps/weread/webapi/WeReadActivity.cpp
+index fd2bb855..01bcbe5a 100644
+--- a/src/activities/apps/weread/webapi/WeReadActivity.cpp
++++ b/src/activities/apps/weread/webapi/WeReadActivity.cpp
+@@ -1587,17 +1587,26 @@ void WeReadActivity::selectMainTab(const MainTab tab) {
+ }
+ 
+ void WeReadActivity::handleMainTabInput() {
+-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+-      mappedInput.wasReleased(MappedInputManager::Button::Down)) {
++  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)
++#if !FREEINK_DEVICE_PAPERDIY
++      || mappedInput.wasReleased(MappedInputManager::Button::Down)
++#endif
++  ) {
+     mainFocus_.store(MainFocus::Content);
+     requestUpdate();
+     return;
+   }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  // A/B short gestures navigate tabs; held B emits the separate Confirm gesture.
++  const auto previousButton = MappedInputManager::Button::NavPrevious;
++  const auto nextButton = MappedInputManager::Button::NavNext;
++#else
+   const bool swapFrontDirections = mappedInput.isNavDirectionSwapped();
+   const auto previousButton =
+       swapFrontDirections ? MappedInputManager::Button::Right : MappedInputManager::Button::Left;
+   const auto nextButton = swapFrontDirections ? MappedInputManager::Button::Left : MappedInputManager::Button::Right;
++#endif
+   if (!mappedInput.wasReleased(previousButton) && !mappedInput.wasReleased(nextButton)) return;
+ 
+   selectMainTab(mainTab_.load() == MainTab::Shelf ? MainTab::Manage : MainTab::Shelf);
 diff --git a/src/activities/home/HomeActivity.cpp b/src/activities/home/HomeActivity.cpp
 index e430f7d4..b94f67be 100644
 --- a/src/activities/home/HomeActivity.cpp
@@ -546,10 +698,19 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..978233b3 100644
+index b0b49733..00d646d2 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
-@@ -246,3 +246,7 @@ add_test(NAME TxtCoverCopy
+@@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
+   COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_weread_logout.py)
+ add_test(NAME WeReadConnection
+   COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_weread_connection.py)
++add_test(NAME WeReadShelfInput
++  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_weread_shelf_input.py)
+ add_test(NAME BuiltinFontShrink
+   COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
+ add_test(NAME PioarduinoCache
+@@ -246,3 +248,7 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -639,15 +800,14 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,147 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
-+buttons and the corrected Apps entry on this user's unit. The user confirmed
-+immediate region cleaning leaves no residual image, but flashing the selected
-+row on every move is uncomfortable. The current candidate defers that cleanup
-+until interaction becomes quiet; its optical acceptance is pending. Sleep
-+current is unmeasured.
++buttons and the corrected Apps entry on this user's unit. Run 39285324943's
++conservative 30-update UI cadence passed the user's Home/Settings menu retest:
++smooth operation and periodic cleaning clears residue. Local/idle-clean trials
++were rejected. Sleep current and longer-term acceptance remain unmeasured.
 +
 +## Hardware and route
 +
@@ -700,6 +860,12 @@ new file mode 100644
 +
 +- Tap A: Up / previous page; hold A: Back.
 +- Tap B: Down / next page; hold B: Confirm / menu.
++- WeRead tabs (new candidate, physical retest pending): from the first shelf
++  book, tap A once to focus the tabs. Tap A/B to switch Shelf/Manage, then hold
++  B to enter the selected tab. In Manage, tap A/B moves through actions; tap A
++  at the first action returns to the tabs. Holding A keeps its existing Back
++  action. Short B must not also enter content while it switches tabs. This
++  PaperDIY-only route preserves other targets' Left/Right tabs and Down entry.
 +- Hold both: logical Power, using the existing two-button classifier.
 +- Keyboard (PaperDIY only): tap A selects the next key in the same row and
 +  wraps from the last key to the first; it never changes row. Tap B keeps the
