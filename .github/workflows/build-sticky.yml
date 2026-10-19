@@ -18,6 +18,21 @@ jobs:
           ref: 268216cdc3f5e7c5a016f476f57fa26d75047ebb
           submodules: recursive
           persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: keyboard-bundle
+          persist-credentials: false
+      - name: Apply verified PaperDIY keyboard fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd keyboard-bundle && sha256sum -c SHA256SUMS)
+          test "$(git rev-parse HEAD)" = 268216cdc3f5e7c5a016f476f57fa26d75047ebb
+          test "$(git -C freeink-sdk rev-parse HEAD)" = 5663993f2c69a28efaddaefb7e4bf9e9899ef229
+          git apply --check keyboard-bundle/firmware.patch
+          git apply keyboard-bundle/firmware.patch
+          git diff --check
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -43,6 +58,7 @@ jobs:
           test -f .pio/build/paperdiy/firmware.bin
           cp .pio/build/paperdiy/*.bin artifacts/
           cp .pio/build/paperdiy/firmware.elf artifacts/
+          cp keyboard-bundle/firmware.patch keyboard-bundle/provenance.json artifacts/
           cp platformio.ini partitions.csv artifacts/
           git rev-parse HEAD > artifacts/firmware-commit.txt
           git submodule status --recursive > artifacts/submodules.txt
@@ -51,7 +67,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: PaperDIY-firmware-268216c
+          name: PaperDIY-keyboard-firmware-${{ github.run_id }}
           path: |
             artifacts/
             firmware-build.log
@@ -68,6 +84,21 @@ jobs:
           ref: 268216cdc3f5e7c5a016f476f57fa26d75047ebb
           submodules: recursive
           persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: keyboard-bundle
+          persist-credentials: false
+      - name: Apply verified PaperDIY keyboard fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd keyboard-bundle && sha256sum -c SHA256SUMS)
+          test "$(git rev-parse HEAD)" = 268216cdc3f5e7c5a016f476f57fa26d75047ebb
+          test "$(git -C freeink-sdk rev-parse HEAD)" = 5663993f2c69a28efaddaefb7e4bf9e9899ef229
+          git apply --check keyboard-bundle/firmware.patch
+          git apply keyboard-bundle/firmware.patch
+          git diff --check
       - uses: actions/checkout@v6
         with:
           repository: prateek/crosspoint-simulator
@@ -99,7 +130,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: PaperDIY-test-logs-268216c
+          name: PaperDIY-keyboard-test-logs-${{ github.run_id }}
           path: |
             *.log
             build/test/Testing/Temporary/LastTest.log

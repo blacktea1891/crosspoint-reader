@@ -1,0 +1,368 @@
+diff --git a/docs/paperdiy.md b/docs/paperdiy.md
+index 88162eef..e46d56e5 100644
+--- a/docs/paperdiy.md
++++ b/docs/paperdiy.md
+@@ -25,6 +25,8 @@ FreeInk owns the board profile, parallel display configuration, PMIC access and
+ - PMIC power-button click: the configured short Power action; default Ignore acts as shutdown for this board. Hardware long-hold download recovery remains enabled; the existing double-click power-off configuration is preserved.
+ - Shutdown asks M5PM1 to cut power. If it returns with USB still supplying power, firmware disables the display supply and sleeps with either navigation key as a wake source. It waits for held keys to be released first.
+ 
++In the virtual keyboard, tap A to advance right within the current row, wrapping to its first key. Tap B to advance down the same column, skipping rows that do not have that column and wrapping to the top. If no other row has that column, the selection stays put. Holds retain Back (A) and Confirm (B). The keyboard activity owns this selection policy; physical tap/hold classification remains in the SDK. Physical validation of these keyboard controls and their right/down hints is pending; check all four display orientations and both side-button mappings.
++
+ The display is a 960x540 ED047TC1 parallel panel. M5PM1 on SDA41/SCL42 enables its supply through PYG2; M5GFX sequences the GPIO-controlled boost and display signals. The facade framebuffer uses PSRAM (64,800 bytes for one 1-bit plane); M5GFX and grayscale rendering have additional buffers. The native simulator's reported free memory is synthetic and is not a device memory measurement.
+ 
+ SD uses SPI on SCLK39, MISO40, MOSI38, CS47. Card-detect GPIO48 is not consumed by this profile. Charging reads M5PM1 PYG3, active low; external supply presence is read separately so full charge does not mean USB was unplugged. Battery percentage uses the SDK's voltage estimate, not a calibrated state-of-charge gauge. There is no touch, frontlight, RTC, speaker, or microphone in this profile.
+diff --git a/src/activities/util/KeyboardEntryActivity.cpp b/src/activities/util/KeyboardEntryActivity.cpp
+index 1d68766a..3bcfea0a 100644
+--- a/src/activities/util/KeyboardEntryActivity.cpp
++++ b/src/activities/util/KeyboardEntryActivity.cpp
+@@ -226,6 +226,28 @@ void KeyboardEntryActivity::moveSelectionCol(const int delta) {
+   selCol = (selCol + delta + cols) % cols;
+ }
+ 
++void KeyboardEntryActivity::moveSelectionAlongRow() {
++  const fui::KeyboardLayout& layout = currentLayout();
++  if (layout.rowCount == 0) return;
++  clampSelection();
++  const int cols = layout.rows[selRow].count;
++  if (cols > 0) selCol = (selCol + 1) % cols;
++}
++
++void KeyboardEntryActivity::moveSelectionDownColumn() {
++  const fui::KeyboardLayout& layout = currentLayout();
++  if (layout.rowCount == 0) return;
++  clampSelection();
++  // Skip rows too short for this column; stay put if no other row has it.
++  for (int step = 1; step < layout.rowCount; step++) {
++    const int row = (selRow + step) % layout.rowCount;
++    if (selCol < layout.rows[row].count) {
++      selRow = row;
++      return;
++    }
++  }
++}
++
+ bool KeyboardEntryActivity::syncSelectionToValue(const int16_t value) {
+   const fui::KeyboardLayout& layout = currentLayout();
+   for (int r = 0; r < layout.rowCount; r++) {
+@@ -607,7 +629,12 @@ void KeyboardEntryActivity::loop() {
+ 
+   if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+     if (upHeld && !upLongHandled && !cursorMode) {
++#if FREEINK_DEVICE_PAPERDIY
++      // Two keys, no Left/Right: tap A cycles the row, tap B cycles the column.
++      moveSelectionAlongRow();
++#else
+       moveSelectionRow(-1);
++#endif
+       requestUpdate();
+     }
+     upHeld = false;
+@@ -630,7 +657,11 @@ void KeyboardEntryActivity::loop() {
+ 
+   if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+     if (downHeld && !downLongHandled && !cursorMode) {
++#if FREEINK_DEVICE_PAPERDIY
++      moveSelectionDownColumn();
++#else
+       moveSelectionRow(1);
++#endif
+       requestUpdate();
+     }
+     downHeld = false;
+@@ -1019,7 +1050,13 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  // Side labels are drawn rotated (glyph right = screen up): "v" reads as right
++  // for tap A, "<" as down for tap B.
++  GUI.drawSideButtonHints(renderer, "v", "<");
++#else
+   GUI.drawSideButtonHints(renderer, ">", "<");
++#endif
+ 
+   renderer.displayBuffer();
+ }
+diff --git a/src/activities/util/KeyboardEntryActivity.h b/src/activities/util/KeyboardEntryActivity.h
+index 61823958..9f039696 100644
+--- a/src/activities/util/KeyboardEntryActivity.h
++++ b/src/activities/util/KeyboardEntryActivity.h
+@@ -123,6 +123,9 @@ class KeyboardEntryActivity : public Activity {
+   void clampSelection();
+   void moveSelectionRow(int delta);
+   void moveSelectionCol(int delta);
++  // PaperDIY taps: A cycles within the row, B within the column index.
++  void moveSelectionAlongRow();
++  void moveSelectionDownColumn();
+   bool syncSelectionToValue(int16_t value);
+   // Handles one key activation (by stable key id). Returns true when the
+   // screen needs a repaint; OK/cancel finish the activity instead.
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index f9ab50fe..dc59cfe5 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -89,6 +89,7 @@ add_subdirectory(plugin_picker_layout)
+ add_subdirectory(protected_paths)
+ 
+ find_package(Python3 REQUIRED COMPONENTS Interpreter)
++add_test(NAME paperdiy_keyboard_buttons COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_paperdiy_keyboard_buttons.py)
+ add_test(NAME TrustedTimeTimezone COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_trusted_time.py)
+ add_test(NAME RemoteButtonInputIntegration COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_remote_button_input.py)
+ add_test(NAME BleLearning COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ble_learning.py)
+diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboard_buttons.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_keyboard_buttons.py
+@@ -0,0 +1,252 @@
++"""Drive the production keyboard button handling with PaperDIY two-key frames.
++
++Frames follow the SDK DigitalTwoButton classifier (see
++freeink-sdk/libs/hardware/InputManager/test/host/test_paperdiy.cpp): a tap emits
++Up or Down pressed and released in one update; a hold emits only Back (A) or
++Confirm (B). The same code is also built for other boards, where Up keeps
++moving one row up.
++"""
++from pathlib import Path
++import os
++import re
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++SDK = Path(os.environ.get("FREEINK_SDK_ROOT", ROOT / "freeink-sdk"))
++UI = SDK / "libs/ui/FreeInkUI"
++source = (ROOT / "src/activities/util/KeyboardEntryActivity.cpp").read_text(encoding="utf-8")
++
++
++def method(name):
++    match = re.search(r"^[^\n]*KeyboardEntryActivity::" + name + r"\(.*?\n}", source, re.M | re.S)
++    return match.group() if match else ""
++
++
++def between(start, end):
++    return source[source.index(start):source.index(end)]
++
++
++methods = [m for m in (method(n) for n in ("selectedKey", "clampSelection", "moveSelectionRow",
++                                           "moveSelectionCol", "moveSelectionAlongRow",
++                                           "moveSelectionDownColumn")) if m]
++declarations = "\n".join(m.split("{", 1)[0].replace("KeyboardEntryActivity::", "") + ";" for m in methods)
++vertical = between("  if (!cursorMode && mappedInput.wasPressed(MappedInputManager::Button::Up))",
++                   "  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}")
++hints_after = "  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);\n"
++hints = between(hints_after, "  renderer.displayBuffer();")[len(hints_after):]
++confirm_back = between("  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm))",
++                       "  if (hintVisible && !cursorMode")
++
++harness = r'''
++#include <components/keyboard/keyboard.h>
++#include <cassert>
++#include <cstdio>
++#include <string>
++#include <vector>
++namespace fui = freeink::ui;
++enum class InputType { Text, Password, Url };
++unsigned long nowMs = 1000;
++unsigned long millis() { return nowMs; }
++struct MappedInputManager {
++  enum class Button { Back, Confirm, Up, Down };
++  unsigned pressed = 0, released = 0, held = 0;
++  unsigned long heldMs = 0;
++  static unsigned bit(Button b) { return 1u << static_cast<int>(b); }
++  bool wasPressed(Button b) const { return pressed & bit(b); }
++  bool wasReleased(Button b) const { return released & bit(b); }
++  bool isPressed(Button b) const { return held & bit(b); }
++  unsigned long getHeldTime() const { return heldMs; }
++};
++using B = MappedInputManager::Button;
++// GfxRenderer::drawTextRotated90CW maps glyph right to screen up (screenY = base - glyphX),
++// so a chevron's on-screen direction is its glyph direction turned a quarter left.
++const char* shownDirection(const char* label) {
++  const std::string s = label;
++  return s == ">" ? "up" : s == "<" ? "down" : s == "v" ? "right" : s == "^" ? "left" : "?";
++}
++struct Gui {
++  std::string top, bottom;
++  void drawSideButtonHints(int, const char* t, const char* b) { top = t; bottom = b; }
++} GUI;
++const int renderer = 0;
++struct KeyboardEntryActivity {
++  InputType inputType = InputType::Password;
++  bool cursorMode = false, togglePos = false, passwordVisible = false, hintVisible = false;
++  bool upHeld = false, upLongHandled = false, downHeld = false, downLongHandled = false;
++  bool confirmHeld = false, confirmLongHandled = false;
++  int selRow = 0, selCol = 0;
++  unsigned long hintShowTime = 0;
++  std::vector<int> activated;
++  int cancels = 0, alts = 0;
++  MappedInputManager mappedInput;
++  static constexpr unsigned long LONG_PRESS_MS = 500, DEL_LONG_PRESS_MS = 1500;
++  const fui::KeyboardLayout* layoutOverride = nullptr;
++  const fui::KeyboardLayout& currentLayout() const {
++    if (layoutOverride) return *layoutOverride;
++    return fui::builtinKeyboardLayout(fui::KeyboardLayoutId::QwertyEn, false, false, true, true);
++  }
++  void requestUpdate() {}
++  void onCancel() { ++cancels; }
++  bool activateValue(int16_t value, bool) { activated.push_back(value); return true; }
++  bool clearAllOrAltOnSelected() { ++alts; return true; }
++  @DECLARATIONS@
++  void step(unsigned pressed, unsigned released, unsigned held, unsigned long heldMs) {
++    mappedInput = {pressed, released, held, heldMs};
++    @VERTICAL@
++    @CONFIRM_BACK@
++  }
++  void tap(B b) { step(MappedInputManager::bit(b), MappedInputManager::bit(b), 0, 40); }
++  // A logical hold: emitted once the classifier threshold passes, then released.
++  void hold(B b, unsigned long releaseAfterMs) {
++    const unsigned m = MappedInputManager::bit(b);
++    step(m, 0, m, 0);
++    step(0, 0, m, releaseAfterMs);
++    step(0, m, 0, releaseAfterMs);
++  }
++  int16_t selected() const { return selectedKey()->value; }
++  void drawHints() {
++    @HINTS@
++  }
++};
++@METHODS@
++fui::KeyboardKey syntheticKeys[12];
++fui::KeyboardRow syntheticRows[5];
++fui::KeyboardLayout synthetic(std::initializer_list<int> counts) {
++  for (int i = 0; i < 12; ++i) syntheticKeys[i].value = static_cast<int16_t>(100 + i);
++  int r = 0;
++  for (int count : counts) syntheticRows[r++] = fui::KeyboardRow{syntheticKeys, static_cast<uint8_t>(count)};
++  return fui::KeyboardLayout{syntheticRows, static_cast<uint8_t>(r)};
++}
++void checkValid(const KeyboardEntryActivity& kb) {
++  const auto& layout = kb.currentLayout();
++  assert(kb.selRow >= 0 && kb.selRow < layout.rowCount);
++  assert(kb.selCol >= 0 && kb.selCol < layout.rows[kb.selRow].count);
++  assert(kb.selectedKey() == &layout.rows[kb.selRow].keys[kb.selCol]);
++}
++int main() {
++  KeyboardEntryActivity kb;
++  const auto& layout = kb.currentLayout();
++  assert(layout.rowCount >= 4);
++#if FREEINK_DEVICE_PAPERDIY
++  // Tap A cycles within the current row only: 1 2 3 ... last 1 2 ...
++  bool seenDelete = false, seenShift = false, seenMode = false, seenLang = false, seenSpace = false, seenOk = false,
++       seenDigit = false, seenLetter = false;
++  for (int r = 0; r < layout.rowCount; ++r) {
++    kb.selRow = r; kb.selCol = 0;
++    const int count = layout.rows[r].count;
++    for (int i = 1; i <= 3 * count; ++i) {
++      const int16_t v = kb.selected();
++      seenDelete |= v == fui::QWERTY_KEY_BACKSPACE;
++      seenShift |= v == fui::QWERTY_KEY_SHIFT;
++      seenMode |= v == fui::QWERTY_KEY_MODE;
++      seenLang |= v == fui::QWERTY_KEY_LANG;
++      seenSpace |= v == fui::QWERTY_KEY_SPACE;
++      seenOk |= v == fui::QWERTY_KEY_ENTER;
++      seenDigit |= v == '7';
++      seenLetter |= v == 'p';
++      kb.tap(B::Up);
++      checkValid(kb);
++      assert(kb.selRow == r && kb.selCol == i % count);
++    }
++  }
++  assert(seenDelete && seenShift && seenMode && seenLang && seenSpace && seenOk && seenDigit && seenLetter);
++  // Tap B keeps the column and moves to the next row that has it, wrapping to the top.
++  for (int r = 0; r < layout.rowCount; ++r) {
++    for (int c = 0; c < layout.rows[r].count; ++c) {
++      int rowsWithColumn = 0;
++      for (int k = 0; k < layout.rowCount; ++k) rowsWithColumn += c < layout.rows[k].count;
++      kb.selRow = r; kb.selCol = c;
++      for (int i = 1; i <= rowsWithColumn; ++i) {
++        const int from = kb.selRow;
++        kb.tap(B::Down);
++        checkValid(kb);
++        assert(kb.selCol == c);
++        for (int k = (from + 1) % layout.rowCount; k != kb.selRow; k = (k + 1) % layout.rowCount)
++          assert(c >= layout.rows[k].count);  // only rows without the column are skipped
++      }
++      assert(kb.selRow == r);  // one full cycle through the rows that have this column
++    }
++  }
++  // Rows of 10, 7, 10, 9 and 3 keys: column 9 skips the 7-, 9- and 3-key rows.
++  auto mixed = synthetic({10, 7, 10, 9, 3});
++  kb.layoutOverride = &mixed;
++  kb.selRow = 0; kb.selCol = 9;
++  kb.tap(B::Down); assert(kb.selRow == 2 && kb.selCol == 9);
++  kb.tap(B::Down); assert(kb.selRow == 0 && kb.selCol == 9);
++  kb.selRow = 3; kb.selCol = 8;
++  kb.tap(B::Down); assert(kb.selRow == 0 && kb.selCol == 8);
++  kb.selRow = 4; kb.selCol = 2;
++  kb.tap(B::Down); assert(kb.selRow == 0 && kb.selCol == 2);
++  // A column only the current row has: B leaves the selection where it is.
++  auto unique = synthetic({12, 10, 10});
++  kb.layoutOverride = &unique;
++  kb.selRow = 0; kb.selCol = 11;
++  kb.tap(B::Down); assert(kb.selRow == 0 && kb.selCol == 11);
++  kb.tap(B::Up); assert(kb.selRow == 0 && kb.selCol == 0);
++  // A stale column left by a layer change is clamped into the row first.
++  kb.selRow = 1; kb.selCol = 11;
++  kb.tap(B::Up); checkValid(kb); assert(kb.selRow == 1 && kb.selCol == 0);
++  kb.selRow = 1; kb.selCol = 11;
++  kb.tap(B::Down); checkValid(kb); assert(kb.selRow == 2 && kb.selCol == 9);
++  kb.layoutOverride = nullptr;
++#else
++  kb.selRow = 1; kb.selCol = 0;
++  kb.tap(B::Up);
++  assert(kb.selRow == 0 && kb.selCol == 0);
++  kb.tap(B::Up);
++  assert(kb.selRow == layout.rowCount - 1);
++  // Short Down keeps the existing proportional column mapping and wrap.
++  kb.selRow = 0; kb.selCol = 3;
++  kb.tap(B::Down);
++  assert(kb.selRow == 1 && kb.selCol == 3 * layout.rows[1].count / layout.rows[0].count);
++  kb.selRow = layout.rowCount - 1; kb.selCol = 0;
++  kb.tap(B::Down);
++  assert(kb.selRow == 0 && kb.selCol == 0);
++#endif
++  // Taps never type, cancel or insert alternates.
++  assert(kb.activated.empty() && kb.cancels == 0 && kb.alts == 0);
++
++  // Hold B types the selected key exactly once; the selection stays put.
++  kb.selRow = 1; kb.selCol = 2;
++  const int16_t picked = kb.selected();
++  kb.hold(B::Confirm, 100);
++  assert(kb.activated.size() == 1 && kb.activated[0] == picked);
++  assert(kb.selRow == 1 && kb.selCol == 2 && kb.cancels == 0);
++  // Hold A cancels once without moving or typing.
++  kb.hold(B::Back, 100);
++  assert(kb.cancels == 1 && kb.activated.size() == 1 && kb.selRow == 1 && kb.selCol == 2);
++  // Taps after holds still move exactly one step.
++  kb.tap(B::Up);
++  kb.tap(B::Down);
++  assert(kb.activated.size() == 1 && kb.cancels == 1 && kb.alts == 0);
++#if FREEINK_DEVICE_PAPERDIY
++  assert(kb.selRow == 2 && kb.selCol == 3);
++#else
++  assert(kb.selRow == 1 && kb.selCol == 2 * layout.rows[1].count / layout.rows[0].count);
++#endif
++  kb.drawHints();
++#if FREEINK_DEVICE_PAPERDIY
++  assert(std::string(shownDirection(GUI.top.c_str())) == "right");
++  assert(std::string(shownDirection(GUI.bottom.c_str())) == "down");
++#else
++  assert(GUI.top == ">" && GUI.bottom == "<");
++#endif
++  std::puts("ok");
++}
++'''
++for name, code in {"DECLARATIONS": declarations, "VERTICAL": vertical, "HINTS": hints, "CONFIRM_BACK": confirm_back,
++                   "METHODS": "\n".join(methods)}.items():
++    harness = harness.replace("@" + name + "@", code)
++
++with tempfile.TemporaryDirectory(prefix="paperdiy-keyboard-", dir=os.environ.get("TMPDIR")) as directory:
++    work = Path(directory)
++    cpp = work / "keyboard.cpp"
++    cpp.write_text(harness, encoding="utf-8")
++    for paperdiy in (1, 0):
++        binary = work / f"keyboard{paperdiy}{'.exe' if os.name == 'nt' else ''}"
++        subprocess.run(["c++", "-std=c++20", f"-DFREEINK_DEVICE_PAPERDIY={paperdiy}",
++                        f"-I{UI / 'include'}", str(cpp), str(UI / "src/FreeInkUI.cpp"), "-o", str(binary)],
++                       check=True)
++        subprocess.run([str(binary)], check=True)
++print("PaperDIY A cycles within the row, B cycles within the column, holds keep Back/Confirm, hints show right/down; other boards unchanged")

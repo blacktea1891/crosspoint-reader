@@ -1,0 +1,10 @@
+{
+  "firmware_repository": "prateek/crosspoint-reader",
+  "firmware_base": "268216cdc3f5e7c5a016f476f57fa26d75047ebb",
+  "sdk_base": "5663993f2c69a28efaddaefb7e4bf9e9899ef229",
+  "target": "paperdiy",
+  "firmware_patch_sha256": "43bc7993b693eece4770df5cd7d443a7f53b7ba9f9da69798a0094f81cb03e38",
+  "scope": "Port CrossMux row/right and column/down keyboard navigation, preserve Back/Confirm; no SDK changes",
+  "physical_keyboard_validation": "pending",
+  "user_requested_github_actions": true
+}
