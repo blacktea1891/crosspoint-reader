@@ -1,5 +1,5 @@
 diff --git a/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp b/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp
-index eef99ef..e5f8f19 100644
+index eef99ef..f193d1c 100644
 --- a/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp
 +++ b/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp
 @@ -5,6 +5,10 @@
@@ -20,9 +20,9 @@ index eef99ef..e5f8f19 100644
 +#if FREEINK_DEVICE_PAPERDIY
 +// Clip the transfer as well as the refresh. display(x,y,w,h) alone is not
 +// sufficient: Panel_EPD unions its explicit rectangle with all pending writes.
-+void pushCanvasRegion(const detail::LgfxUiRect& rect) {
++void pushCanvasRegion(const detail::LgfxUiRect& rect, lgfx::epd_mode::epd_mode_t mode) {
 +  g_dev.waitDisplay();
-+  g_dev.setEpdMode(lgfx::epd_mode::epd_text);
++  g_dev.setEpdMode(mode);
 +  g_dev.setAutoDisplay(false);
 +  g_dev.setClipRect(rect.x, rect.y, rect.w, rect.h);
 +  g_canvas->pushSprite(0, 0);
@@ -36,30 +36,32 @@ index eef99ef..e5f8f19 100644
  // Re-tag every pixel so the clean-bank refresh that follows scrubs the whole
  // screen rather than only the ink.
  //
-@@ -343,6 +363,10 @@ PanelGeometry LgfxEpdDriver::geometry() const {
+@@ -343,6 +363,11 @@ PanelGeometry LgfxEpdDriver::geometry() const {
  
  void LgfxEpdDriver::begin(EpdBus &bus) {
    (void)bus;
 +#if FREEINK_DEVICE_PAPERDIY
 +  _uiBaselineValid = false;
 +  _committed = false;
++  _pendingUi.clear();
 +#endif
  #if FREEINK_DRIVER_LGFX_EPD
    g_hooks = &_cfg.power;
    g_dev.setup(_cfg, BoardConfig::ACTIVE.displayWidth,
-@@ -362,6 +386,11 @@ void LgfxEpdDriver::display(EpdBus &bus, const uint8_t *fb, const uint8_t *prev,
+@@ -362,6 +387,12 @@ void LgfxEpdDriver::display(EpdBus &bus, const uint8_t *fb, const uint8_t *prev,
                              RefreshMode mode, bool turnOff) {
    (void)bus;
    (void)prev;
 +#if FREEINK_DEVICE_PAPERDIY
 +  _committed = false;
 +  _uiBaselineValid = false;
++  _pendingUi.clear();
 +  if (!fb || !g_canvas || !g_canvas->getBuffer()) return;
 +#endif
  #if FREEINK_DRIVER_LGFX_EPD
    fillCanvasBW(fb); // expand the 1-bpp frame into the gray canvas
    const auto epdMode = epdModeFor(mode);
-@@ -369,6 +398,10 @@ void LgfxEpdDriver::display(EpdBus &bus, const uint8_t *fb, const uint8_t *prev,
+@@ -369,6 +400,10 @@ void LgfxEpdDriver::display(EpdBus &bus, const uint8_t *fb, const uint8_t *prev,
      normalizeForCleanBank();
    g_lastBaseEpdMode = epdMode;
    pushCanvas(g_lastBaseEpdMode);
@@ -70,7 +72,7 @@ index eef99ef..e5f8f19 100644
    if (turnOff)
      g_dev.sleep();
  #else
-@@ -378,6 +411,48 @@ void LgfxEpdDriver::display(EpdBus &bus, const uint8_t *fb, const uint8_t *prev,
+@@ -378,6 +413,80 @@ void LgfxEpdDriver::display(EpdBus &bus, const uint8_t *fb, const uint8_t *prev,
  #endif
  }
  
@@ -85,6 +87,7 @@ index eef99ef..e5f8f19 100644
 +  _committed = false;
 +  if (!fb || !g_canvas || !g_canvas->getBuffer()) {
 +    _uiBaselineValid = false;
++    _pendingUi.clear();
 +    return;
 +  }
 +  if (!_uiBaselineValid) {
@@ -100,38 +103,70 @@ index eef99ef..e5f8f19 100644
 +    return;
 +  }
 +  if (regions.count != 0) {
++    if (!_pendingUi.add(regions, g_h)) {
++      display(bus, fb, prev, RefreshMode::Half, turnOff);
++      return;
++    }
 +    fillCanvasBW(fb);
 +    uint32_t pixels = 0;
 +    for (uint8_t i = 0; i < regions.count; ++i) {
-+      pushCanvasRegion(regions.rects[i]);
++      pushCanvasRegion(regions.rects[i], lgfx::epd_mode::epd_fast);
 +      pixels += regions.rects[i].area();
 +    }
-+    g_lastBaseEpdMode = lgfx::epd_mode::epd_text;
-+    Serial.printf("[LgfxEpd] UI local clean: %u regions, %u pixels\n", regions.count,
++    g_lastBaseEpdMode = lgfx::epd_mode::epd_fast;
++    Serial.printf("[LgfxEpd] UI fast: %u regions, %u pixels; cleanup deferred\n", regions.count,
 +                  static_cast<unsigned>(pixels));
 +  }
 +  // Identical targets need no waveform. The known displayed frame is retained.
 +  _committed = true;
 +  if (turnOff) g_dev.sleep();
 +}
++
++void LgfxEpdDriver::runMaintenance(EpdBus& bus) {
++  (void)bus;
++  if (!hasPendingMaintenance()) return;
++  if (!g_canvas || !g_canvas->getBuffer()) {
++    _pendingUi.clear();
++    _uiBaselineValid = false;
++    return;
++  }
++  uint8_t band = 0;
++  detail::LgfxUiRect rect{};
++  unsigned count = 0;
++  uint32_t pixels = 0;
++  const uint32_t generation = _uiAbortGeneration.load(std::memory_order_relaxed);
++  while (_pendingUi.next(band, g_h, rect)) {
++    // A running waveform finishes; input may defer the remaining rectangles.
++    if (generation != _uiAbortGeneration.load(std::memory_order_relaxed)) return;
++    pushCanvasRegion(rect, lgfx::epd_mode::epd_text);
++    g_lastBaseEpdMode = lgfx::epd_mode::epd_text;
++    ++count;
++    pixels += rect.area();
++  }
++  if (generation != _uiAbortGeneration.load(std::memory_order_relaxed)) return;
++  _pendingUi.clear();
++  g_lastBaseEpdMode = lgfx::epd_mode::epd_text;
++  Serial.printf("[LgfxEpd] UI idle clean: %u regions, %u pixels\n", count, static_cast<unsigned>(pixels));
++}
 +#endif
 +
  void LgfxEpdDriver::copyGrayscaleLsb(EpdBus &bus, const uint8_t *lsb) {
    (void)bus;
  #if FREEINK_DRIVER_LGFX_EPD
-@@ -422,6 +497,11 @@ void LgfxEpdDriver::displayGray(EpdBus &bus, const uint8_t *fb, bool turnOff,
+@@ -422,6 +531,12 @@ void LgfxEpdDriver::displayGray(EpdBus &bus, const uint8_t *fb, bool turnOff,
    (void)bus;
    (void)lut;
    (void)factoryMode;
 +#if FREEINK_DEVICE_PAPERDIY
 +  _committed = false;
 +  _uiBaselineValid = false;
++  _pendingUi.clear();
 +  if (!g_canvas || !g_canvas->getBuffer() || !g_lsb || !g_msb) return;
 +#endif
  #if FREEINK_DRIVER_LGFX_EPD
    (void)
        fb; // the canvas from the base push IS the base; see overlayCanvasGray()
-@@ -432,6 +512,9 @@ void LgfxEpdDriver::displayGray(EpdBus &bus, const uint8_t *fb, bool turnOff,
+@@ -432,6 +547,9 @@ void LgfxEpdDriver::displayGray(EpdBus &bus, const uint8_t *fb, bool turnOff,
    // while display() maps HALF/FULL to epd_text, so a page refreshed with either
    // of those flashed when its AA pass ran.
    pushCanvas(g_lastBaseEpdMode);
@@ -141,7 +176,7 @@ index eef99ef..e5f8f19 100644
    if (turnOff)
      g_dev.sleep();
  #else
-@@ -442,6 +525,11 @@ void LgfxEpdDriver::displayGray(EpdBus &bus, const uint8_t *fb, bool turnOff,
+@@ -442,6 +560,12 @@ void LgfxEpdDriver::displayGray(EpdBus &bus, const uint8_t *fb, bool turnOff,
  
  void LgfxEpdDriver::cleanupGrayscaleBuffers(EpdBus &bus, const uint8_t *bw) {
    (void)bus;
@@ -149,21 +184,23 @@ index eef99ef..e5f8f19 100644
 +  // This rewrites the host canvas without a physical refresh, so it cannot be
 +  // used as an optical baseline for a subsequent UI comparison.
 +  _uiBaselineValid = false;
++  _pendingUi.clear();
 +#endif
  #if FREEINK_DRIVER_LGFX_EPD
    if (!bw)
      return;
-@@ -453,6 +541,9 @@ void LgfxEpdDriver::cleanupGrayscaleBuffers(EpdBus &bus, const uint8_t *bw) {
+@@ -453,6 +577,10 @@ void LgfxEpdDriver::cleanupGrayscaleBuffers(EpdBus &bus, const uint8_t *bw) {
  
  void LgfxEpdDriver::deepSleep(EpdBus &bus) {
    (void)bus;
 +#if FREEINK_DEVICE_PAPERDIY
 +  _uiBaselineValid = false;
++  _pendingUi.clear();
 +#endif
  #if FREEINK_DRIVER_LGFX_EPD
    g_dev.sleep();
  #endif
-@@ -470,6 +561,12 @@ PanelDriver &lgfxEpdDriver() {
+@@ -470,6 +598,12 @@ PanelDriver &lgfxEpdDriver() {
    static LgfxEpdDriver instance(lilygoT5S3LgfxConfig());
    return instance;
  }
@@ -177,10 +214,22 @@ index eef99ef..e5f8f19 100644
  const LgfxEpdConfig &m5PaperS3LgfxConfig();
  PanelDriver &lgfxEpdDriver() {
 diff --git a/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.h b/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.h
-index 8bf2b00..bb7ab38 100644
+index 8bf2b00..28261b8 100644
 --- a/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.h
 +++ b/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.h
-@@ -37,6 +37,11 @@ class LgfxEpdDriver : public PanelDriver {
+@@ -22,6 +22,11 @@
+ #include <LgfxEpdConfig.h>
+ 
+ #include "PanelDriver.h"
++#if FREEINK_DEVICE_PAPERDIY
++#include <atomic>
++
++#include "LgfxUiRegions.h"
++#endif
+ 
+ namespace freeink {
+ 
+@@ -37,6 +42,14 @@ class LgfxEpdDriver : public PanelDriver {
    void begin(EpdBus& bus) override;
    void deepSleep(EpdBus& bus) override;
    void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
@@ -188,17 +237,22 @@ index 8bf2b00..bb7ab38 100644
 +  void displayWithContext(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
 +                          RefreshContext context) override;
 +  bool displayCommitted() const override { return _committed; }
++  bool hasPendingMaintenance() const override { return _uiBaselineValid && _pendingUi.pending(); }
++  void runMaintenance(EpdBus& bus) override;
++  void abortPostRefresh() override { _uiAbortGeneration.fetch_add(1, std::memory_order_relaxed); }
 +#endif
  
    // 16-gray path: the facade streams LSB/MSB 1-bpp planes (whole or in strips);
    // displayGray combines them with the B/W base into the panel's 8-bit gray canvas.
-@@ -53,6 +58,10 @@ class LgfxEpdDriver : public PanelDriver {
+@@ -53,6 +66,12 @@ class LgfxEpdDriver : public PanelDriver {
  
   private:
    const LgfxEpdConfig& _cfg;
 +#if FREEINK_DEVICE_PAPERDIY
 +  bool _uiBaselineValid = false;
 +  bool _committed = false;
++  detail::LgfxUiDirtyBands _pendingUi;
++  std::atomic<uint32_t> _uiAbortGeneration{0};
 +#endif
  };
  
@@ -415,7 +469,7 @@ diff --git a/libs/display/FreeInkDisplay/src/driver/LgfxUiRegions.h b/libs/displ
 new file mode 100644
 --- /dev/null
 +++ b/libs/display/FreeInkDisplay/src/driver/LgfxUiRegions.h
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,135 @@
 +#pragma once
 +
 +#include <algorithm>
@@ -496,6 +550,57 @@ new file mode 100644
 +    }
 +    return result;
 +  }
++};
++
++// Retain the union of every visited region, including an A->B->A round trip.
++// Native bands need 128 bytes, rather than another old-frame allocation.
++class LgfxUiDirtyBands {
++ public:
++  bool pending() const { return _pending; }
++  void clear() {
++    _ranges = {};
++    _pending = false;
++  }
++  bool add(const LgfxUiRegions& regions, uint16_t height) {
++    if ((height + 31u) / 32u > _ranges.size()) return false;
++    for (uint8_t i = 0; i < regions.count; ++i) {
++      const auto& rect = regions.rects[i];
++      for (uint16_t band = rect.y / 32; band < (rect.y + rect.h + 31u) / 32u; ++band) {
++        auto& range = _ranges[band];
++        range.left = range.right == 0 ? rect.x : std::min(range.left, rect.x);
++        range.right = std::max<uint16_t>(range.right, rect.x + rect.w);
++        _pending = true;
++      }
++    }
++    return true;
++  }
++  bool next(uint8_t& band, uint16_t height, LgfxUiRect& rect) const {
++    const uint16_t count = (height + 31u) / 32u;
++    if (count > _ranges.size()) return false;
++    while (band < count && _ranges[band].right == 0) ++band;
++    if (band >= count) return false;
++    const auto first = _ranges[band];
++    const uint16_t y = band * 32;
++    rect = {first.left, y, static_cast<uint16_t>(first.right - first.left), std::min<uint16_t>(32, height - y)};
++    while (++band < count && _ranges[band].right != 0) {
++      const auto range = _ranges[band];
++      const uint16_t rows = std::min<uint16_t>(32, height - band * 32);
++      const uint16_t left = std::min(rect.x, range.left);
++      const uint16_t right = std::max<uint16_t>(rect.x + rect.w, range.right);
++      const uint32_t sum = rect.area() + static_cast<uint32_t>(range.right - range.left) * rows;
++      const uint32_t joined = static_cast<uint32_t>(right - left) * (rect.h + rows);
++      if (joined > sum + sum / 4) break;
++      rect = {left, rect.y, static_cast<uint16_t>(right - left), static_cast<uint16_t>(rect.h + rows)};
++    }
++    return true;
++  }
++
++ private:
++  struct Range {
++    uint16_t left = 0, right = 0;
++  };
++  std::array<Range, 32> _ranges{};
++  bool _pending = false;
 +};
 +
 +}  // namespace detail

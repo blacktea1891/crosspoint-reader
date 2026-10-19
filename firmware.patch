@@ -39,6 +39,41 @@ index a4b35fd7..8afdda5d 100644
  STR_FILE_TRANSFER: "文件传输"
  STR_APPS_TITLE: "应用"
  STR_APP_VISIBILITY: "隐藏应用"
+diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
+index 2d854fe5..ec606ed4 100644
+--- a/lib/hal/HalDisplay.cpp
++++ b/lib/hal/HalDisplay.cpp
+@@ -219,6 +219,12 @@ void HalDisplay::cancelGrayscale() {
+ 
+ bool HalDisplay::displayCommitted() const { return einkDisplay.displayCommitted(); }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++bool HalDisplay::hasPendingMaintenance() const { return einkDisplay.hasPendingMaintenance(); }
++void HalDisplay::runMaintenance() { einkDisplay.runMaintenance(); }
++void HalDisplay::deferUiMaintenance() { einkDisplay.abortPostRefresh(); }
++#endif
++
+ uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
+ 
+ uint16_t HalDisplay::getDisplayHeight() const { return einkDisplay.getDisplayHeight(); }
+diff --git a/lib/hal/HalDisplay.h b/lib/hal/HalDisplay.h
+index 68001659..5b550ddd 100644
+--- a/lib/hal/HalDisplay.h
++++ b/lib/hal/HalDisplay.h
+@@ -148,6 +148,13 @@ class HalDisplay {
+   bool canUseTextTransition() const;
+   void cancelGrayscale();
+   bool displayCommitted() const;
++#if FREEINK_DEVICE_PAPERDIY
++  bool hasPendingMaintenance() const;
++  // Called only by the render task while it holds RenderLock and the power lock.
++  void runMaintenance();
++  // Lock-free input cancellation; never interrupts a running panel waveform.
++  void deferUiMaintenance();
++#endif
+ 
+   // Runtime geometry passthrough — the authoritative source for every layout
+   // decision (GfxRenderer reads exactly these in its begin()). Prefer them over
 diff --git a/lib/hal/HalGPIO.cpp b/lib/hal/HalGPIO.cpp
 index 4aeb2553..de687d8b 100644
 --- a/lib/hal/HalGPIO.cpp
@@ -307,6 +342,62 @@ index 109cd50f..89efbf0c 100644
      def test_home_grid_repairs_empty_xtc_and_preserves_epub_markers(self):
          home = (ROOT / 'src/activities/home/HomeActivity.cpp').read_text()
          ui = (ROOT / 'src/components/UITheme.cpp').read_text()
+diff --git a/src/activities/ActivityManager.cpp b/src/activities/ActivityManager.cpp
+index 8acbec08..951b474c 100644
+--- a/src/activities/ActivityManager.cpp
++++ b/src/activities/ActivityManager.cpp
+@@ -95,8 +95,16 @@ void ActivityManager::renderTaskTrampoline(void* param) {
+ void ActivityManager::renderTaskLoop() {
+   auto waitTicks = portMAX_DELAY;
+   uint32_t idleGeneration = 0;
++#if FREEINK_DEVICE_PAPERDIY
++  bool uiIdleWait = false;
++  uint32_t uiIdleGeneration = 0;
++#endif
+   while (true) {
+     const bool foreground = ulTaskNotifyTake(pdTRUE, waitTicks) != 0;
++#if FREEINK_DEVICE_PAPERDIY
++    const bool serviceUi = uiIdleWait && !foreground;
++    uiIdleWait = false;
++#endif
+     // ponytail: one idle attempt per render, including cancellations and I/O
+     // failures; re-arm after quiet input only if measured cache hit rate needs it.
+     waitTicks = portMAX_DELAY;
+@@ -111,9 +119,34 @@ void ActivityManager::renderTaskLoop() {
+         display.setInverted(SETTINGS.screenInverted != 0);
+         currentActivity->render(std::move(lock));
+         if (delayMs != 0) waitTicks = pdMS_TO_TICKS(delayMs);
++#if FREEINK_DEVICE_PAPERDIY
++        else {
++          // render() may have released the lock; reacquire before inspecting
++          // display state shared with activity teardown on the main task.
++          lock.unlock();
++          RenderLock maintenanceLock;
++          if (display.hasPendingMaintenance()) {
++            uiIdleGeneration = idleGeneration;
++            uiIdleWait = true;
++            waitTicks = pdMS_TO_TICKS(1200);
++          }
++        }
++      } else if (serviceUi) {
++        if (!idleRenderCancelled(uiIdleGeneration)) display.runMaintenance();
++#endif
+       } else if (!idleRenderCancelled(idleGeneration)) {
+         currentActivity->renderIdle(idleGeneration);
+       }
++#if FREEINK_DEVICE_PAPERDIY
++      // An input/hold cancels this attempt, but not the dirty regions. Re-arm
++      // after another quiet interval. Activity-specific idle work still runs at
++      // its own delay before this optional display maintenance.
++      if (!foreground && display.hasPendingMaintenance()) {
++        uiIdleGeneration = idleRenderGeneration.load(std::memory_order_relaxed);
++        uiIdleWait = true;
++        waitTicks = pdMS_TO_TICKS(1200);
++      }
++#endif
+     }
+     // An idle timeout must never acknowledge requestUpdateAndWait(): its
+     // notification may have arrived while the idle callback was cancelling.
 diff --git a/src/activities/home/HomeActivity.cpp b/src/activities/home/HomeActivity.cpp
 index e430f7d4..b94f67be 100644
 --- a/src/activities/home/HomeActivity.cpp
@@ -434,7 +525,7 @@ index b09baf95..9aed8188 100644
    // Handles one key activation (by stable key id). Returns true when the
    // screen needs a repaint; OK/cancel finish the activity instead.
 diff --git a/src/main.cpp b/src/main.cpp
-index 607d299a..d51ffbad 100644
+index 607d299a..59476dac 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -868,9 +868,9 @@ void setup() {
@@ -450,7 +541,26 @@ index 607d299a..d51ffbad 100644
        // X4 Pro must stay awake so USB Serial/JTAG remains available after leaving
        // USB Drive and reconnecting the cable. Paper Mono has no armable GPIO wake
        // (its button is behind the PMIC). Metalio also needs native USB available
-@@ -1243,8 +1243,8 @@ void loop() {
+@@ -1050,7 +1050,7 @@ void loop() {
+ 
+   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
+   mappedInputManager.update();
+-#if FREEINK_DEVICE_READPICO
++#if FREEINK_DEVICE_READPICO || FREEINK_DEVICE_PAPERDIY
+   // Cancel before any handler can wait for the framebuffer lock. These are
+   // snapshot queries: they do not consume the gesture from its normal owner.
+ #if CROSSPOINT_EMULATED
+@@ -1061,6 +1061,9 @@ void loop() {
+   if (mappedInputManager.wasAnyPressed() || mappedInputManager.wasAnyReleased() || physicalPress ||
+       gpio.wasTouchActivity()) {
+     activityManager.cancelIdleRender();
++#if FREEINK_DEVICE_PAPERDIY
++    display.deferUiMaintenance();
++#endif
+   }
+ #endif
+   updateBluetoothLifecycle();
+@@ -1243,8 +1246,8 @@ void loop() {
      return;
    }
  
@@ -475,10 +585,10 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..0a2a7933 100644
+index b0b49733..879d1e7c 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
-@@ -246,3 +246,7 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +246,8 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -486,6 +596,7 @@ index b0b49733..0a2a7933 100644
 +add_test(NAME PaperDiyRefreshRouting COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_routing.py)
 +add_test(NAME PaperDiyKeyboardButtons COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_buttons.py)
 +add_test(NAME PaperDiyLocalClean COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_local_clean.py)
++add_test(NAME PaperDiyIdleClean COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_idle_clean.py)
 diff --git a/test/inx_navigation/test_unified_keyboard.py b/test/inx_navigation/test_unified_keyboard.py
 index 11496463..be5f5962 100644
 --- a/test/inx_navigation/test_unified_keyboard.py
@@ -568,14 +679,15 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,141 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
-+buttons and the corrected Apps entry on this user's unit. Periodic menu cleaning
-+removed accumulated ghosting but its full-screen flashing was uncomfortable.
-+The current candidate replaces that workaround with region cleaning; optical
-+acceptance of this candidate is pending. Sleep current is unmeasured.
++buttons and the corrected Apps entry on this user's unit. The user confirmed
++immediate region cleaning leaves no residual image, but flashing the selected
++row on every move is uncomfortable. The current candidate defers that cleanup
++until interaction becomes quiet; its optical acceptance is pending. Sleep
++current is unmeasured.
 +
 +## Hardware and route
 +
@@ -675,31 +787,40 @@ new file mode 100644
 +seven-fast/one-clean normal-UI trials are superseded: there is no periodic menu
 +counter in this candidate.
 +
-+For PaperDIY only, the SDK compares a normal-context FAST target with its
-+existing 8-bit canvas. Changed pixels are collected into 32-row bands, aligned
-+to eight pixels horizontally, and adjacent bands are merged when the bounding
-+area grows by no more than 25 percent. At most eight rectangles are kept on the
-+stack (under 100 bytes); no additional framebuffer or heap allocation is added.
-+Each rectangle is transferred with clipping and cleaned with the existing stock
-+text bank. Identical frames trigger no waveform. This is local cleaning, not a
-+new gentle full-screen waveform: the affected region may still visibly blink.
++For PaperDIY only, normal-context FAST compares the next B/W frame with the
++existing 8-bit canvas. The foreground clips its FAST transfer to changed regions;
++it does not run the erasing bank for every selection. Dirty native 32-row bands
++retain the union of every visited region, including selection round trips, in
++128 bytes plus a pending flag. No extra framebuffer or dynamic allocation is
++added. Up to eight foreground rectangles are planned on the stack (<100 bytes).
++Large content changes still get one clean and reset the backlog.
 +
-+A change covering over half the panel, or exceeding the rectangle bound, gets
-+one full-frame clean. Unknown baselines after initialization, grayscale output,
-+canvas-only grayscale cleanup or deep sleep also get one clean before local UI
-+updates resume. These conservative limits are experimental, not panel calibration.
-+Reading/AA/image contexts and explicit Half/Full requests bypass the region
-+policy and retain their existing behavior. A missing canvas reports no commit;
-+M5GFX's blocking wait API does not expose a separate waveform-success result.
-+Other boards retain their original driver routing. SDK waveform tables, voltage
-+and rail sequencing are unchanged.
++The existing render task schedules optional maintenance after a 1200-ms quiet
++interval. Physical press/hold/release cancels and re-arms the quiet attempt via
++its existing idle generation. Activity-specific idle work (such as EPUB's
++400-ms cache pass) retains its original delay before display maintenance.
++Cleanup uses RenderLock and the power lock, clips both transfer and activation,
++and paints from the last committed canvas. Input during cleanup may postpone
++remaining rectangles after the current waveform finishes; no running waveform
++is interrupted. This uses an atomic cancellation generation, not a second task.
++Idle timeouts never acknowledge a foreground render waiter.
 +
-+Host tests compile the complete LGFX driver with a recording M5GFX boundary and
-+check repeated portrait/landscape menu changes, distant status changes, clipping,
-+edge coordinates, identical targets, grayscale transitions, manual cleaning,
-+canvas failure and the non-PaperDIY driver. Hardware acceptance must still check
-+home, lists, settings and keyboard navigation, reader exit and manual refresh;
-+record local/global clean logs and the user's optical observations separately.
++Identical targets request no waveform. Explicit Half/Full, reading and grayscale
++bases reset pending UI work and keep their original modes. Grayscale output,
++canvas-only cleanup and deep sleep also discard stale work and invalidate the
++UI baseline. A missing canvas reports no commit; M5GFX's blocking wait API does
++not expose a separate waveform-success result. Other boards retain their paths.
++Waveforms, voltage and rail sequencing are unchanged. A cleanup can still flash
++its affected region after the pause; it is not an invisible full-clean waveform.
++Transient residue during repeated FAST moves is possible until that cleanup.
++
++Host checks compile the complete LGFX driver against a recording M5GFX boundary,
++including foreground mode/window checks, dirty union, input interruption,
++manual/grayscale cancellation and the non-PaperDIY path. A separate harness runs
++the production ActivityManager render-loop body with controlled notifications,
++locks and input generations to check quiet re-arming, cache delay and waiter
++ownership. Hardware must still validate continuous navigation, stopped-input
++cleanup, key holds, new input during cleanup, lists/keyboard and EPUB exit.
 diff --git a/test/test_paperdiy_board_tag.py b/test/test_paperdiy_board_tag.py
 new file mode 100644
 --- /dev/null
@@ -744,6 +865,147 @@ new file mode 100644
 +                    str(work / "check.cpp"), "-o", str(executable)], check=True)
 +    subprocess.run([str(executable)], check=True)
 +print("PaperDIY board identity and wrong-board rejection passed")
+diff --git a/test/test_paperdiy_idle_clean.py b/test/test_paperdiy_idle_clean.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_idle_clean.py
+@@ -0,0 +1,136 @@
++"""Execute the production render loop with controlled notifications and input."""
++from pathlib import Path
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++source = (ROOT / "src/activities/ActivityManager.cpp").read_text(encoding="utf-8")
++start = source.index("void ActivityManager::renderTaskLoop()")
++brace = source.index("{", start)
++depth, end = 1, brace + 1
++while depth:
++    depth += (source[end] == "{") - (source[end] == "}")
++    end += 1
++loop = source[start:end]
++
++PROGRAM = r'''
++#include <atomic>
++#include <cassert>
++#include <cstdint>
++#include <utility>
++#include <vector>
++using TickType_t=uint32_t;
++using TaskHandle_t=void*;
++constexpr TickType_t portMAX_DELAY=0xffffffff;
++constexpr int pdTRUE=1,eIncrement=1;
++TickType_t pdMS_TO_TICKS(unsigned n) { return n; }
++#define taskENTER_CRITICAL(x) ((void)0)
++#define taskEXIT_CRITICAL(x) ((void)0)
++int renderLocks=0,powerLocks=0,acknowledgments=0;
++struct RenderLock {
++  bool owns=true;
++  RenderLock() { assert(renderLocks==0); ++renderLocks; }
++  ~RenderLock() { unlock(); }
++  void unlock() { if(owns) { --renderLocks; owns=false; } }
++};
++struct HalPowerManager { struct Lock { Lock(){++powerLocks;} ~Lock(){--powerLocks;} }; };
++struct { int screenInverted=0; } SETTINGS;
++struct Display {
++  bool pending=false;
++  int cleanCount=0;
++  void setInverted(bool) {}
++  bool hasPendingMaintenance() const { assert(renderLocks==1); return pending; }
++  void runMaintenance() { assert(renderLocks==1 && powerLocks==1); ++cleanCount; pending=false; }
++} display;
++struct Activity {
++  bool releasesLock=false,createsDirty=true;
++  uint32_t delay=0;
++  int renders=0,idles=0;
++  uint32_t idleRenderDelayMs() const { return delay; }
++  void render(RenderLock&& lock) {
++    ++renders; display.pending=createsDirty;
++    if(releasesLock) lock.unlock();
++  }
++  void renderIdle(uint32_t) { assert(renderLocks==1); ++idles; }
++};
++struct ActivityManager {
++  enum class PendingAction { None, Switch };
++  Activity* currentActivity=nullptr;
++  std::atomic<PendingAction> pendingAction{PendingAction::None};
++  std::atomic<uint32_t> idleRenderGeneration{0};
++  std::atomic<bool> requestedUpdate{false};
++  TaskHandle_t waitingTaskHandle=nullptr;
++  bool idleRenderCancelled(uint32_t g) const {
++    return g!=idleRenderGeneration.load() || pendingAction.load()!=PendingAction::None || requestedUpdate.load();
++  }
++  void renderTaskLoop();
++};
++struct Step { bool foreground; bool input=false,requested=false,switching=false; };
++struct Done {};
++std::vector<Step> steps;
++std::vector<TickType_t> waits;
++size_t index=0;
++ActivityManager* manager=nullptr;
++uint32_t ulTaskNotifyTake(int,TickType_t wait) {
++  assert(renderLocks==0 && powerLocks==0);
++  waits.push_back(wait);
++  if(index==steps.size()) throw Done{};
++  const auto step=steps[index++];
++  if(step.input) ++manager->idleRenderGeneration;
++  manager->requestedUpdate=step.requested;
++  manager->pendingAction=step.switching?ActivityManager::PendingAction::Switch:ActivityManager::PendingAction::None;
++  // A waiter installed during an idle pass must not be acknowledged by it.
++  manager->waitingTaskHandle=reinterpret_cast<void*>(1);
++  return step.foreground ? 1 : 0;
++}
++void xTaskNotify(TaskHandle_t,int,int) { ++acknowledgments; }
++@LOOP@
++void run(ActivityManager& m,std::initializer_list<Step> s) {
++  manager=&m; steps=s; waits.clear(); index=0; acknowledgments=0; display={};
++  try { m.renderTaskLoop(); } catch(const Done&) {}
++  assert(renderLocks==0 && powerLocks==0);
++}
++int main() {
++  for(bool release: {false,true}) {
++    Activity a; a.releasesLock=release;
++    ActivityManager m; m.currentActivity=&a;
++#if FREEINK_DEVICE_PAPERDIY
++    run(m,{{true},{true},{true},{false}});
++    assert(a.renders==3 && display.cleanCount==1 && acknowledgments==3);
++    assert(waits==std::vector<TickType_t>({portMAX_DELAY,1200,1200,1200,portMAX_DELAY}));
++    assert(m.waitingTaskHandle!=nullptr);
++    run(m,{{true},{false,true},{false,true},{false}});
++    assert(display.cleanCount==1 && acknowledgments==1);
++    assert(waits==std::vector<TickType_t>({portMAX_DELAY,1200,1200,1200,portMAX_DELAY}));
++    run(m,{{true},{false,false,true},{true}});
++    assert(display.cleanCount==0 && acknowledgments==2);
++    run(m,{{true},{false,false,false,true}});
++    assert(display.cleanCount==0 && acknowledgments==1);
++    // An activity's existing 400-ms idle hook precedes UI maintenance.
++    a.delay=400; a.idles=0;
++    run(m,{{true},{false},{false}});
++    assert(a.idles==1 && display.cleanCount==1);
++    assert(waits==std::vector<TickType_t>({portMAX_DELAY,400,1200,portMAX_DELAY}));
++#endif
++    // Reader cache idle scheduling and boards without this policy are preserved.
++    a.delay=400; a.createsDirty=false; a.idles=0;
++    run(m,{{true},{false}});
++    assert(a.idles==1 && display.cleanCount==0 && acknowledgments==1);
++    assert(waits==std::vector<TickType_t>({portMAX_DELAY,400,portMAX_DELAY}));
++    a.delay=0;
++    run(m,{{true}});
++    assert(waits==std::vector<TickType_t>({portMAX_DELAY,portMAX_DELAY}));
++  }
++}
++'''.replace("@LOOP@", loop)
++
++with tempfile.TemporaryDirectory(prefix="paperdiy-idle-loop-") as directory:
++    work = Path(directory)
++    cpp = work / "check.cpp"
++    cpp.write_text(PROGRAM, encoding="utf-8")
++    for enabled in (1, 0):
++        binary = work / f"check-{enabled}"
++        subprocess.run(["c++", "-std=c++20", "-Wall", "-Wextra", "-Werror",
++                        f"-DFREEINK_DEVICE_PAPERDIY={enabled}", str(cpp), "-o", str(binary)], check=True)
++        subprocess.run([str(binary)], check=True)
++print("Production render loop: quiet cleanup, held/input postponement, lock ownership, waiter safety and reader idle passed")
 diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboard_buttons.py
 new file mode 100644
 --- /dev/null
@@ -1005,7 +1267,7 @@ diff --git a/test/test_paperdiy_local_clean.py b/test/test_paperdiy_local_clean.
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_local_clean.py
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,305 @@
 +"""Compile the complete LGFX driver against a recording M5GFX boundary."""
 +from pathlib import Path
 +import os
@@ -1043,6 +1305,7 @@ new file mode 100644
 +inline std::vector<uint8_t> glass;
 +inline bool missingCanvas = false;
 +inline int sleeps = 0;
++inline void (*afterUpdate)() = nullptr;
 +struct Bus_EPD {
 +  struct Config { int bus_speed=0, pin_data[8]{},pin_pwr=0,pin_sph=0,pin_spv=0,pin_oe=0,pin_le=0,pin_cl=0,pin_ckv=0,bus_width=0; };
 +  Config value;
@@ -1110,6 +1373,7 @@ new file mode 100644
 +    for(int row=dirty.y;row<dirty.y+dirty.h;++row)
 +      for(int col=dirty.x;col<dirty.x+dirty.w;++col) glass[row*width()+col]=buffer[row*width()+col];
 +    pending=false;
++    if(afterUpdate) afterUpdate();
 +  }
 +};
 +class LGFX_Sprite {
@@ -1140,6 +1404,10 @@ new file mode 100644
 +const LgfxEpdConfig& config() { static const LgfxEpdConfig c{}; return c; }
 +namespace freeink { const LgfxEpdConfig& paperDiyLgfxConfig() { return config(); } }
 +namespace freeink { const LgfxEpdConfig& m5PaperS3LgfxConfig() { return config(); } }
++#if FREEINK_DEVICE_PAPERDIY
++LgfxEpdDriver* cancelDriver=nullptr;
++void interruptClean() { lgfx::afterUpdate=nullptr; cancelDriver->abortPostRefresh(); }
++#endif
 +void paint(int x,int y,int w,int h,bool white) {
 +  for(int row=y;row<y+h;++row) for(int col=x;col<x+w;++col) {
 +    auto& b=frame[row*(W/8)+col/8]; const uint8_t mask=0x80>>(col%8);
@@ -1156,11 +1424,11 @@ new file mode 100644
 +  assert(u.rect.x==0 && u.rect.y==0 && u.rect.w==W && u.rect.h==H);
 +  assert(u.mode==lgfx::epd_mode::epd_text);
 +}
-+void localOnly() {
++void localOnly(lgfx::epd_mode::epd_mode_t mode=lgfx::epd_mode::epd_fast) {
 +  assert(!lgfx::updates.empty() && lgfx::updates.size()<=8);
 +  int area=0;
 +  for(const auto u:lgfx::updates) {
-+    assert(u.mode==lgfx::epd_mode::epd_text);
++    assert(u.mode==mode);
 +    assert(u.rect.x%8==0 && u.rect.w%8==0);
 +    assert(u.rect.x>=0 && u.rect.y>=0 && u.rect.x+u.rect.w<=W && u.rect.y+u.rect.h<=H);
 +    area+=u.rect.w*u.rect.h;
@@ -1174,6 +1442,7 @@ new file mode 100644
 +  frame.fill(255);
 +  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
 +#if FREEINK_DEVICE_PAPERDIY
++  static_assert(sizeof(detail::LgfxUiDirtyBands)<=132);
 +  fullClean(); assert(d.displayCommitted());
 +  lgfx::updates.clear();
 +  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
@@ -1187,6 +1456,26 @@ new file mode 100644
 +    d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
 +    localOnly();
 +  }
++  // All visited strips survive until one idle pass, even after returning to an
++  // earlier selection. This is not just a diff against the last clean image.
++  assert(d.hasPendingMaintenance()); lgfx::updates.clear(); d.runMaintenance(bus);
++  assert(!d.hasPendingMaintenance() && !lgfx::updates.empty());
++  for(const auto u:lgfx::updates) assert(u.mode==lgfx::epd_mode::epd_text);
++  for(int x=0;x<400;x+=72) {
++    bool covered=false;
++    for(const auto u:lgfx::updates) covered|=x>=u.rect.x && x<u.rect.x+u.rect.w;
++    assert(covered);
++  }
++  equalFrame(); lgfx::updates.clear(); d.runMaintenance(bus); assert(lgfx::updates.empty());
++  // Input during a waveform leaves the remaining work queued. It may stop
++  // between rectangles, never halfway through a panel waveform.
++  paint(0,0,8,8,false); paint(900,500,8,8,false);
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++  lgfx::updates.clear(); cancelDriver=&d; lgfx::afterUpdate=interruptClean;
++  d.runMaintenance(bus);
++  assert(lgfx::updates.size()==1 && d.hasPendingMaintenance());
++  lgfx::updates.clear(); d.runMaintenance(bus);
++  assert(!d.hasPendingMaintenance()); equalFrame();
 +  // A distant status icon must not expand a selection change into a full-screen
 +  // bounding rectangle. Both changed islands are covered.
 +  paint(old,0,40,H,true); paint(450,0,40,H,false); paint(900,0,8,8,false);
@@ -1207,9 +1496,17 @@ new file mode 100644
 +    d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
 +    if(!lgfx::updates.empty()) localOnly();
 +  }
++  // Pending work is discarded on a reading transition before it can touch
++  // the page, and explicit full cleaning consumes the backlog immediately.
++  assert(d.hasPendingMaintenance());
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::ContinuousReading);
++  assert(!d.hasPendingMaintenance()); lgfx::updates.clear(); d.runMaintenance(bus); assert(lgfx::updates.empty());
++  paint(100,100,8,8,false);
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
++  assert(d.hasPendingMaintenance());
 +  // Whole content replacement cleans once; identical repeats do not blink.
 +  frame.fill(0); lgfx::updates.clear();
-+  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal); fullClean();
++  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal); fullClean(); assert(!d.hasPendingMaintenance());
 +  lgfx::updates.clear(); d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,true,RefreshContext::Normal);
 +  assert(lgfx::updates.empty() && lgfx::sleeps>0);
 +  // Reading and manual modes retain full-frame requests, even for tiny changes.
@@ -1246,7 +1543,7 @@ new file mode 100644
 +  d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,RefreshContext::Normal);
 +  assert(lgfx::updates.size()==1 && lgfx::updates[0].rect.w==W && lgfx::updates[0].rect.h==H);
 +#endif
-+  std::puts("production LGFX region routing passed");
++  std::puts("production LGFX fast regions and deferred clean passed");
 +}
 +'''
 +
@@ -1275,12 +1572,12 @@ new file mode 100644
 +                        "-I" + str(work), "-I" + str(DISPLAY / "include"), "-I" + str(DISPLAY / "src"),
 +                        str(work / "check.cpp"), "-o", str(binary)], check=True)
 +        subprocess.run([str(binary)], check=True)
-+print("Local menu clean, clipping, repeated changes, grayscale, manual clean, canvas failure and non-DIY routing passed")
++print("Fast menu regions, visited-area union, deferred cleanup, grayscale/manual cancellation and non-DIY routing passed")
 diff --git a/test/test_paperdiy_refresh_routing.py b/test/test_paperdiy_refresh_routing.py
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_refresh_routing.py
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,122 @@
 +"""Compile the complete production HAL against a recording SDK boundary."""
 +from pathlib import Path
 +import subprocess
@@ -1312,6 +1609,8 @@ new file mode 100644
 +  void displayBufferAsyncNoShadow(RefreshMode mode, RefreshContext context) { records.push_back({mode,false,context,true}); }
 +  void refreshDisplay(RefreshMode mode, bool off) { displayBuffer(mode,off,RefreshContext::Normal); }
 +  bool displayCommitted() const { return committed; }
++  bool hasPendingMaintenance() const { return false; }
++  void runMaintenance() {}
 +  freeink::GrayscaleCapabilities grayscaleCapabilities(freeink::GrayscaleMode) const { return {}; }
 +  template<class... T> bool displayGrayscaleBase(T...) { return true; }
 +#define VOID_METHOD(name) template<class... T> void name(T...) const {}
