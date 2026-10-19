@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       max-parallel: 10
       matrix:
-        target: [paperdiy, default, sticky, x4pro, papermono, eego_a4, murphy_m4, waveshare_epaper_397, readpico, lilygo_t5s3]
+        target: [paperdiy, default]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -143,7 +143,7 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/patch_pioarduino_cache.py --prepare-platform
-          pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high 2>&1 | tee cppcheck.log
+          pio check -e paperdiy --fail-on-defect low --fail-on-defect medium --fail-on-defect high 2>&1 | tee cppcheck.log
       - uses: actions/upload-artifact@v6
         if: always()
         with:

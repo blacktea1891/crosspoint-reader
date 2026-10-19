@@ -27,6 +27,72 @@ index 5c2bd6bb..1d9409ee 100644
  - **阅读与书库**：EPUB、TXT、XTC/XTCH 和图片，章节导航、书签、词典、自定义字体、阅读背景，以及 KOReader 进度同步。
  - **无线功能**：浏览器传书与设置、Calibre 无线连接、OPDS 下载、WebDAV 和设备 OTA 更新。
  - **Apps 应用中心**：数独、五子棋、中国象棋、扫雷、2048、电子木鱼、Ugly Avatar 等轻量游戏与工具。[应用说明](./src/activities/apps/README.md)。
+diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
+index 2d854fe5..8b48f0f9 100644
+--- a/lib/hal/HalDisplay.cpp
++++ b/lib/hal/HalDisplay.cpp
+@@ -1,6 +1,13 @@
+ #include <HalDisplay.h>
+ #include <HalGPIO.h>
+ 
++#if FREEINK_DEVICE_PAPERDIY
++#include "PaperDiyRefreshBudget.h"
++namespace {
++PaperDiyRefreshBudget paperDiyRefreshBudget;
++}
++#endif
++
+ #if FREEINK_DEVICE_READPICO
+ #include <BoardReadPico.h>
+ #include <Logging.h>
+@@ -112,19 +119,31 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
+ }  // namespace
+ 
+ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen, DisplayRefreshContext context) {
++#if FREEINK_DEVICE_PAPERDIY
++  const bool normalContext = context == DisplayRefreshContext::Normal;
++  if (paperDiyRefreshBudget.needsClean(mode == FAST_REFRESH, normalContext)) mode = HALF_REFRESH;
++#endif
+   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
+     einkDisplay.requestResync(1);
+   }
+ 
+   einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen, convertRefreshContext(context));
++#if FREEINK_DEVICE_PAPERDIY
++  paperDiyRefreshBudget.completed(mode == FAST_REFRESH, normalContext, einkDisplay.displayCommitted());
++#endif
+ }
+ 
+ void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode, DisplayRefreshContext context) {
++#if FREEINK_DEVICE_PAPERDIY
++  // The LGFX driver is synchronous; keep both entrypoints on the same budget.
++  displayBuffer(mode, false, context);
++#else
+   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
+     einkDisplay.requestResync(1);
+   }
+ 
+   einkDisplay.displayBufferAsyncNoShadow(convertRefreshMode(mode), convertRefreshContext(context));
++#endif
+ }
+ 
+ void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
+@@ -138,11 +157,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
+ bool HalDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
+ 
+ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
++#if FREEINK_DEVICE_PAPERDIY
++  displayBuffer(mode, turnOffScreen);
++#else
+   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
+     einkDisplay.requestResync(1);
+   }
+ 
+   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
++#endif
+ }
+ 
+ void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
 diff --git a/lib/hal/HalGPIO.cpp b/lib/hal/HalGPIO.cpp
 index 4aeb2553..de687d8b 100644
 --- a/lib/hal/HalGPIO.cpp
@@ -153,13 +219,87 @@ index 89cbf2f6..fdcfe66c 100644
                          self.assertEqual(resolve(section, "board_build.arduino.memory_type"), "dio_opi")
                      else:
 diff --git a/scripts/tests/test_reading_ui_regressions.py b/scripts/tests/test_reading_ui_regressions.py
-index 109cd50f..8b077d08 100644
+index 109cd50f..34658ef0 100644
 --- a/scripts/tests/test_reading_ui_regressions.py
 +++ b/scripts/tests/test_reading_ui_regressions.py
-@@ -33,6 +33,63 @@ def run_cpp(program, include_dirs=(), defines=()):
+@@ -33,6 +33,137 @@ def run_cpp(program, include_dirs=(), defines=()):
  
  
  class ReadingUiRegressionTest(unittest.TestCase):
++    def test_paperdiy_reader_exit_cleans_next_frame_once(self):
++        reader = (ROOT / 'src/activities/reader/ReaderActivity.cpp').read_text()
++        gfx_header = (ROOT / 'lib/GfxRenderer/GfxRenderer.h').read_text()
++        gfx_source = (ROOT / 'lib/GfxRenderer/GfxRenderer.cpp').read_text()
++        program = r'''
++#include <atomic>
++#include <cassert>
++#include <cstdio>
++#include <memory>
++#include <string>
++#include <vector>
++#define LOG_INF(...) ((void)0)
++#define LOG_DBG(...) ((void)elapsed)
++struct HalDisplay { enum RefreshMode { FAST_REFRESH, HALF_REFRESH, FULL_REFRESH }; };
++enum class DisplayRefreshContext { Normal };
++struct {
++  std::vector<HalDisplay::RefreshMode> modes;
++  void displayBuffer(HalDisplay::RefreshMode mode, bool, DisplayRefreshContext) { modes.push_back(mode); }
++} display;
++unsigned long millis() { return 1; }
++struct FontCache { int releases=0; void releaseSdFontCaches() { ++releases; } } cache;
++struct GfxRenderer {
++  enum class Orientation { Portrait };
++  bool fadingFix=false;
++  unsigned long start_ms=0;
++  mutable bool nextRefreshOverridePending=false;
++  mutable HalDisplay::RefreshMode nextRefreshOverride=HalDisplay::FAST_REFRESH;
++  FontCache* getFontCacheManager() { return &cache; }
++  void setOrientation(Orientation) {}
++''' + method(gfx_header, 'void requestNextRefresh(') + method(gfx_header, 'void requestNextFullRefresh()') + r'''
++  void displayBuffer(HalDisplay::RefreshMode, DisplayRefreshContext=DisplayRefreshContext::Normal) const;
++};
++''' + method(gfx_source, 'void GfxRenderer::displayBuffer(') + r'''
++struct Activity { void onExit() {} };
++bool subscriber=false, flushed=false;
++namespace pluginevents {
++enum class Event { ReaderExit };
++struct Var { const char* key; const char* value; };
++bool anySubscriber(Event) { return subscriber; }
++void emit(Event, const Var*, int) { assert(flushed); }
++}
++struct { int readerActivityLoadCount=1; void saveToFile() {} } APP_STATE;
++struct ReaderActivity : Activity {
++  GfxRenderer renderer;
++  std::string bookPath="test.epub";
++  std::unique_ptr<int> endOfBookOptions;
++  std::atomic_bool endOfBookOptionsReady{true};
++  struct Info { int progressPercent=50; };
++  Info getScreenshotInfo() { return {}; }
++  void flushReaderSession() { flushed=true; }
++  void onExit();
++};
++''' + method(reader, 'void ReaderActivity::onExit()') + r'''
++int main() {
++  for (bool subscribed : {false, true})
++  for (auto requested : {HalDisplay::FAST_REFRESH, HalDisplay::HALF_REFRESH, HalDisplay::FULL_REFRESH}) {
++    subscriber=subscribed; flushed=false; display.modes.clear();
++    ReaderActivity reader;
++    reader.onExit();
++    assert(flushed && !reader.endOfBookOptionsReady.load());
++    assert(display.modes.empty()); // queue cleanup for the new page; do not flash the outgoing frame
++    reader.renderer.displayBuffer(requested);
++    const auto expected=FREEINK_DEVICE_PAPERDIY ? HalDisplay::FULL_REFRESH : requested;
++    assert(display.modes[0]==expected);
++    reader.renderer.displayBuffer(HalDisplay::FAST_REFRESH);
++    assert(display.modes[1]==HalDisplay::FAST_REFRESH); // no permanent full-refresh override
++    assert(!reader.renderer.nextRefreshOverridePending);
++  }
++}
++'''
++        for enabled in (0, 1):
++            with self.subTest(paperdiy=enabled):
++                run_cpp(program, defines=(f'FREEINK_DEVICE_PAPERDIY={enabled}',))
++
 +    def test_home_plugin_slot_labels_match_confirm_targets_without_opds(self):
 +        home = (ROOT / 'src/activities/home/HomeActivity.cpp').read_text()
 +        header = (ROOT / 'src/activities/home/HomeActivity.h').read_text()
@@ -241,6 +381,22 @@ index e430f7d4..2ee455da 100644
      menuItems.push_back(I18N.get(entry->label));
      menuIcons.push_back(entry->item == HomeMenuItem::OPDS_BROWSER && hasPlugins ? Plugins : entry->icon);
    }
+diff --git a/src/activities/reader/ReaderActivity.cpp b/src/activities/reader/ReaderActivity.cpp
+index 92b46ea6..8d12ffe0 100644
+--- a/src/activities/reader/ReaderActivity.cpp
++++ b/src/activities/reader/ReaderActivity.cpp
+@@ -121,6 +121,11 @@ void ReaderActivity::onExit() {
+ 
+   endOfBookOptions.reset();
+   endOfBookOptionsReady.store(false, std::memory_order_release);
++#if FREEINK_DEVICE_PAPERDIY
++  // The stock parallel-panel fast refresh leaves gray text on the next menu.
++  // Hand the proven clean waveform to that new frame, once, after reader teardown.
++  renderer.requestNextFullRefresh();
++#endif
+ }
+ 
+ void ReaderActivity::prepareForSleep() { flushReaderSession(); }
 diff --git a/src/main.cpp b/src/main.cpp
 index 607d299a..d51ffbad 100644
 --- a/src/main.cpp
@@ -283,14 +439,15 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..2749d22d 100644
+index b0b49733..9c5ece76 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
-@@ -246,3 +246,4 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +246,5 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
 +add_test(NAME PaperDiyBoardTag COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_board_tag.py)
++add_test(NAME PaperDiyRefreshBudget COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_budget.py)
 diff --git a/test/test_hal_power_sources.py b/test/test_hal_power_sources.py
 index 14a5edf5..c9712aec 100644
 --- a/test/test_hal_power_sources.py
@@ -340,7 +497,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,102 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: local development target. CrossMux has not been flashed or accepted on
@@ -424,6 +581,57 @@ new file mode 100644
 +individually: two physical keys do not establish that every game's controls
 +are usable. Measure current before making battery-life claims. CrossMux-specific
 +Apps, standby faces and BLE acceptance are separate from donor reader tests.
++
++## Initial physical findings and next candidate
++
++The first candidate passed boot, SD/fonts, EPUB page turns and reader menu checks
++on this unit. Home Apps selection exposed a shared home-menu bug with installed
++plugins and no OPDS servers: rendering omitted the plugin slot while activation
++included it. Rendering now uses the same hasLibrarySlot() condition.
++
++The panel photo showed old reading text on the home background, while a serial
++framebuffer capture had clean white pixels there. Manual forced refresh visibly
++cleared the residue. Repeated home-menu fast updates also accumulated ghosting.
++The next candidate therefore queues one full refresh on PaperDIY reader exit and
++uses a PaperDIY-only UI budget: three normal-context fast paints, then one clean
++paint. Four is an experimental physical-test cadence, not a calibrated optimum.
++Continuous-reading/AA/image contexts keep their existing reader cadence. Explicit
++Half/Full requests are retained; failed commits do not consume a due cleanup.
++The budget adds one static byte and no allocation. Existing panel waveforms and
++SDK display driver code are unchanged. Ghosting acceptance is pending this new
++candidate's physical tests; the initial image is not accepted for UI cleanliness.
+diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
+new file mode 100644
+--- /dev/null
++++ b/lib/hal/PaperDiyRefreshBudget.h
+@@ -0,0 +1,27 @@
++#pragma once
++
++#include <stdint.h>
++
++// Experimental PaperDIY UI cadence: cap successive fast menu paints at three,
++// then use the clean refresh already verified on this panel. Reader refresh
++// contexts keep their own page cadence. One byte of state, no allocation.
++class PaperDiyRefreshBudget {
++ public:
++  static constexpr uint8_t FAST_UI_LIMIT = 4;
++
++  bool needsClean(bool fast, bool normalContext) const {
++    return fast && normalContext && fastUiPaints >= FAST_UI_LIMIT - 1;
++  }
++
++  void completed(bool fast, bool normalContext, bool committed) {
++    if (!committed) return;
++    if (!fast) {
++      fastUiPaints = 0;
++    } else if (normalContext && fastUiPaints < FAST_UI_LIMIT) {
++      ++fastUiPaints;
++    }
++  }
++
++ private:
++  uint8_t fastUiPaints = 0;
++};
 diff --git a/test/test_paperdiy_board_tag.py b/test/test_paperdiy_board_tag.py
 new file mode 100644
 --- /dev/null
@@ -468,3 +676,130 @@ new file mode 100644
 +                    str(work / "check.cpp"), "-o", str(executable)], check=True)
 +    subprocess.run([str(executable)], check=True)
 +print("PaperDIY board identity and wrong-board rejection passed")
+diff --git a/test/test_paperdiy_refresh_budget.py b/test/test_paperdiy_refresh_budget.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_refresh_budget.py
+@@ -0,0 +1,122 @@
++"""Compile the complete production HAL against a recording SDK boundary."""
++from pathlib import Path
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++
++SDK = r'''
++#pragma once
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++namespace freeink {
++enum class GrayscaleMode { Overlay };
++enum class GrayscaleBase { Separate, Combined };
++enum class GrayscaleEncoding { OverlayMasks };
++struct GrayscaleCapabilities { bool asyncBase=false, stripUploads=true; GrayscaleBase base=GrayscaleBase::Separate; };
++}
++struct EInkDisplay {
++  enum RefreshMode { FULL_REFRESH, HALF_REFRESH, FAST_REFRESH };
++  enum class RefreshContext { Normal, ContinuousReading, TextOnlyAntiAliasing, ImageReading };
++  enum { GRAY_PLANE_LSB, GRAY_PLANE_MSB };
++  static constexpr uint16_t DISPLAY_WIDTH=960, DISPLAY_HEIGHT=540;
++  struct Record { RefreshMode mode; bool off; RefreshContext context; bool async; };
++  inline static std::vector<Record> records;
++  inline static bool committed=true;
++  template<class... T> EInkDisplay(T...) {}
++  void displayBuffer(RefreshMode mode, bool off, RefreshContext context) { records.push_back({mode,off,context,false}); }
++  void displayBufferAsyncNoShadow(RefreshMode mode, RefreshContext context) { records.push_back({mode,false,context,true}); }
++  void refreshDisplay(RefreshMode mode, bool off) { displayBuffer(mode,off,RefreshContext::Normal); }
++  bool displayCommitted() const { return committed; }
++  freeink::GrayscaleCapabilities grayscaleCapabilities(freeink::GrayscaleMode) const { return {}; }
++  template<class... T> bool displayGrayscaleBase(T...) { return true; }
++#define VOID_METHOD(name) template<class... T> void name(T...) const {}
++  VOID_METHOD(abortPostRefresh) VOID_METHOD(begin) VOID_METHOD(cancelGrayscale16)
++  VOID_METHOD(cleanupGrayscaleBuffers) VOID_METHOD(clearScreen) VOID_METHOD(copyGrayscaleBuffers)
++  VOID_METHOD(copyGrayscaleLsbBuffers) VOID_METHOD(copyGrayscaleMsbBuffers) VOID_METHOD(deepSleep)
++  VOID_METHOD(displayGrayBuffer) VOID_METHOD(drawImage) VOID_METHOD(drawImageTransparent)
++  VOID_METHOD(preconditionGrayscale) VOID_METHOD(requestResync) VOID_METHOD(returnBuildStorage)
++  VOID_METHOD(setDisplayX3) VOID_METHOD(setInverted) VOID_METHOD(setMurphyM4Batch)
++  VOID_METHOD(skipInitialResync) VOID_METHOD(waitRefreshComplete) VOID_METHOD(writeGrayscalePlaneStrip)
++#undef VOID_METHOD
++#define BOOL_METHOD(name) bool name() const { return false; }
++  BOOL_METHOD(canUseTextTransition) BOOL_METHOD(commitGrayscale16) BOOL_METHOD(isInverted)
++  BOOL_METHOD(supportsAsyncRefresh) BOOL_METHOD(supportsContinuousImageReading)
++  BOOL_METHOD(supportsReaderTransitions) BOOL_METHOD(supportsTextOnlyCombinedBase) BOOL_METHOD(toggleInverted)
++#undef BOOL_METHOD
++  uint8_t* beginGrayscale16() const { return nullptr; }
++  uint8_t* getFrameBuffer() const { return nullptr; }
++  uint8_t* lendBuildStorage(uint32_t*) { return nullptr; }
++  uint16_t getDisplayWidth() const { return 960; }
++  uint16_t getDisplayHeight() const { return 540; }
++  uint16_t getDisplayWidthBytes() const { return 120; }
++  uint32_t getBufferSize() const { return 64800; }
++  uint8_t getGrayscaleLevels() const { return 4; }
++};
++'''
++
++TEST = r'''
++#include <cassert>
++#include "HalDisplay.h"
++#include "PaperDiyRefreshBudget.h"
++int main() {
++  static_assert(sizeof(PaperDiyRefreshBudget)==1);
++  const auto fast=HalDisplay::FAST_REFRESH;
++  const auto half=HalDisplay::HALF_REFRESH;
++  const auto full=HalDisplay::FULL_REFRESH;
++  auto check=[](auto mode) { assert(EInkDisplay::records.back().mode==static_cast<EInkDisplay::RefreshMode>(mode)); };
++  display.displayBuffer(full); check(full);
++  for (int i=0;i<16;++i) {
++    if (i%3==0) display.displayBufferAsync(fast);
++    else if (i%3==1) display.refreshDisplay(fast,true);
++    else display.displayBuffer(fast);
++    check(FREEINK_DEVICE_PAPERDIY && i%4==3 ? half : fast);
++  }
++  display.displayBuffer(full); check(full);
++  for(int i=0;i<3;++i) { display.displayBuffer(fast); check(fast); }
++  for(auto context : {DisplayRefreshContext::ContinuousReading,DisplayRefreshContext::TextOnlyAntiAliasing,
++                     DisplayRefreshContext::ImageReading}) {
++    for(int i=0;i<20;++i) { display.displayBufferAsync(fast,context); check(fast); }
++  }
++  display.displayBuffer(fast); check(FREEINK_DEVICE_PAPERDIY ? half : fast);
++  // Existing explicit cleaning requests keep their strength and reset the UI budget.
++  display.displayBuffer(full); check(full);
++  for(int i=0;i<3;++i) { display.displayBuffer(fast); check(fast); }
++  display.displayBuffer(half,true); check(half);
++  assert(EInkDisplay::records.back().off);
++  for(int i=0;i<3;++i) { display.displayBuffer(fast); check(fast); }
++  // A failed commit must not consume the due cleanup or reset its budget.
++  EInkDisplay::committed=false;
++  display.displayBuffer(fast); check(FREEINK_DEVICE_PAPERDIY ? half : fast);
++  EInkDisplay::committed=true;
++  display.displayBuffer(fast); check(FREEINK_DEVICE_PAPERDIY ? half : fast);
++  display.displayBuffer(fast); check(fast);
++}
++'''
++
++with tempfile.TemporaryDirectory(prefix='paperdiy-ui-refresh-') as directory:
++    folder = Path(directory)
++    (folder / 'Arduino.h').write_text('#pragma once\n#include <cstdint>\n')
++    (folder / 'BoardConfig.h').write_text('''#pragma once
++namespace BoardConfig { enum class DisplayController { Test }; inline constexpr struct {
++DisplayController displayController=DisplayController::Test;
++} ACTIVE; }
++''')
++    (folder / 'HalGPIO.h').write_text('''#pragma once
++inline constexpr int EPD_SCLK=0, EPD_MOSI=0, EPD_CS=0, EPD_DC=0, EPD_RST=0, EPD_BUSY=0;
++struct HalGPIO { enum class WakeupReason { PowerButton, AfterFlash, Other };
++bool deviceIsX3() const { return false; } WakeupReason getWakeupReason() const { return WakeupReason::Other; }
++}; inline HalGPIO gpio;
++''')
++    (folder / 'EInkDisplay.h').write_text(SDK)
++    source = folder / 'check.cpp'
++    source.write_text(TEST)
++    for enabled in (0, 1):
++        executable = folder / f'check-{enabled}'
++        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', '-Werror',
++                        '-I' + str(folder), '-I' + str(ROOT / 'lib/hal'),
++                        f'-DFREEINK_DEVICE_PAPERDIY={enabled}',
++                        str(source), str(ROOT / 'lib/hal/HalDisplay.cpp'), '-o', str(executable)], check=True)
++        subprocess.run([str(executable)], check=True)
++print('PaperDIY shared UI cadence, sync/async/refresh entrypoints, reader contexts, failed commits and non-DIY baseline passed')
