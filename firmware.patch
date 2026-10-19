@@ -414,7 +414,7 @@ index 92b46ea6..8d12ffe0 100644
  
  void ReaderActivity::prepareForSleep() { flushReaderSession(); }
 diff --git a/src/activities/util/KeyboardEntryActivity.cpp b/src/activities/util/KeyboardEntryActivity.cpp
-index 4ee0e3c3..d576c079 100644
+index 4ee0e3c3..604d030c 100644
 --- a/src/activities/util/KeyboardEntryActivity.cpp
 +++ b/src/activities/util/KeyboardEntryActivity.cpp
 @@ -229,6 +229,26 @@ void KeyboardEntryActivity::moveSelectionCol(const int delta) {
@@ -457,6 +457,20 @@ index 4ee0e3c3..d576c079 100644
        requestUpdate();
      }
      upHeld = false;
+@@ -1119,7 +1144,13 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  // Side labels are drawn rotated (glyph right = screen up): "v" reads as right
++  // for tap A, "<" as down for tap B.
++  GUI.drawSideButtonHints(renderer, "v", "<");
++#else
+   GUI.drawSideButtonHints(renderer, ">", "<");
++#endif
+ 
+   renderer.displayBuffer();
+ }
 diff --git a/src/activities/util/KeyboardEntryActivity.h b/src/activities/util/KeyboardEntryActivity.h
 index b09baf95..47423c80 100644
 --- a/src/activities/util/KeyboardEntryActivity.h
@@ -598,10 +612,10 @@ index 14a5edf5..c9712aec 100644
      print("Metalio authoritative/unknown power and USB SOF fallback; LilyGo USB cold boot passed")
 diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
-index 00000000..3f7069c3
+index 00000000..c0842b3f
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,108 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: local development target. CrossMux has not been flashed or accepted on
@@ -664,6 +678,7 @@ index 00000000..3f7069c3
 +- Keyboard (PaperDIY only): tap A selects the next key; at a row end it moves
 +  to the first key of the next row, and the last key wraps to the first. Tap B
 +  moves down one row. Holds are unchanged: A cancels, B types the selected key.
++  The side hints show a right chevron for A and a down chevron for B.
 +- The PMIC click is a one-shot logical Power event. Default Ignore retains
 +  shutdown behavior; explicit alternate short-power bindings still apply.
 +- Shutdown requests M5PM1 power-off. If USB retains power, turn off the panel
@@ -684,6 +699,7 @@ index 00000000..3f7069c3
 +Validate boot identity, 8MB runtime PSRAM, SD mount and visible panel output;
 +all four orientations, text/grayscale refresh and input during refresh;
 +A/B short/held gestures, popup release barriers and sleep/wake on battery/USB;
++keyboard tap-A key walk, tap-B row move and side-hint arrow direction;
 +EPUB/TXT opening, cross-chapter turns and progress after restart. Test Apps
 +individually: two physical keys do not establish that every game's controls
 +are usable. Measure current before making battery-life claims. CrossMux-specific
@@ -786,10 +802,10 @@ new file mode 100644
 +print("PaperDIY board identity and wrong-board rejection passed")
 diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboard_buttons.py
 new file mode 100644
-index 00000000..5b7a0cfa
+index 00000000..641536b6
 --- /dev/null
 +++ b/test/test_paperdiy_keyboard_buttons.py
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,205 @@
 +"""Drive the production keyboard button handling with PaperDIY two-key frames.
 +
 +Frames follow the SDK DigitalTwoButton classifier (see
@@ -824,6 +840,8 @@ index 00000000..5b7a0cfa
 +declarations = "\n".join(m.split("{", 1)[0].replace("KeyboardEntryActivity::", "") + ";" for m in methods)
 +vertical = between("  if (!cursorMode && mappedInput.wasPressed(MappedInputManager::Button::Up))",
 +                   "  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}")
++hints_after = "  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);\n"
++hints = between(hints_after, "  renderer.displayBuffer();")[len(hints_after):]
 +confirm_back = between("  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm))",
 +                       "  if (hintVisible && !cursorMode")
 +
@@ -848,6 +866,17 @@ index 00000000..5b7a0cfa
 +  unsigned long getHeldTime() const { return heldMs; }
 +};
 +using B = MappedInputManager::Button;
++// GfxRenderer::drawTextRotated90CW maps glyph right to screen up (screenY = base - glyphX),
++// so a chevron's on-screen direction is its glyph direction turned a quarter left.
++const char* shownDirection(const char* label) {
++  const std::string s = label;
++  return s == ">" ? "up" : s == "<" ? "down" : s == "v" ? "right" : s == "^" ? "left" : "?";
++}
++struct Gui {
++  std::string top, bottom;
++  void drawSideButtonHints(int, const char* t, const char* b) { top = t; bottom = b; }
++} GUI;
++const int renderer = 0;
 +struct KeyboardEntryActivity {
 +  InputType inputType = InputType::Password;
 +  bool cursorMode = false, togglePos = false, passwordVisible = false, hintVisible = false;
@@ -881,6 +910,9 @@ index 00000000..5b7a0cfa
 +    step(0, m, 0, releaseAfterMs);
 +  }
 +  int16_t selected() const { return selectedKey()->value; }
++  void drawHints() {
++    @HINTS@
++  }
 +};
 +@METHODS@
 +int main() {
@@ -954,10 +986,17 @@ index 00000000..5b7a0cfa
 +#else
 +  assert(kb.selRow == 1 && kb.selCol == 2 * layout.rows[1].count / layout.rows[0].count);
 +#endif
++  kb.drawHints();
++#if FREEINK_DEVICE_PAPERDIY
++  assert(std::string(shownDirection(GUI.top.c_str())) == "right");
++  assert(std::string(shownDirection(GUI.bottom.c_str())) == "down");
++#else
++  assert(GUI.top == ">" && GUI.bottom == "<");
++#endif
 +  std::puts("ok");
 +}
 +'''
-+for name, code in {"DECLARATIONS": declarations, "VERTICAL": vertical, "CONFIRM_BACK": confirm_back,
++for name, code in {"DECLARATIONS": declarations, "VERTICAL": vertical, "HINTS": hints, "CONFIRM_BACK": confirm_back,
 +                   "METHODS": "\n".join(methods)}.items():
 +    harness = harness.replace("@" + name + "@", code)
 +
@@ -971,7 +1010,7 @@ index 00000000..5b7a0cfa
 +                        f"-I{UI / 'include'}", str(cpp), str(UI / "src/FreeInkUI.cpp"), "-o", str(binary)],
 +                       check=True)
 +        subprocess.run([str(binary)], check=True)
-+print("PaperDIY A steps through every key, B moves down, holds keep Back/Confirm; other boards keep Up")
++print("PaperDIY A steps through every key, B moves down, holds keep Back/Confirm, hints show right/down; other boards keep Up")
 diff --git a/test/test_paperdiy_refresh_budget.py b/test/test_paperdiy_refresh_budget.py
 new file mode 100644
 --- /dev/null
