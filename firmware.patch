@@ -27,6 +27,18 @@ index 5c2bd6bb..1d9409ee 100644
  - **阅读与书库**：EPUB、TXT、XTC/XTCH 和图片，章节导航、书签、词典、自定义字体、阅读背景，以及 KOReader 进度同步。
  - **无线功能**：浏览器传书与设置、Calibre 无线连接、OPDS 下载、WebDAV 和设备 OTA 更新。
  - **Apps 应用中心**：数独、五子棋、中国象棋、扫雷、2048、电子木鱼、Ugly Avatar 等轻量游戏与工具。[应用说明](./src/activities/apps/README.md)。
+diff --git a/lib/I18n/translations/chinese.yaml b/lib/I18n/translations/chinese.yaml
+index a4b35fd7..8afdda5d 100644
+--- a/lib/I18n/translations/chinese.yaml
++++ b/lib/I18n/translations/chinese.yaml
+@@ -8,6 +8,7 @@ STR_BOOTING: "启动中"
+ STR_SLEEPING: "休眠中"
+ STR_ENTERING_SLEEP: "正在进入休眠"
+ STR_BROWSE_FILES: "浏览文件"
++STR_LIBRARY: "书库"
+ STR_FILE_TRANSFER: "文件传输"
+ STR_APPS_TITLE: "应用"
+ STR_APP_VISIBILITY: "隐藏应用"
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
 index 2d854fe5..8b48f0f9 100644
 --- a/lib/hal/HalDisplay.cpp
@@ -219,10 +231,10 @@ index 89cbf2f6..fdcfe66c 100644
                          self.assertEqual(resolve(section, "board_build.arduino.memory_type"), "dio_opi")
                      else:
 diff --git a/scripts/tests/test_reading_ui_regressions.py b/scripts/tests/test_reading_ui_regressions.py
-index 109cd50f..34658ef0 100644
+index 109cd50f..89efbf0c 100644
 --- a/scripts/tests/test_reading_ui_regressions.py
 +++ b/scripts/tests/test_reading_ui_regressions.py
-@@ -33,6 +33,137 @@ def run_cpp(program, include_dirs=(), defines=()):
+@@ -33,6 +33,138 @@ def run_cpp(program, include_dirs=(), defines=()):
  
  
  class ReadingUiRegressionTest(unittest.TestCase):
@@ -313,11 +325,11 @@ index 109cd50f..34658ef0 100644
 +#include <vector>
 +enum class HomeMenuItem { NONE, FILE_BROWSER, LIBRARY, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU, APPS };
 +enum class StrId { STR_BROWSE_FILES, STR_LIBRARY, STR_OPDS_BROWSER, STR_FILE_TRANSFER,
-+                   STR_SETTINGS_TITLE, STR_APPS_TITLE, STR_MENU_RECENT_BOOKS, STR_CONTINUE_READING };
++                   STR_SETTINGS_TITLE, STR_APPS_TITLE, STR_MENU_RECENT_BOOKS, STR_CONTINUE_READING, STR_PLUGINS };
 +enum UIIcon { Folder, Library, Blocks, Transfer, Settings, Apps, Recent, Plugins, Book };
 +struct {
 +  const char* get(StrId id) const {
-+    static const char* labels[] = {"files", "library", "opds", "transfer", "settings", "apps", "recent", "continue"};
++    static const char* labels[] = {"files", "library", "opds", "transfer", "settings", "apps", "recent", "continue", "plugins"};
 +    return labels[static_cast<int>(id)];
 +  }
 +} I18N;
@@ -338,7 +350,8 @@ index 109cd50f..34658ef0 100644
 +      const auto* target = menuEntryAtIndex(i, hasLibrarySlot(), isCarousel);
 +      assert(target);
 +      assert(target->item == indexToMenuItem(i, hasLibrarySlot(), isCarousel));
-+      assert(std::strcmp(menuItems[offset + i], I18N.get(target->label)) == 0);
++      const auto label = target->item == HomeMenuItem::OPDS_BROWSER && hasPlugins ? StrId::STR_PLUGINS : target->label;
++      assert(std::strcmp(menuItems[offset + i], I18N.get(label)) == 0);
 +      assert(menuIcons[offset + i] == (target->item == HomeMenuItem::OPDS_BROWSER && hasPlugins ? Plugins : target->icon));
 +      assert(menuItemToIndex(target->item, hasLibrarySlot(), isCarousel) == i);
 +    }
@@ -361,10 +374,10 @@ index 109cd50f..34658ef0 100644
          home = (ROOT / 'src/activities/home/HomeActivity.cpp').read_text()
          ui = (ROOT / 'src/components/UITheme.cpp').read_text()
 diff --git a/src/activities/home/HomeActivity.cpp b/src/activities/home/HomeActivity.cpp
-index e430f7d4..2ee455da 100644
+index e430f7d4..b94f67be 100644
 --- a/src/activities/home/HomeActivity.cpp
 +++ b/src/activities/home/HomeActivity.cpp
-@@ -698,14 +698,14 @@ void HomeActivity::render(RenderLock&&) {
+@@ -698,15 +698,16 @@ void HomeActivity::render(RenderLock&&) {
        static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
  
    const Rect content = isCarousel ? Rect{0, 0, pageWidth, pageHeight} : UITheme::getContentArea(renderer);
@@ -377,10 +390,13 @@ index e430f7d4..2ee455da 100644
    menuIcons.reserve(homeMenuItemCount + (showContinueReading ? 1 : 0));
    for (int i = 0; i < homeMenuItemCount; ++i) {
 -    const HomeMenuEntry* entry = menuEntryAtIndex(i, hasOpdsServers, isCarousel);
+-    menuItems.push_back(I18N.get(entry->label));
 +    const HomeMenuEntry* entry = menuEntryAtIndex(i, hasLibrarySlot(), isCarousel);
-     menuItems.push_back(I18N.get(entry->label));
++    const StrId label = entry->item == HomeMenuItem::OPDS_BROWSER && hasPlugins ? StrId::STR_PLUGINS : entry->label;
++    menuItems.push_back(I18N.get(label));
      menuIcons.push_back(entry->item == HomeMenuItem::OPDS_BROWSER && hasPlugins ? Plugins : entry->icon);
    }
+ 
 diff --git a/src/activities/reader/ReaderActivity.cpp b/src/activities/reader/ReaderActivity.cpp
 index 92b46ea6..8d12ffe0 100644
 --- a/src/activities/reader/ReaderActivity.cpp
@@ -497,7 +513,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,103 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: local development target. CrossMux has not been flashed or accepted on
@@ -593,8 +609,9 @@ new file mode 100644
 +framebuffer capture had clean white pixels there. Manual forced refresh visibly
 +cleared the residue. Repeated home-menu fast updates also accumulated ghosting.
 +The next candidate therefore queues one full refresh on PaperDIY reader exit and
-+uses a PaperDIY-only UI budget: three normal-context fast paints, then one clean
-+paint. Four is an experimental physical-test cadence, not a calibrated optimum.
++uses a PaperDIY-only UI budget. A three-fast/one-clean trial stopped accumulation
++but the user found it too frequent; the next trial uses seven normal-context fast
++paints, then one clean paint. Eight is experimental, not a calibrated optimum.
 +Continuous-reading/AA/image contexts keep their existing reader cadence. Explicit
 +Half/Full requests are retained; failed commits do not consume a due cleanup.
 +The budget adds one static byte and no allocation. Existing panel waveforms and
@@ -609,12 +626,12 @@ new file mode 100644
 +
 +#include <stdint.h>
 +
-+// Experimental PaperDIY UI cadence: cap successive fast menu paints at three,
++// Experimental PaperDIY UI cadence: cap successive fast menu paints at seven,
 +// then use the clean refresh already verified on this panel. Reader refresh
 +// contexts keep their own page cadence. One byte of state, no allocation.
 +class PaperDiyRefreshBudget {
 + public:
-+  static constexpr uint8_t FAST_UI_LIMIT = 4;
++  static constexpr uint8_t FAST_UI_LIMIT = 8;
 +
 +  bool needsClean(bool fast, bool normalContext) const {
 +    return fast && normalContext && fastUiPaints >= FAST_UI_LIMIT - 1;
@@ -750,14 +767,14 @@ new file mode 100644
 +  const auto full=HalDisplay::FULL_REFRESH;
 +  auto check=[](auto mode) { assert(EInkDisplay::records.back().mode==static_cast<EInkDisplay::RefreshMode>(mode)); };
 +  display.displayBuffer(full); check(full);
-+  for (int i=0;i<16;++i) {
++  for (int i=0;i<32;++i) {
 +    if (i%3==0) display.displayBufferAsync(fast);
 +    else if (i%3==1) display.refreshDisplay(fast,true);
 +    else display.displayBuffer(fast);
-+    check(FREEINK_DEVICE_PAPERDIY && i%4==3 ? half : fast);
++    check(FREEINK_DEVICE_PAPERDIY && i%8==7 ? half : fast);
 +  }
 +  display.displayBuffer(full); check(full);
-+  for(int i=0;i<3;++i) { display.displayBuffer(fast); check(fast); }
++  for(int i=0;i<7;++i) { display.displayBuffer(fast); check(fast); }
 +  for(auto context : {DisplayRefreshContext::ContinuousReading,DisplayRefreshContext::TextOnlyAntiAliasing,
 +                     DisplayRefreshContext::ImageReading}) {
 +    for(int i=0;i<20;++i) { display.displayBufferAsync(fast,context); check(fast); }
@@ -765,10 +782,10 @@ new file mode 100644
 +  display.displayBuffer(fast); check(FREEINK_DEVICE_PAPERDIY ? half : fast);
 +  // Existing explicit cleaning requests keep their strength and reset the UI budget.
 +  display.displayBuffer(full); check(full);
-+  for(int i=0;i<3;++i) { display.displayBuffer(fast); check(fast); }
++  for(int i=0;i<7;++i) { display.displayBuffer(fast); check(fast); }
 +  display.displayBuffer(half,true); check(half);
 +  assert(EInkDisplay::records.back().off);
-+  for(int i=0;i<3;++i) { display.displayBuffer(fast); check(fast); }
++  for(int i=0;i<7;++i) { display.displayBuffer(fast); check(fast); }
 +  // A failed commit must not consume the due cleanup or reset its budget.
 +  EInkDisplay::committed=false;
 +  display.displayBuffer(fast); check(FREEINK_DEVICE_PAPERDIY ? half : fast);
