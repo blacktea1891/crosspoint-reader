@@ -497,6 +497,293 @@ index 141fc9cd..283c337e 100644
      def test_release_only_taps_and_holds(self):
          source = (WEREAD / "WeReadActivity.cpp").read_text()
          navigation = (ROOT / "src/util/ButtonNavigator.cpp").read_text()
+diff --git a/src/activities/Activity.cpp b/src/activities/Activity.cpp
+index 789f24f8..21ff01e0 100644
+--- a/src/activities/Activity.cpp
++++ b/src/activities/Activity.cpp
+@@ -20,19 +20,37 @@ bool Activity::defersContentSelection() const {
+ }
+ 
+ MappedInputManager::Labels Activity::mainTabButtonLabels(const char* back, const char* confirm, const bool canMove,
+-                                                         const bool showTabDirections) const {
++                                                         const bool showTabDirections,
++                                                         const bool horizontalContent) const {
++  (void)horizontalContent;
+   if (!usesMainTabBar()) {
++#if FREEINK_DEVICE_PAPERDIY
++    return mappedInput.mapLabels(back, confirm, horizontalContent ? tr(STR_DIR_RIGHT) : "",
++                                 canMove ? tr(STR_DIR_DOWN) : "");
++#else
+     return mappedInput.mapLabels(back, confirm, canMove ? tr(STR_DIR_UP) : "", canMove ? tr(STR_DIR_DOWN) : "");
++#endif
+   }
+ 
+   if (activityManager.getMainTabFocus() == MainTabFocus::Tabs) {
+     const char* tabBack =
+         mainTab() == MainTab::Recent ? (SETTINGS.standbyShortcutEnabled ? tr(STR_STANDBY_TITLE) : "") : tr(STR_BACK);
++#if FREEINK_DEVICE_PAPERDIY
++    return mappedInput.mapLabels(tabBack, tr(STR_SELECT), showTabDirections ? tr(STR_DIR_RIGHT) : "",
++                                 canMove ? tr(STR_DIR_DOWN) : "");
++#else
+     return mappedInput.mapLabels(tabBack, tr(STR_SELECT), showTabDirections ? tr(STR_DIR_LEFT) : "",
+                                  showTabDirections ? tr(STR_DIR_RIGHT) : "");
++#endif
+   }
+ 
+-  return mappedInput.mapLabels(tr(STR_BACK), confirm, canMove ? tr(STR_DIR_UP) : "", canMove ? tr(STR_DIR_DOWN) : "");
++  return mappedInput.mapLabels(tr(STR_BACK), confirm,
++#if FREEINK_DEVICE_PAPERDIY
++                               horizontalContent ? tr(STR_DIR_RIGHT) : "",
++#else
++                               canMove ? tr(STR_DIR_UP) : "",
++#endif
++                               canMove ? tr(STR_DIR_DOWN) : "");
+ }
+ 
+ bool Activity::showMainTabContentSelection() const {
+diff --git a/src/activities/Activity.h b/src/activities/Activity.h
+index 51d93f0a..ed5e3754 100644
+--- a/src/activities/Activity.h
++++ b/src/activities/Activity.h
+@@ -101,7 +101,7 @@ class Activity {
+ 
+  protected:
+   MappedInputManager::Labels mainTabButtonLabels(const char* back, const char* confirm, bool canMove,
+-                                                 bool showTabDirections = true) const;
++                                                 bool showTabDirections = true, bool horizontalContent = false) const;
+   virtual bool showMainTabContentSelection() const;
+   bool mainTabsAtBottom() const;
+   bool hasMainTabStatusBar() const;
+diff --git a/src/activities/ActivityManager.cpp b/src/activities/ActivityManager.cpp
+index 8acbec08..d7a40234 100644
+--- a/src/activities/ActivityManager.cpp
++++ b/src/activities/ActivityManager.cpp
+@@ -384,14 +384,28 @@ bool ActivityManager::handleMainTabInput() {
+   }
+ 
+   if (mainTabEntryReleasePending) {
++#if FREEINK_DEVICE_PAPERDIY
++    // A completed tap can enter content with both edges in one snapshot.
++    // Level checks also recover if the release was observed by another owner.
++    if (!mappedInput.isPressed(MappedInputManager::Button::Up) &&
++        !mappedInput.isPressed(MappedInputManager::Button::Down))
++      mainTabEntryReleasePending = false;
++#else
+     if (mappedInput.wasReleased(MappedInputManager::Button::Up) ||
+         mappedInput.wasReleased(MappedInputManager::Button::Down))
+       mainTabEntryReleasePending = false;
++#endif
+     return true;
+   }
+ 
+   switch (mainTabFocus) {
+     case MainTabFocus::Tabs:
++#if FREEINK_DEVICE_PAPERDIY
++      if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
++        goToMainTab(MainTabs::adjacent(currentTab, 1));
++        return true;
++      }
++#endif
+       if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+         goToMainTab(MainTabs::adjacent(currentTab, -1));
+         return true;
+@@ -416,6 +430,14 @@ bool ActivityManager::handleMainTabInput() {
+         return true;
+       }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++      if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
++        mainTabFocus = MainTabFocus::Content;
++        currentActivity->selectMainTabContentEdge(MainTabContentEdge::First);
++        requestUpdate();
++        return true;
++      }
++#else
+       if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+         mainTabFocus = MainTabFocus::Content;
+         mainTabEntryReleasePending = true;
+@@ -430,6 +452,7 @@ bool ActivityManager::handleMainTabInput() {
+         requestUpdate();
+         return true;
+       }
++#endif
+ 
+       // Recent's Back is owned by the shared home Standby handler.
+       if (currentTab == MainTab::Recent) return false;
+diff --git a/src/activities/UiListActivity.cpp b/src/activities/UiListActivity.cpp
+index f25550ec..33fdca20 100644
+--- a/src/activities/UiListActivity.cpp
++++ b/src/activities/UiListActivity.cpp
+@@ -253,6 +253,20 @@ bool UiListActivity::handleListSwipe(const MappedInputManager::SwipeDir swipe, c
+ }
+ 
+ void UiListActivity::navigateButtons() {
++#if FREEINK_DEVICE_PAPERDIY
++  const int count = listCount();
++  if (count <= 0) return;
++  const int columns = std::max(1, menuNavigationColumns());
++  const int selected = std::clamp(static_cast<int>(activeNav().selected), 0, count - 1);
++  if (columns > 1 && mappedInput.wasReleased(MappedInputManager::Button::Up)) {
++    const int rowStart = selected / columns * columns;
++    const int rowCount = std::min(columns, count - rowStart);
++    moveSelectionTo(rowStart + ButtonNavigator::nextIndex(selected - rowStart, rowCount));
++  } else if (columns < count && mappedInput.wasReleased(MappedInputManager::Button::Down)) {
++    const int target = selected + columns < count ? selected + columns : selected % columns;
++    moveSelectionTo(target);
++  }
++#else
+   buttonNavigator.onNextPress(
+       [this] { moveSelectionTo(ButtonNavigator::nextIndex(activeNav().selected, listCount())); });
+   buttonNavigator.onPreviousPress(
+@@ -270,6 +284,7 @@ void UiListActivity::navigateButtons() {
+     const auto& n = activeNav();
+     moveSelectionTo(ButtonNavigator::previousPageIndex(n.selected, listCount(), n.inputPageRows()));
+   });
++#endif
+ }
+ 
+ void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, const int selectionOffset) {
+@@ -325,7 +340,12 @@ void UiListActivity::drawChrome() {
+ }
+ 
+ void UiListActivity::drawFooter() {
++#if FREEINK_DEVICE_PAPERDIY
++  const int columns = menuNavigationColumns();
++  const auto labels = mainTabButtonLabels(tr(STR_BACK), tr(STR_SELECT), listCount() > columns, true, columns > 1);
++#else
+   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
++#endif
+   GUI.drawButtonHintsWithStyle(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, usesUpstreamStyle());
+ }
+ 
+diff --git a/src/activities/UiListActivity.h b/src/activities/UiListActivity.h
+index bf54a0fb..265f43b8 100644
+--- a/src/activities/UiListActivity.h
++++ b/src/activities/UiListActivity.h
+@@ -61,10 +61,11 @@ class UiListActivity : public Activity, protected UiAppHost {
+   // Bounds-checked ACTION_ROW dispatch. Default: selection follows the tapped
+   // row, then long-press/activate. UiTabListActivity remaps row -> ring.
+   virtual void onRowAction(const freeink::ui::ActionEvent& event);
+-  // The button-navigation tail of loop(): release steps the selection and a
+-  // hold moves by the rendered page size. UiTabListActivity uses hold for tab
+-  // changes instead.
++  // PaperDIY consumes completed A/B taps along the visible layout's axes.
++  // Other boards retain previous/next plus continuous page navigation.
+   virtual void navigateButtons();
++  // PaperDIY axes follow the visible layout: one column is a vertical list.
++  virtual int menuNavigationColumns() const { return 1; }
+   // First hook in loop(); return true when the pass is consumed (popups, extra
+   // buttons, gestures). Runs before the base button handling.
+   virtual bool handleCustomInput() { return false; }
+diff --git a/src/activities/UiTabListActivity.cpp b/src/activities/UiTabListActivity.cpp
+index 0e899226..139207dd 100644
+--- a/src/activities/UiTabListActivity.cpp
++++ b/src/activities/UiTabListActivity.cpp
+@@ -63,6 +63,15 @@ void UiTabListActivity::moveRingTo(const int ringIndex) {
+ }
+ 
+ void UiTabListActivity::navigateButtons() {
++#if FREEINK_DEVICE_PAPERDIY
++  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
++    stepTab(1);
++    return;
++  }
++  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
++    moveRingTo(ButtonNavigator::nextIndex(ringPos(), listCount() + 1));
++  }
++#else
+   if (mappedInput.wasPressed(MappedInputManager::Button::NavNext) ||
+       mappedInput.wasPressed(MappedInputManager::Button::NavPrevious)) {
+     navigationStartedOnTabs = ringPos() == 0;
+@@ -88,6 +97,7 @@ void UiTabListActivity::navigateButtons() {
+     }
+     stepTab(-1);
+   });
++#endif
+ }
+ 
+ void UiTabListActivity::syncTabListViewport(UiScreen& screen, fui::ListProps& props) {
+diff --git a/src/activities/apps/AppsMenuActivity.cpp b/src/activities/apps/AppsMenuActivity.cpp
+index d91bf0c5..de71895a 100644
+--- a/src/activities/apps/AppsMenuActivity.cpp
++++ b/src/activities/apps/AppsMenuActivity.cpp
+@@ -164,6 +164,8 @@ bool AppsMenuActivity::usesIconLayout() const {
+          InxGridGeometry::layoutFrom(SETTINGS.inxAppsLayout) == InxItemLayout::Icons;
+ }
+ 
++int AppsMenuActivity::menuNavigationColumns() const { return usesIconLayout() ? InxGridGeometry::columns : 1; }
++
+ Rect AppsMenuActivity::appContentRect() const {
+   const int spacing = UITheme::getInstance().getMetrics().verticalSpacing;
+   Rect content = pageContentRect();
+@@ -250,7 +252,13 @@ void AppsMenuActivity::drawChrome() {
+ 
+ void AppsMenuActivity::drawFooter() {
+   const int visibleCount = getVisibleAppCount();
++#if FREEINK_DEVICE_PAPERDIY
++  const int columns = menuNavigationColumns();
++  const auto labels =
++      mainTabButtonLabels(tr(STR_BACK), tr(STR_SELECT), visibleCount > columns, true, visibleCount > 1 && columns > 1);
++#else
+   const auto labels = mainTabButtonLabels(tr(STR_BACK), tr(STR_SELECT), visibleCount > 1);
++#endif
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+ }
+ 
+diff --git a/src/activities/apps/AppsMenuActivity.h b/src/activities/apps/AppsMenuActivity.h
+index 35028103..7850c135 100644
+--- a/src/activities/apps/AppsMenuActivity.h
++++ b/src/activities/apps/AppsMenuActivity.h
+@@ -35,6 +35,7 @@ class AppsMenuActivity final : public UiListActivity {
+   void drawChrome() override;
+   void drawFooter() override;
+   bool usesIconLayout() const;
++  int menuNavigationColumns() const override;
+   Rect appContentRect() const;
+   void rebuildRowItems();
+   void openSelected();
+diff --git a/src/activities/apps/reading-stats/ReadingStatsActivity.cpp b/src/activities/apps/reading-stats/ReadingStatsActivity.cpp
+index 34711d9d..2a75552e 100644
+--- a/src/activities/apps/reading-stats/ReadingStatsActivity.cpp
++++ b/src/activities/apps/reading-stats/ReadingStatsActivity.cpp
+@@ -29,7 +29,9 @@
+ #include "util/ReadingStatsAnalytics.h"
+ 
+ namespace {
++#if !FREEINK_DEVICE_PAPERDIY
+ constexpr unsigned long BOOK_LONG_PRESS_MS = 1000;
++#endif
+ constexpr int SUMMARY_CARD_HEIGHT = 76;
+ constexpr int SUMMARY_GAP = 10;
+ constexpr int DETAILS_BUTTON_HEIGHT = 58;
+@@ -403,10 +405,12 @@ ReadingStatsActivity::InputFlow ReadingStatsActivity::handleButtons() {
+ 
+   if (consumeSelectionEntryInput()) flow = InputFlow::TouchOnly;
+   if (flow == InputFlow::All && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
++#if !FREEINK_DEVICE_PAPERDIY
+     if (selectedIndex > 0 && mappedInput.getHeldTime() >= BOOK_LONG_PRESS_MS) {
+       confirmRemoveSelectedBook();
+       return InputFlow::Stop;
+     }
++#endif
+ 
+     openSelectedEntry();
+     return InputFlow::Stop;
+@@ -451,6 +455,14 @@ void ReadingStatsActivity::loop() {
+   if (defersContentSelection() || showMainTabContentSelection()) prepareVisibleCover();
+   if (flow == InputFlow::TouchOnly) return;
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  if (usesInxLayout()) {
++    if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
++      moveSelectionTo(ButtonNavigator::nextIndex(selectedIndex, selectableCount));
++    }
++    return;
++  }
++#endif
+   buttonNavigator.onNextRelease(
+       [this, selectableCount] { moveSelectionTo(ButtonNavigator::nextIndex(selectedIndex, selectableCount)); });
+ 
 diff --git a/src/activities/apps/weread/webapi/WeReadActivity.cpp b/src/activities/apps/weread/webapi/WeReadActivity.cpp
 index fd2bb855..01bcbe5a 100644
 --- a/src/activities/apps/weread/webapi/WeReadActivity.cpp
@@ -530,11 +817,209 @@ index fd2bb855..01bcbe5a 100644
    if (!mappedInput.wasReleased(previousButton) && !mappedInput.wasReleased(nextButton)) return;
  
    selectMainTab(mainTab_.load() == MainTab::Shelf ? MainTab::Manage : MainTab::Shelf);
+diff --git a/src/activities/home/FileBrowserActivity.cpp b/src/activities/home/FileBrowserActivity.cpp
+index 5615bf06..2be650fe 100644
+--- a/src/activities/home/FileBrowserActivity.cpp
++++ b/src/activities/home/FileBrowserActivity.cpp
+@@ -28,7 +28,9 @@
+ namespace fui = freeink::ui;
+ 
+ namespace {
++#if !FREEINK_DEVICE_PAPERDIY
+ constexpr unsigned long GO_HOME_MS = 1000;
++#endif
+ constexpr size_t NAME_BUFFER_SIZE = 500;
+ constexpr size_t MAX_COMPONENT_BYTES = 255;
+ constexpr char MOVE_HERE_ENTRY[] = "\x01";
+@@ -119,6 +121,8 @@ bool FileBrowserActivity::usesIconLayout() const {
+          InxGridGeometry::layoutFrom(SETTINGS.inxLibraryLayout) == InxItemLayout::Icons;
+ }
+ 
++int FileBrowserActivity::menuNavigationColumns() const { return usesIconLayout() ? InxGridGeometry::columns : 1; }
++
+ void FileBrowserActivity::drawIconGrid(UiScreen& screen, const fui::Rect rect) {
+   const int start = nav.top;
+   constexpr int iconSize = 72;
+@@ -465,6 +469,7 @@ void FileBrowserActivity::activateSelected() {
+ bool FileBrowserActivity::handleCustomInput() {
+   if (editPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return true;
+ 
++#if !FREEINK_DEVICE_PAPERDIY
+   // Long press BACK (1s+) goes to root folder (Books mode only).
+   // In firmware-pick mode we keep navigation simple: short Back = up dir / cancel.
+   if (mode == Mode::Books && browserState == BrowserState::Browsing &&
+@@ -482,17 +487,20 @@ bool FileBrowserActivity::handleCustomInput() {
+     requestUpdate();
+     return true;
+   }
++#endif
+ 
+   return false;
+ }
+ 
+ bool FileBrowserActivity::handleButtons() {
++#if !FREEINK_DEVICE_PAPERDIY
+   if (mode == Mode::Books && browserState == BrowserState::Browsing &&
+       mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, GO_HOME_MS)) {
+     app.clearTapFlash();
+     showEditMenu();
+     return true;
+   }
++#endif
+ 
+   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+     activateSelected();
+@@ -500,8 +508,11 @@ bool FileBrowserActivity::handleButtons() {
+   }
+ 
+   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+-    // Short press: go up one directory, or go home if at root
+-    if (mappedInput.getHeldTime() < GO_HOME_MS) {
++    // PaperDIY's held A is the normal Back gesture, including firmware pickers.
++#if !FREEINK_DEVICE_PAPERDIY
++    if (mappedInput.getHeldTime() < GO_HOME_MS)
++#endif
++    {
+       if (basepath != "/") {
+         const std::string oldPath = basepath;
+ 
+@@ -664,7 +675,13 @@ void FileBrowserActivity::drawFooter() {
+                           nav.selected >= 0 && nav.selected < listCount() && files[nav.selected] == MOVE_HERE_ENTRY;
+   const char* confirmLabel =
+       files.empty() ? "" : (movingHere ? tr(STR_MOVE_HERE) : (selectingFile ? tr(STR_SELECT) : tr(STR_OPEN)));
++#if FREEINK_DEVICE_PAPERDIY
++  const int columns = menuNavigationColumns();
++  const auto labels =
++      mainTabButtonLabels(backLabel, confirmLabel, listCount() > columns, true, listCount() > 1 && columns > 1);
++#else
+   const auto labels = mainTabButtonLabels(backLabel, confirmLabel, !files.empty());
++#endif
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+ }
+ 
+diff --git a/src/activities/home/FileBrowserActivity.h b/src/activities/home/FileBrowserActivity.h
+index 789f5a11..2b1a661a 100644
+--- a/src/activities/home/FileBrowserActivity.h
++++ b/src/activities/home/FileBrowserActivity.h
+@@ -65,6 +65,7 @@ class FileBrowserActivity final : public UiListActivity {
+   void prewarmRowGlyphs(int start);
+ 
+   bool usesIconLayout() const;
++  int menuNavigationColumns() const override;
+   void drawIconGrid(UiScreen& screen, freeink::ui::Rect rect);
+ 
+   int listCount() const override { return static_cast<int>(files.size()); }
+@@ -75,8 +76,8 @@ class FileBrowserActivity final : public UiListActivity {
+   bool canSwipeDelete(int index) const override;
+   void swipeDelete(int index) override;
+ #endif
+-  // Long-press BACK goes to root; short Back goes up a directory (home/cancel at
+-  // root), and Confirm activates on RELEASE (a hold is "delete").
++  // PaperDIY uses held A/B for ordinary Back/Confirm. Other boards retain
++  // long Back to root and long Confirm for the edit menu.
+   bool handleCustomInput() override;
+   bool handleButtons() override;
+   // Header shows the current folder name (battery indicator via GUI.drawHeader);
 diff --git a/src/activities/home/HomeActivity.cpp b/src/activities/home/HomeActivity.cpp
-index e430f7d4..b94f67be 100644
+index e430f7d4..a8b3f55b 100644
 --- a/src/activities/home/HomeActivity.cpp
 +++ b/src/activities/home/HomeActivity.cpp
-@@ -698,15 +698,16 @@ void HomeActivity::render(RenderLock&&) {
+@@ -103,6 +103,60 @@ void HomeActivity::requestCarouselUpdate(CarouselUpdateScope scope) {
+   requestUpdate();
+ }
+ 
++bool HomeActivity::handlePaperDiyNavigation(const bool isCarousel) {
++  const bool horizontal = mappedInput.wasReleased(MappedInputManager::Button::Up);
++  const bool vertical = mappedInput.wasReleased(MappedInputManager::Button::Down);
++  if (!horizontal && !vertical) return false;
++
++  const int bookCount = static_cast<int>(recentBooks.size());
++  const int menuCount = getMenuItemCount() - bookCount;
++  const bool coversFocused = selectorIndex < bookCount;
++  if (isCarousel) {
++    if (horizontal) {
++      if (coversFocused) {
++        selectorIndex = ButtonNavigator::nextIndex(selectorIndex, bookCount);
++        lastCarouselBookIndex = selectorIndex;
++      } else {
++        selectorIndex = bookCount + ButtonNavigator::nextIndex(selectorIndex - bookCount, menuCount);
++      }
++    } else if (bookCount > 0) {
++      if (coversFocused) {
++        lastCarouselBookIndex = selectorIndex;
++        selectorIndex = bookCount;
++      } else {
++        selectorIndex = std::clamp(lastCarouselBookIndex, 0, bookCount - 1);
++      }
++    } else {
++      return true;
++    }
++    requestCarouselUpdate(horizontal && !coversFocused ? CarouselUpdateScope::MenuOnly : CarouselUpdateScope::Full);
++    return true;
++  }
++
++  if (coverGridUi) {
++    const int base = horizontal ? bookCount : 0;
++    const int count = horizontal ? menuCount : bookCount;
++    if (count <= 0) return true;
++    selectorIndex = selectorIndex < base || selectorIndex >= base + count
++                        ? base
++                        : base + ButtonNavigator::nextIndex(selectorIndex - base, count);
++  } else if (horizontal) {
++    if (!coversFocused || bookCount <= 1) return true;
++    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, bookCount);
++    lastCarouselBookIndex = selectorIndex;
++  } else if (coversFocused) {
++    lastCarouselBookIndex = selectorIndex;
++    selectorIndex = bookCount;
++  } else {
++    ++selectorIndex;
++    if (selectorIndex >= bookCount + menuCount) {
++      selectorIndex = bookCount > 0 ? std::clamp(lastCarouselBookIndex, 0, bookCount - 1) : 0;
++    }
++  }
++  requestUpdate();
++  return true;
++}
++
+ void HomeActivity::loadRecentBooks(int maxBooks) {
+   recentBooks.clear();
+   const auto& books = RECENT_BOOKS.getBooks();
+@@ -450,6 +504,9 @@ void HomeActivity::loop() {
+     }
+   };
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  if (handlePaperDiyNavigation(isCarousel)) return;
++#else
+   if (isCarousel) {
+     const bool coversFocused = selectorIndex < bookCount;
+     const int rowIndex = coversFocused ? selectorIndex : selectorIndex - bookCount;
+@@ -499,6 +556,7 @@ void HomeActivity::loop() {
+     });
+   }
+ 
++#endif
+   if (coverGridUi) {
+     const int touched = coverGridUi->selectedAction(mappedInput);
+     if (touched >= 0 && touched < menuCount) {
+@@ -513,6 +571,7 @@ void HomeActivity::loop() {
+     // Side page buttons walk the covers, front Left/Right walk the tabs
+     // (selectorIndex is flat: books first, then the tab items). A press while
+     // selection sits in the other band jumps into this band first.
++#if !FREEINK_DEVICE_PAPERDIY
+     const int coverCount = static_cast<int>(recentBooks.size());
+     const auto cycleBand = [this](const int base, const int count, const int dir) {
+       if (count <= 0) return;
+@@ -535,6 +594,7 @@ void HomeActivity::loop() {
+     buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [&cycleBand, coverCount, menuCount] {
+       cycleBand(coverCount, menuCount - coverCount, +1);
+     });
++#endif
+     return;
+   }
+ 
+@@ -698,15 +758,16 @@ void HomeActivity::render(RenderLock&&) {
        static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
  
    const Rect content = isCarousel ? Rect{0, 0, pageWidth, pageHeight} : UITheme::getContentArea(renderer);
@@ -554,6 +1039,136 @@ index e430f7d4..b94f67be 100644
      menuIcons.push_back(entry->item == HomeMenuItem::OPDS_BROWSER && hasPlugins ? Plugins : entry->icon);
    }
  
+@@ -755,7 +816,11 @@ void HomeActivity::render(RenderLock&&) {
+     // Front Left/Right walk the tabs, so their hints read Left/Right; the
+     // side page buttons (unhinted) walk the covers.
+     const auto labels = mappedInput.mapLabels(hasContinueReading ? tr(STR_RESUME) : "", tr(STR_SELECT),
++#if FREEINK_DEVICE_PAPERDIY
++                                              tr(STR_DIR_RIGHT), tr(STR_DIR_DOWN));
++#else
+                                               tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
++#endif
+     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+     renderer.displayBuffer(!firstRenderDone ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+     // Slot heights are recorded during the draw above; a change (first layout
+@@ -806,8 +871,14 @@ void HomeActivity::render(RenderLock&&) {
+   drawMenu();
+ 
+   if (!isCarousel) {
+-    const auto labels = mappedInput.mapLabels(SETTINGS.standbyShortcutEnabled ? tr(STR_STANDBY_TITLE) : "",
+-                                              tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
++    const auto labels =
++        mappedInput.mapLabels(SETTINGS.standbyShortcutEnabled ? tr(STR_STANDBY_TITLE) : "", tr(STR_SELECT),
++#if FREEINK_DEVICE_PAPERDIY
++                              recentBooks.size() > 1 ? tr(STR_DIR_RIGHT) : "",
++#else
++                              tr(STR_DIR_UP),
++#endif
++                              tr(STR_DIR_DOWN));
+     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+   }
+ 
+diff --git a/src/activities/home/HomeActivity.h b/src/activities/home/HomeActivity.h
+index 55ad1fc6..31d94644 100644
+--- a/src/activities/home/HomeActivity.h
++++ b/src/activities/home/HomeActivity.h
+@@ -59,6 +59,7 @@ class HomeActivity final : public Activity {
+     return isCarousel && recentsLoaded && scope == CarouselUpdateScope::MenuOnly;
+   }
+   void requestCarouselUpdate(CarouselUpdateScope scope);
++  bool handlePaperDiyNavigation(bool isCarousel);
+   bool storeCoverBuffer();    // Store frame buffer for cover image
+   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
+   void freeCoverBuffer();     // Free the stored cover buffer
+diff --git a/src/activities/home/InxRecentActivity.cpp b/src/activities/home/InxRecentActivity.cpp
+index 161236e3..a452dbe6 100644
+--- a/src/activities/home/InxRecentActivity.cpp
++++ b/src/activities/home/InxRecentActivity.cpp
+@@ -128,6 +128,22 @@ InxRecentLayout InxRecentActivity::layout() const {
+   return value < InxRecentLayout::Count ? value : InxRecentLayout::Flow;
+ }
+ 
++int InxRecentActivity::menuNavigationColumns() const {
++  switch (layout()) {
++    case InxRecentLayout::Flow:
++      return std::max(1, listCount());
++    case InxRecentLayout::Grid:
++      return 2;
++    case InxRecentLayout::Icons:
++      return 3;
++    case InxRecentLayout::List:
++    case InxRecentLayout::Cover:
++    case InxRecentLayout::Count:
++      return 1;
++  }
++  return 1;
++}
++
+ Rect InxRecentActivity::contentRect() const {
+   Rect content = pageContentRect();
+   const auto& metrics = UITheme::getInstance().getMetrics();
+diff --git a/src/activities/home/InxRecentActivity.h b/src/activities/home/InxRecentActivity.h
+index 66657ba5..67979b2a 100644
+--- a/src/activities/home/InxRecentActivity.h
++++ b/src/activities/home/InxRecentActivity.h
+@@ -51,6 +51,7 @@ class InxRecentActivity final : public RecentBooksActivity {
+   int thumbnailHeight = 0;
+ 
+   InxRecentLayout layout() const;
++  int menuNavigationColumns() const override;
+   Rect contentRect() const;
+   const ReadingBookStats* statsAt(int index) const;
+   void setThumbnailHeight(int displayHeight);
+diff --git a/src/activities/home/RecentBooksActivity.cpp b/src/activities/home/RecentBooksActivity.cpp
+index 9fb9ad18..5c87d6c8 100644
+--- a/src/activities/home/RecentBooksActivity.cpp
++++ b/src/activities/home/RecentBooksActivity.cpp
+@@ -15,10 +15,12 @@
+ 
+ namespace fui = freeink::ui;
+ 
++#if !FREEINK_DEVICE_PAPERDIY
+ namespace {
+ // Hold threshold for the long-press "remove from list" action (firmware convention).
+ constexpr unsigned long LONG_PRESS_MS = 1000;
+ }  // namespace
++#endif
+ 
+ RecentBooksActivity::RecentBooksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+     : UiListActivity("RecentBooks", renderer, mappedInput, /*wantsTouchLongPress=*/true) {}
+@@ -101,12 +103,17 @@ void RecentBooksActivity::onRowLongPress(const int index) {
+ 
+ bool RecentBooksActivity::handleButtons() {
+   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+-    if (!recentBooks.empty() && nav.selected < listCount()) {
++    if (!recentBooks.empty() && nav.selected >= 0 && nav.selected < listCount()) {
++#if FREEINK_DEVICE_PAPERDIY
++      // Holding B is the board's only Confirm gesture, not a delete modifier.
++      activateIndex(nav.selected);
++#else
+       if (mappedInput.getHeldTime() >= LONG_PRESS_MS) {
+         promptRemoveBook(recentBooks[nav.selected].path, recentBooks[nav.selected].title);
+       } else {
+         activateIndex(nav.selected);
+       }
++#endif
+       return true;
+     }
+   }
+@@ -181,7 +188,13 @@ void RecentBooksActivity::buildScreen(UiScreen& screen) {
+ void RecentBooksActivity::drawFooter() {
+   // No rows: blank the row-action hints, same as FileBrowserActivity.
+   const bool empty = recentBooks.empty();
++#if FREEINK_DEVICE_PAPERDIY
++  const int columns = menuNavigationColumns();
++  const auto labels =
++      mainTabButtonLabels(tr(STR_HOME), empty ? "" : tr(STR_OPEN), listCount() > columns, true, !empty && columns > 1);
++#else
+   const auto labels = mappedInput.mapLabels(tr(STR_HOME), empty ? "" : tr(STR_OPEN), empty ? "" : tr(STR_DIR_UP),
+                                             empty ? "" : tr(STR_DIR_DOWN));
++#endif
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+ }
 diff --git a/src/activities/reader/ReaderActivity.cpp b/src/activities/reader/ReaderActivity.cpp
 index 92b46ea6..8d12ffe0 100644
 --- a/src/activities/reader/ReaderActivity.cpp
@@ -570,6 +1185,176 @@ index 92b46ea6..8d12ffe0 100644
  }
  
  void ReaderActivity::prepareForSleep() { flushReaderSession(); }
+diff --git a/src/activities/settings/ClearCacheActivity.cpp b/src/activities/settings/ClearCacheActivity.cpp
+index b3307951..1d92efe7 100644
+--- a/src/activities/settings/ClearCacheActivity.cpp
++++ b/src/activities/settings/ClearCacheActivity.cpp
+@@ -217,7 +217,7 @@ void ClearCacheActivity::clearCache() {
+ 
+ void ClearCacheActivity::loop() {
+   if (state == WARNING) {
+-    if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
++    if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); }, true)) return;
+ 
+     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+       beginClear();
+diff --git a/src/activities/settings/HomeButtonSettingsActivity.cpp b/src/activities/settings/HomeButtonSettingsActivity.cpp
+index 9bf17800..a77cba99 100644
+--- a/src/activities/settings/HomeButtonSettingsActivity.cpp
++++ b/src/activities/settings/HomeButtonSettingsActivity.cpp
+@@ -7,7 +7,7 @@
+ namespace fui = freeink::ui;
+ 
+ bool HomeButtonSettingsActivity::handleCustomInput() {
+-  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); });
++  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); }, true);
+ }
+ 
+ void HomeButtonSettingsActivity::activateIndex(int index) {
+diff --git a/src/activities/settings/KOReaderSettingsActivity.cpp b/src/activities/settings/KOReaderSettingsActivity.cpp
+index 1ddfeef9..37a70516 100644
+--- a/src/activities/settings/KOReaderSettingsActivity.cpp
++++ b/src/activities/settings/KOReaderSettingsActivity.cpp
+@@ -41,7 +41,7 @@ int KOReaderSettingsActivity::listCount() const { return MENU_ITEMS; }
+ const char* KOReaderSettingsActivity::headerTitle() const { return tr(STR_KOREADER_SYNC); }
+ 
+ bool KOReaderSettingsActivity::handleCustomInput() {
+-  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); });
++  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); }, true);
+ }
+ 
+ void KOReaderSettingsActivity::activateIndex(const int index) {
+diff --git a/src/activities/settings/OpdsServerListActivity.cpp b/src/activities/settings/OpdsServerListActivity.cpp
+index 27d99d4c..1dfe6822 100644
+--- a/src/activities/settings/OpdsServerListActivity.cpp
++++ b/src/activities/settings/OpdsServerListActivity.cpp
+@@ -104,7 +104,7 @@ void OpdsServerListActivity::rebuildRowItems() {
+ }
+ 
+ bool OpdsServerListActivity::handleCustomInput() {
+-  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); });
++  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); }, true);
+ }
+ 
+ void OpdsServerListActivity::onBackButton() {
+diff --git a/src/activities/settings/ReadingStatsSettingsActivity.cpp b/src/activities/settings/ReadingStatsSettingsActivity.cpp
+index 88514e76..df598ad7 100644
+--- a/src/activities/settings/ReadingStatsSettingsActivity.cpp
++++ b/src/activities/settings/ReadingStatsSettingsActivity.cpp
+@@ -38,7 +38,7 @@ void ReadingStatsSettingsActivity::onEnter() {
+ }
+ 
+ void ReadingStatsSettingsActivity::loop() {
+-  if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
++  if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); }, true)) return;
+   UiListActivity::loop();
+ }
+ 
+diff --git a/src/activities/settings/SettingsActivity.cpp b/src/activities/settings/SettingsActivity.cpp
+index 3dde1434..f6510a85 100644
+--- a/src/activities/settings/SettingsActivity.cpp
++++ b/src/activities/settings/SettingsActivity.cpp
+@@ -368,7 +368,7 @@ void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valueP
+ }
+ 
+ bool SettingsActivity::handleCustomInput() {
+-  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); });
++  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); }, true);
+ }
+ 
+ void SettingsActivity::navigateButtons() {
+@@ -415,7 +415,11 @@ bool SettingsActivity::handleButtons() {
+   }
+   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+     if (ringPos() == 0) {
++#if FREEINK_DEVICE_PAPERDIY
++      if (listCount() > 0) moveRingTo(1);
++#else
+       stepTab(1);
++#endif
+     } else {
+       activateIndex(ringPos() - 1);
+       requestUpdate();
+@@ -1000,11 +1004,21 @@ void SettingsActivity::drawFooter() {
+   }
+   const int ring = ringPos();
+   const auto confirmLabel =
++#if FREEINK_DEVICE_PAPERDIY
++      (ring == 0) ? tr(STR_SELECT)
++#else
+       (ring == 0) ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
++#endif
+                   : (ring > 0 && (*currentSettings)[ring - 1].nameId == StrId::STR_TIME_TO_SLEEP ? tr(STR_SELECT)
+                                                                                                  : tr(STR_TOGGLE));
+ 
+-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
++  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel,
++#if FREEINK_DEVICE_PAPERDIY
++                                            tr(STR_DIR_RIGHT),
++#else
++                                            tr(STR_DIR_UP),
++#endif
++                                            tr(STR_DIR_DOWN));
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+ }
+ 
+diff --git a/src/activities/settings/StatusBarSettingsActivity.cpp b/src/activities/settings/StatusBarSettingsActivity.cpp
+index fd006eb1..1d03ce73 100644
+--- a/src/activities/settings/StatusBarSettingsActivity.cpp
++++ b/src/activities/settings/StatusBarSettingsActivity.cpp
+@@ -98,7 +98,7 @@ void StatusBarSettingsActivity::onEnter() {
+ }
+ 
+ bool StatusBarSettingsActivity::handleCustomInput() {
+-  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); });
++  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); }, true);
+ }
+ 
+ void StatusBarSettingsActivity::activateIndex(const int index) {
+diff --git a/src/activities/settings/TextSettingsActivity.cpp b/src/activities/settings/TextSettingsActivity.cpp
+index ea42abe2..36fdb740 100644
+--- a/src/activities/settings/TextSettingsActivity.cpp
++++ b/src/activities/settings/TextSettingsActivity.cpp
+@@ -305,7 +305,11 @@ bool TextSettingsActivity::handleButtons() {
+ 
+   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+     if (ringPos() == 0) {
++#if FREEINK_DEVICE_PAPERDIY
++      if (listCount() > 0) moveRingTo(1);
++#else
+       switchTab();
++#endif
+     } else {
+       activateRow(ringPos() - 1);
+     }
+@@ -384,8 +388,12 @@ void TextSettingsActivity::buildScreen(UiScreen& screen) {
+ 
+ const char* TextSettingsActivity::confirmLabelText() const {
+   if (ringPos() == 0) {
++#if FREEINK_DEVICE_PAPERDIY
++    return tr(STR_SELECT);
++#else
+     // Confirm on the tab bar advances to the next tab.
+     return I18N.get(TAB_NAME_IDS[(static_cast<int>(tab_) + 1) % static_cast<int>(Tab::Count)]);
++#endif
+   }
+   switch (tab_) {
+     case Tab::Layout:
+@@ -426,7 +434,13 @@ void TextSettingsActivity::drawFooter() {
+     renderer.drawText(UI_10_FONT_ID, metrics_.previewPadding, capY, tr(STR_NOT_IN_PREVIEW));
+   }
+ 
+-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabelText(), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
++  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabelText(),
++#if FREEINK_DEVICE_PAPERDIY
++                                            tr(STR_DIR_RIGHT),
++#else
++                                            tr(STR_DIR_UP),
++#endif
++                                            tr(STR_DIR_DOWN));
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+ }
+ 
 diff --git a/src/activities/util/KeyboardEntryActivity.cpp b/src/activities/util/KeyboardEntryActivity.cpp
 index 4ee0e3c3..862c4663 100644
 --- a/src/activities/util/KeyboardEntryActivity.cpp
@@ -656,6 +1441,35 @@ index b09baf95..9aed8188 100644
    bool syncSelectionToValue(int16_t value);
    // Handles one key activation (by stable key id). Returns true when the
    // screen needs a repaint; OK/cancel finish the activity instead.
+diff --git a/src/components/OptionPopup.h b/src/components/OptionPopup.h
+index cd8e9ca0..e420ebff 100644
+--- a/src/components/OptionPopup.h
++++ b/src/components/OptionPopup.h
+@@ -75,7 +75,8 @@ class OptionPopup {
+     finishShow(currentIndex, std::move(onSelect));
+   }
+ 
+-  bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate) {
++  bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate,
++                   bool paperDiyVerticalOnly = false) {
+     if (!active) return false;
+ 
+     const int total = static_cast<int>(ownedStrings.size());
+@@ -155,6 +156,14 @@ class OptionPopup {
+       if (!input.isPressed(confirm)) ignoreInitialConfirmRelease = false;
+     }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++    if (paperDiyVerticalOnly) {
++      return handleButtons(false, input.wasReleased(MappedInputManager::Button::Down),
++                           input.wasReleased(MappedInputManager::Button::Confirm),
++                           input.wasReleased(MappedInputManager::Button::Back), requestUpdate);
++    }
++#endif
++    (void)paperDiyVerticalOnly;
+     return handleButtons(input.wasPressed(MappedInputManager::Button::NavPrevious),
+                          input.wasPressed(MappedInputManager::Button::NavNext),
+                          input.wasReleased(MappedInputManager::Button::Confirm),
 diff --git a/src/main.cpp b/src/main.cpp
 index 607d299a..d51ffbad 100644
 --- a/src/main.cpp
@@ -698,7 +1512,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..00d646d2 100644
+index b0b49733..fa24dc0f 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -710,13 +1524,14 @@ index b0b49733..00d646d2 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,7 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,8 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
 +add_test(NAME PaperDiyBoardTag COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_board_tag.py)
 +add_test(NAME PaperDiyRefreshRouting COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_routing.py)
 +add_test(NAME PaperDiyKeyboardButtons COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_buttons.py)
++add_test(NAME PaperDiyMenuNavigation COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_menu_navigation.py)
 +add_test(NAME PaperDiyDisplayDriver COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_driver.py)
 diff --git a/test/inx_navigation/test_unified_keyboard.py b/test/inx_navigation/test_unified_keyboard.py
 index 11496463..be5f5962 100644
@@ -800,7 +1615,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,189 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -948,6 +1763,48 @@ new file mode 100644
 +refresh, reader exit and ordinary Apps/keyboard controls. Passing host tests does
 +not establish optical quality. Obtain explicit approval for the exact new image
 +before flashing.
++
++## Menu-navigation candidate, 2026-10-21
++
++This candidate adapts menu owners rather than remapping SDK gestures globally.
++The SDK still emits Up/Down for A/B taps and Back/Confirm for holds. Menu owners
++consume completed taps: A advances horizontally and B advances vertically.
++One-column lists only consume B; grids wrap within the current row/column and
++never select an absent cell. INX Recent uses a horizontal row in Flow, two
++columns in Grid, three in Icons and a vertical list in List/Cover. Apps and the
++library reuse their existing three-column icon geometry. INX main-tab A moves
++to the next tab; B or held-B Confirm enters content. Back returns to the tabs
++before the existing root/standby policy applies.
++
++Classic/Lyra/RoundedRaff vertical menus use B to cycle through the cover group
++and menu rows. Extended's adjacent covers use A within the cover group; B
++enters the menu and returns to the remembered cover after the final menu item.
++Carousel uses A within either horizontal band and B between cover/menu bands.
++Cover Grid uses A for its shortcut band and B for its cover selection.
++
++Settings/Text Settings use A to cycle categories/tabs, B to walk the tab-band
++plus rows, and held B on the band enters the first row without changing a
++setting. The setting-owned OptionPopup callers opt into B-only vertical
++selection; the default policy for app-owned pickers is unchanged. Existing
++two-value confirmation, save/cancel, numeric sliders and custom setting editors
++retain their behavior. They are not all converted into the same axis model.
++
++On PaperDIY, a held Confirm opens recent books/statistics entries and browser
++items rather than being reinterpreted as a remove/edit modifier. Held Back in
++the browser goes up one level or cancels a file picker at root; it does not
++jump to root based on duration. Non-PaperDIY shortcuts remain. File edit/remove
++long-hold shortcuts are no longer reachable via the PaperDIY two-key Confirm;
++this candidate prioritizes reliable opening and Back, and does not invent a
++replacement destructive shortcut.
++
++No new heap allocation, task, framebuffer or per-Activity data member is added;
++the layout-column hook adds a virtual function entry on list classes. Host
++coverage compiles production methods for both PaperDIY and non-PaperDIY,
++checks release-only snapshots, empty data, partial grid rows, category entry,
++cancel/confirm barriers and held-Confirm conflicts. Keyboard, WeRead input,
++SDK gesture classification and the accepted 30-update display policy are
++unchanged. Optical and functional hardware acceptance is still pending for
++this candidate; software checks do not establish that every theme is usable.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -1488,6 +2345,521 @@ new file mode 100644
 +                       check=True)
 +        subprocess.run([str(binary)], check=True)
 +print("PaperDIY A cycles within the row, B cycles within the column, holds keep Back/Confirm, hints show right/down; other boards unchanged")
+diff --git a/test/test_paperdiy_menu_navigation.py b/test/test_paperdiy_menu_navigation.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_menu_navigation.py
+@@ -0,0 +1,510 @@
++"""Exercise production menu owners with PaperDIY release-only tap snapshots."""
++import os
++from pathlib import Path
++import sys
++import unittest
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT / "scripts/tests"))
++from test_reading_ui_regressions import method, run_cpp
++
++SOURCE = Path(os.environ.get("NAV_SOURCE_ROOT", ROOT))
++
++
++def body(file, signature):
++    return method((SOURCE / file).read_text(encoding="utf-8"), signature)
++
++
++INPUT = r'''
++#include <algorithm>
++#include <atomic>
++#include <cassert>
++#include <cstdint>
++#include <functional>
++#include <initializer_list>
++#include <vector>
++struct MappedInputManager {
++  enum class Button { Up=1,Down=2,Left=4,Right=8,Confirm=16,Back=32,NavNext=64,NavPrevious=128 };
++  int pressed=0,released=0,held=0;
++  bool wasPressed(Button b) const { return pressed & bit(b); }
++  bool wasReleased(Button b) const { return released & bit(b); }
++  bool isPressed(Button b) const { return held & bit(b); }
++  unsigned long getHeldTime() const { return 2000; }
++  bool wasLongPressed(Button b,unsigned long threshold) { return isPressed(b) && getHeldTime()>=threshold; }
++  static int bit(Button b) { return b==Button::NavNext ? 2|8 : b==Button::NavPrevious ? 1|4 : int(b); }
++  bool wasScreenTapped(int&,int&) const { return false; }
++  bool wasScreenTouchDown(int&,int&) const { return false; }
++  bool wasScreenTouchReleased() const { return false; }
++};
++using B=MappedInputManager::Button;
++struct ButtonNavigator {
++  MappedInputManager* input=nullptr;
++  static int nextIndex(int i,int count) { return count>0 ? (i+1)%count : 0; }
++  static int previousIndex(int i,int count) { return count>0 ? (i+count-1)%count : 0; }
++  static int nextPageIndex(int i,int count,int) { return nextIndex(i,count); }
++  static int previousPageIndex(int i,int count,int) { return previousIndex(i,count); }
++  template<class F> void onNextPress(F f) { if(input->wasPressed(B::NavNext)) f(); }
++  template<class F> void onPreviousPress(F f) { if(input->wasPressed(B::NavPrevious)) f(); }
++  template<class F> void onNextContinuous(F) {}
++  template<class F> void onPreviousContinuous(F) {}
++};
++'''
++
++
++class PaperDiyMenuNavigationTest(unittest.TestCase):
++    def test_inx_layout_column_profiles(self):
++        code = INPUT + r'''
++namespace InxGridGeometry { constexpr int columns=3; }
++enum class InxRecentLayout { Flow,Grid,List,Icons,Cover,Count };
++struct InxRecentActivity {
++  InxRecentLayout kind=InxRecentLayout::Flow;
++  int count=0;
++  int listCount() const { return count; }
++  InxRecentLayout layout() const { return kind; }
++  int menuNavigationColumns() const;
++};
++struct AppsMenuActivity {
++  bool icons=false;
++  bool usesIconLayout() const { return icons; }
++  int menuNavigationColumns() const;
++};
++struct FileBrowserActivity : AppsMenuActivity { int menuNavigationColumns() const; };
++'''
++        for file, signature in (
++                ("src/activities/home/InxRecentActivity.cpp", "int InxRecentActivity::menuNavigationColumns()"),
++                ("src/activities/apps/AppsMenuActivity.cpp", "int AppsMenuActivity::menuNavigationColumns()"),
++                ("src/activities/home/FileBrowserActivity.cpp", "int FileBrowserActivity::menuNavigationColumns()")):
++            code += body(file, signature)
++        code += r'''
++int main() {
++  InxRecentActivity recent;
++  assert(recent.menuNavigationColumns()==1);
++  recent.count=7; assert(recent.menuNavigationColumns()==7);
++  recent.kind=InxRecentLayout::Grid; assert(recent.menuNavigationColumns()==2);
++  recent.kind=InxRecentLayout::Icons; assert(recent.menuNavigationColumns()==3);
++  recent.kind=InxRecentLayout::List; assert(recent.menuNavigationColumns()==1);
++  recent.kind=InxRecentLayout::Cover; assert(recent.menuNavigationColumns()==1);
++  AppsMenuActivity apps; FileBrowserActivity files;
++  assert(apps.menuNavigationColumns()==1 && files.menuNavigationColumns()==1);
++  apps.icons=files.icons=true;
++  assert(apps.menuNavigationColumns()==3 && files.menuNavigationColumns()==3);
++}
++'''
++        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
++
++    def test_file_browser_hold_opens_book_and_back_goes_one_level(self):
++        code = INPUT + r'''
++#include <string>
++#include <utility>
++[[maybe_unused]] constexpr unsigned long GO_HOME_MS=1000;
++struct RenderLock { template<class T> explicit RenderLock(T&) {} };
++struct ActivityResult { bool isCancelled=false; };
++struct FileBrowserActivity {
++  enum class Mode { Books,PickFirmware };
++  enum class BrowserState { Browsing,ChoosingMoveDestination };
++  Mode mode=Mode::Books;
++  BrowserState browserState=BrowserState::Browsing;
++  MappedInputManager mappedInput;
++  struct Popup { bool handleInput(MappedInputManager&,const std::function<void()>&) { return false; } } editPopup;
++  struct { int selected=0,top=0; void follow(int) {} } nav;
++  struct { void clearTapFlash() {} } app;
++  std::string basepath="/one/two";
++  std::vector<std::string> files{"two/"};
++  int edits=0,opens=0,homes=0,cancels=0,finishes=0,updates=0;
++  void showEditMenu() { ++edits; }
++  void activateSelected() { ++opens; }
++  void requestUpdate() { ++updates; }
++  void loadFiles() {}
++  int findEntry(const std::string&) { return 0; }
++  void establishContentSelection(int) {}
++  int listCount() const { return int(files.size()); }
++  void cancelMove() { ++cancels; }
++  void setResult(ActivityResult&& result) { assert(result.isCancelled); ++cancels; }
++  void finish() { ++finishes; }
++  void onGoHome() { ++homes; }
++  bool handleCustomInput();
++  bool handleButtons();
++};
++'''
++        code += body("src/activities/home/FileBrowserActivity.cpp", "bool FileBrowserActivity::handleCustomInput()")
++        code += body("src/activities/home/FileBrowserActivity.cpp", "bool FileBrowserActivity::handleButtons()")
++        code += r'''
++int main() {
++  FileBrowserActivity browser;
++  browser.mappedInput={16,0,16};
++  if(FREEINK_DEVICE_PAPERDIY) assert(!browser.handleButtons() && browser.edits==0);
++  else assert(browser.handleButtons() && browser.edits==1);
++  browser.mappedInput={0,16,0}; assert(browser.handleButtons() && browser.opens==1);
++  browser.mappedInput={0,32,0};
++  if(FREEINK_DEVICE_PAPERDIY) {
++    assert(!browser.handleCustomInput());
++    assert(browser.handleButtons() && browser.basepath=="/one" && browser.homes==0);
++    assert(browser.handleButtons() && browser.basepath=="/");
++    assert(browser.handleButtons() && browser.homes==1);
++    browser.mode=FileBrowserActivity::Mode::PickFirmware;
++    assert(browser.handleButtons() && browser.finishes==1 && browser.cancels==1);
++  } else assert(browser.handleCustomInput() && browser.basepath=="/");
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++    def test_statistics_confirm_opens_without_remove_modifier(self):
++        code = INPUT + r'''
++[[maybe_unused]] constexpr unsigned long BOOK_LONG_PRESS_MS=1000;
++struct ReadingStatsActivity {
++  enum class InputFlow { All,Stop,TouchOnly };
++  MappedInputManager mappedInput;
++  bool waitForBackRelease=false,waitForConfirmRelease=false;
++  int selectedIndex=1,opens=0,removes=0,finishes=0;
++  bool defersContentSelection() const { return false; }
++  bool consumeSelectionEntryInput() { return false; }
++  void openSelectedEntry() { ++opens; }
++  void confirmRemoveSelectedBook() { ++removes; }
++  void finish() { ++finishes; }
++  InputFlow handleButtons();
++};
++'''
++        code += body("src/activities/apps/reading-stats/ReadingStatsActivity.cpp", "ReadingStatsActivity::InputFlow ReadingStatsActivity::handleButtons()")
++        code += r'''
++int main() {
++  ReadingStatsActivity stats;
++  stats.mappedInput={0,16,0}; assert(stats.handleButtons()==ReadingStatsActivity::InputFlow::Stop);
++  assert(stats.opens==(FREEINK_DEVICE_PAPERDIY ? 1 : 0));
++  assert(stats.removes==(FREEINK_DEVICE_PAPERDIY ? 0 : 1));
++  stats.waitForConfirmRelease=true;
++  stats.mappedInput={16,0,16}; assert(stats.handleButtons()==ReadingStatsActivity::InputFlow::Stop);
++  stats.mappedInput={0,16,0}; assert(stats.handleButtons()==ReadingStatsActivity::InputFlow::Stop);
++  assert(!stats.waitForConfirmRelease && stats.opens==(FREEINK_DEVICE_PAPERDIY ? 1 : 0));
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++    def test_settings_confirm_enters_content_without_changing_values(self):
++        code = INPUT + r'''
++struct { int saves=0; void saveToFile() { ++saves; } } SETTINGS;
++struct RenderLock { template<class T> explicit RenderLock(T&) {} };
++struct Nav { int selected=0; void follow(int) {} };
++namespace InxAccordionGeometry { struct Row { int category=0; }; Row rowAt(int,int,int) { return {}; } }
++struct SettingsActivity {
++  MappedInputManager mappedInput;
++  Nav nav;
++  int expandedCategories=0,count=3,tabs=0,activations=0,homes=0,updates=0;
++  bool accordion=false;
++  bool usesAccordion() const { return accordion; }
++  int accordionSettingCounts() const { return 1; }
++  int listCount() const { return count; }
++  int ringPos() const { return nav.selected; }
++  Nav& activeNav() { return nav; }
++  void closeRouting() {}
++  void rebuildAccordionRows() {}
++  void requestUpdate() { ++updates; }
++  void stepTab(int direction) { tabs+=direction; }
++  void moveRingTo(int index) { nav.selected=index; requestUpdate(); }
++  void activateIndex(int index) { assert(index>=0 && index<count); ++activations; }
++  void onGoHome() { ++homes; }
++  bool handleButtons();
++};
++struct TextSettingsActivity : SettingsActivity {
++  enum class ExitDestination { Previous };
++  void exitAfterFinalFont(ExitDestination) { ++homes; }
++  void switchTab() { ++tabs; }
++  void activateRow(int row) { activateIndex(row); }
++  bool handleButtons();
++};
++'''
++        code += body("src/activities/settings/SettingsActivity.cpp", "bool SettingsActivity::handleButtons()")
++        code += body("src/activities/settings/TextSettingsActivity.cpp", "bool TextSettingsActivity::handleButtons()")
++        code += r'''
++int main() {
++  SettingsActivity settings;
++  settings.mappedInput={16,0,16}; assert(!settings.handleButtons());
++  settings.mappedInput={0,16,0}; assert(settings.handleButtons());
++  assert(settings.activations==0);
++  if(FREEINK_DEVICE_PAPERDIY) {
++    assert(settings.ringPos()==1 && settings.tabs==0);
++    assert(settings.handleButtons() && settings.activations==1);
++    settings.mappedInput={0,32,0}; assert(settings.handleButtons());
++    assert(settings.ringPos()==0 && settings.homes==0);
++    assert(settings.handleButtons() && settings.homes==1 && SETTINGS.saves==1);
++    settings.count=0; settings.mappedInput={0,16,0}; assert(settings.handleButtons());
++    assert(settings.ringPos()==0 && settings.activations==1);
++  } else assert(settings.tabs==1 && settings.ringPos()==0);
++  TextSettingsActivity text;
++  text.mappedInput={0,16,0}; assert(text.handleButtons());
++  assert(text.activations==0);
++  if(FREEINK_DEVICE_PAPERDIY) {
++    assert(text.ringPos()==1 && text.tabs==0);
++    assert(text.handleButtons() && text.activations==1);
++  } else assert(text.tabs==1 && text.ringPos()==0);
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++    def test_setting_picker_opt_in_and_release_barrier(self):
++        file = SOURCE / "src/components/OptionPopup.h"
++        source = file.read_text(encoding="utf-8")
++        handler = method(source, "  bool handleInput(")
++        tail = handler[handler.index("    const auto confirm"):]
++        code = INPUT + r'''
++#include <string>
++struct OptionPopup {
++  bool active=true,ignoreInitialConfirmRelease=false;
++  int selectedIndex=0;
++  std::vector<std::string> ownedStrings{"one","two","three"};
++  std::function<void(int)> onSelectCallback;
++'''
++        code += method(source, "  bool handleButtons(")
++        code += "bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate, bool paperDiyVerticalOnly=false) {\n" + tail + "\n};\n"
++        code += r'''
++int main() {
++  int updates=0,commits=0;
++  auto update=[&] { ++updates; };
++  MappedInputManager input;
++  OptionPopup popup;
++  popup.onSelectCallback=[&](int index) { assert(index==0); ++commits; };
++  input={1,1,0}; popup.handleInput(input,update,true);
++  assert(popup.selectedIndex==(FREEINK_DEVICE_PAPERDIY ? 0 : 2));
++  popup.selectedIndex=0;
++  input={2,2,0}; popup.handleInput(input,update,true); assert(popup.selectedIndex==1);
++  popup.handleInput(input,update,true); assert(popup.selectedIndex==2);
++  popup.handleInput(input,update,true); assert(popup.selectedIndex==0 && commits==0);
++  popup.ignoreInitialConfirmRelease=true;
++  input={0,16,0}; popup.handleInput(input,update,true);
++  assert(popup.active && commits==0);
++  popup.handleInput(input,update,true); assert(!popup.active && commits==1);
++  OptionPopup cancel; cancel.onSelectCallback=[&](int) { ++commits; };
++  input={0,32,0}; cancel.handleInput(input,update,true); assert(!cancel.active && commits==1);
++  OptionPopup app; input={1,1,0}; app.handleInput(input,update);
++  assert(app.selectedIndex==2); // WeRead and other app pickers retain their original policy.
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++    def test_recent_book_confirm_does_not_become_remove(self):
++        code = INPUT + r'''
++#include <string>
++[[maybe_unused]] constexpr unsigned long LONG_PRESS_MS=1000;
++struct Input : MappedInputManager { unsigned long getHeldTime() const { return 2000; } };
++struct RecentBooksActivity {
++  struct Book { std::string path,title; };
++  std::vector<Book> recentBooks{Book{}};
++  struct { int selected=0; } nav;
++  Input mappedInput;
++  int opens=0,removes=0,homes=0;
++  int listCount() const { return int(recentBooks.size()); }
++  void activateIndex(int) { ++opens; }
++  void promptRemoveBook(const std::string&,const std::string&) { ++removes; }
++  void onGoHome() { ++homes; }
++  bool handleButtons();
++};
++'''
++        code += body("src/activities/home/RecentBooksActivity.cpp", "bool RecentBooksActivity::handleButtons()")
++        code += r'''
++int main() {
++  RecentBooksActivity recent;
++  recent.mappedInput.released=16; assert(recent.handleButtons());
++  assert(recent.opens==(FREEINK_DEVICE_PAPERDIY ? 1 : 0));
++  assert(recent.removes==(FREEINK_DEVICE_PAPERDIY ? 0 : 1));
++  recent.recentBooks.clear(); assert(!recent.handleButtons());
++  recent.recentBooks.resize(1); recent.nav.selected=-1; assert(!recent.handleButtons());
++  recent.mappedInput.released=32; assert(recent.handleButtons() && recent.homes==1);
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++    def test_shared_vertical_list_and_setting_tabs(self):
++        code = INPUT + r'''
++struct Nav { std::atomic<int> selected{0}; int inputPageRows() const { return 4; } };
++struct UiListActivity {
++  MappedInputManager mappedInput;
++  ButtonNavigator buttonNavigator{&mappedInput};
++  Nav nav;
++  int count=4,moves=0,columns=1;
++  int menuNavigationColumns() const { return columns; }
++  int listCount() const { return count; }
++  Nav& activeNav() { return nav; }
++  void moveSelectionTo(int index) { nav.selected=index; ++moves; }
++  void navigateButtons();
++};
++struct UiTabListActivity : UiListActivity {
++  int tabs=0;
++  bool navigationStartedOnTabs=false;
++  int ringPos() const { return nav.selected; }
++  void moveRingTo(int index) { moveSelectionTo(index); }
++  void stepTab(int direction) { tabs+=direction; }
++  void navigateButtons();
++};
++'''
++        code += body("src/activities/UiListActivity.cpp", "void UiListActivity::navigateButtons()")
++        code += body("src/activities/UiTabListActivity.cpp", "void UiTabListActivity::navigateButtons()")
++        code += r'''
++int main() {
++  UiListActivity list;
++  list.nav.selected=2;
++  list.mappedInput={1,1,0}; list.navigateButtons();
++  assert(list.nav.selected==(FREEINK_DEVICE_PAPERDIY ? 2 : 1));
++  list.nav.selected=0; list.moves=0;
++  list.mappedInput={2,2,0}; list.navigateButtons();
++  assert(list.nav.selected==1 && list.moves==1);
++  list.nav.selected=3; list.navigateButtons(); assert(list.nav.selected==0);
++  list.count=0; list.moves=0; list.navigateButtons();
++  if(FREEINK_DEVICE_PAPERDIY) assert(list.moves==0);
++  UiTabListActivity tabs;
++  tabs.mappedInput={1,1,0}; tabs.navigateButtons();
++  if(FREEINK_DEVICE_PAPERDIY) assert(tabs.tabs==1 && tabs.ringPos()==0);
++  else assert(tabs.tabs==0 && tabs.ringPos()==4);
++  tabs.nav.selected=0; tabs.moves=0;
++  tabs.mappedInput={2,2,0}; tabs.navigateButtons();
++  assert(tabs.ringPos()==1 && tabs.moves==1);
++  tabs.nav.selected=4; tabs.navigateButtons(); assert(tabs.ringPos()==0);
++  if(FREEINK_DEVICE_PAPERDIY) {
++    tabs.mappedInput={0,0,2}; tabs.navigateButtons(); assert(tabs.ringPos()==0);
++    tabs.count=0; tabs.mappedInput={2,2,0}; tabs.navigateButtons(); assert(tabs.ringPos()==0);
++    tabs.mappedInput={1,1,0}; tabs.navigateButtons(); assert(tabs.tabs==2);
++    for(int columns : {2,3,12}) for(int count=1;count<=12;++count) {
++      UiListActivity grid; grid.count=count; grid.columns=columns;
++      for(int selected=0;selected<count;++selected) {
++        grid.nav.selected=selected;
++        grid.mappedInput={1,1,0}; grid.navigateButtons();
++        assert(grid.nav.selected/columns==selected/columns);
++        assert(grid.nav.selected>=0 && grid.nav.selected<count);
++        grid.nav.selected=selected;
++        grid.mappedInput={2,2,0}; grid.navigateButtons();
++        assert(grid.nav.selected%columns==selected%columns);
++        assert(grid.nav.selected>=0 && grid.nav.selected<count);
++      }
++    }
++  }
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++    def test_home_theme_bands_and_empty_recents(self):
++        code = INPUT + r'''
++struct HomeActivity {
++  enum class CarouselUpdateScope { Full,MenuOnly };
++  MappedInputManager mappedInput;
++  std::vector<int> recentBooks;
++  bool coverGridUi=false;
++  int selectorIndex=0,lastCarouselBookIndex=0,menuCount=5,updates=0;
++  CarouselUpdateScope scope=CarouselUpdateScope::Full;
++  int getMenuItemCount() const { return int(recentBooks.size())+menuCount; }
++  void requestUpdate() { ++updates; }
++  void requestCarouselUpdate(CarouselUpdateScope s) { scope=s; ++updates; }
++  bool handlePaperDiyNavigation(bool);
++  void tap(int key,bool carousel=false) { mappedInput={key,key,0}; assert(handlePaperDiyNavigation(carousel)); }
++};
++'''
++        code += body("src/activities/home/HomeActivity.cpp", "bool HomeActivity::handlePaperDiyNavigation(")
++        code += r'''
++int main() {
++  for(int books : {0,1,3}) for(int menuCount : {5,6}) {
++    HomeActivity home; home.recentBooks.resize(books); home.menuCount=menuCount;
++    home.mappedInput={1,0,1}; assert(!home.handlePaperDiyNavigation(false));
++    home.tap(1); assert(home.selectorIndex==(books>1 ? 1 : 0));
++    const int cover=home.selectorIndex;
++    home.tap(2); assert(home.selectorIndex==(books ? books : 1));
++    for(int n=0;n<3*(books+menuCount);++n) {
++      home.tap(2); assert(home.selectorIndex>=0 && home.selectorIndex<books+menuCount);
++    }
++    if(books) {
++      home.selectorIndex=books+menuCount-1; home.tap(2); assert(home.selectorIndex==cover);
++    }
++    HomeActivity carousel; carousel.recentBooks.resize(books); carousel.menuCount=menuCount;
++    carousel.tap(1,true); assert(carousel.selectorIndex==(books>1 ? 1 : books ? 0 : 1));
++    if(books) {
++      const int remembered=carousel.selectorIndex;
++      carousel.tap(2,true); assert(carousel.selectorIndex==books);
++      for(int n=0;n<menuCount;++n) carousel.tap(1,true);
++      assert(carousel.selectorIndex==books && carousel.scope==HomeActivity::CarouselUpdateScope::MenuOnly);
++      carousel.tap(2,true); assert(carousel.selectorIndex==remembered);
++    }
++    HomeActivity grid; grid.recentBooks.resize(books); grid.menuCount=menuCount; grid.coverGridUi=true;
++    grid.tap(1); assert(grid.selectorIndex==(books ? books : 1));
++    for(int n=0;n<menuCount;++n) grid.tap(1);
++    assert(grid.selectorIndex>=books && grid.selectorIndex<books+menuCount);
++    const int before=grid.selectorIndex; grid.tap(2);
++    assert(grid.selectorIndex==(books ? 0 : before));
++    if(books) for(int n=0;n<books;++n) grid.tap(2);
++    if(books) assert(grid.selectorIndex==0);
++  }
++}
++'''
++        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
++
++    def test_inx_tab_focus_and_complete_release_frames(self):
++        code = INPUT + r'''
++struct Rect { int x=0,y=0,width=100,height=20; };
++enum class MainTab { None=-1,Recent,Library,Settings,Statistics,Apps };
++enum class MainTabFocus { Tabs,Content };
++enum class MainTabContentEdge { First,Last };
++struct MainTabs {
++  static MainTab adjacent(MainTab tab,int direction) { return MainTab((int(tab)+direction+5)%5); }
++  static MainTab fromX(int,int) { return MainTab::Recent; }
++  static MainTab backTarget(MainTab) { return MainTab::Recent; }
++};
++struct Page {
++  bool usesMainTabBar() const { return true; }
++  struct Layout { Rect tabBar; };
++  Layout mainTabLayout() const { return {}; }
++  MainTab tab=MainTab::Recent;
++  int selected=-1,selections=0;
++  MainTab mainTab() const { return tab; }
++  bool defersContentSelection() const { return false; }
++  bool hasContentSelection() const { return selected>=0; }
++  bool mainTabBackReturnsToTabs() const { return true; }
++  void selectMainTabContentEdge(MainTabContentEdge edge) { selected=edge==MainTabContentEdge::First ? 0 : 9; ++selections; }
++};
++struct ActivityManager {
++  Page* currentActivity=nullptr;
++  MappedInputManager mappedInput;
++  MainTabFocus mainTabFocus=MainTabFocus::Tabs;
++  bool mainTabTouchFocusPending=false,mainTabEntryReleasePending=false;
++  int updates=0,switches=0;
++  void requestUpdate() { ++updates; }
++  void goToMainTab(MainTab tab) { currentActivity->tab=tab; ++switches; mainTabEntryReleasePending=false; }
++  bool handleMainTabInput();
++};
++'''
++        code += body("src/activities/ActivityManager.cpp", "bool ActivityManager::handleMainTabInput()")
++        code += r'''
++int main() {
++  Page page; ActivityManager manager; manager.currentActivity=&page;
++  if(FREEINK_DEVICE_PAPERDIY) {
++    for(int n=0;n<5;++n) { manager.mappedInput={1,1,0}; assert(manager.handleMainTabInput()); }
++    assert(page.tab==MainTab::Recent && manager.switches==5 && page.selections==0);
++    manager.mappedInput={2,2,0}; assert(manager.handleMainTabInput());
++    assert(manager.mainTabFocus==MainTabFocus::Content && page.selected==0 && page.selections==1);
++    manager.mappedInput={0,0,0}; assert(!manager.handleMainTabInput());
++    manager.mappedInput={2,2,0}; assert(!manager.handleMainTabInput()); // next B belongs to the page
++    manager.mappedInput={32,32,0}; assert(manager.handleMainTabInput());
++    assert(manager.mainTabFocus==MainTabFocus::Tabs);
++    manager.mappedInput={16,0,16}; assert(manager.handleMainTabInput());
++    assert(manager.mainTabFocus==MainTabFocus::Tabs);
++    manager.mappedInput={0,16,0}; assert(manager.handleMainTabInput());
++    assert(manager.mainTabFocus==MainTabFocus::Content && page.selections==1); // enter, don't activate
++    manager.mainTabEntryReleasePending=true; manager.mappedInput={0,0,0};
++    assert(manager.handleMainTabInput() && !manager.mainTabEntryReleasePending);
++    assert(!manager.handleMainTabInput());
++  } else {
++    manager.mappedInput={8,8,0}; assert(manager.handleMainTabInput());
++    assert(page.tab==MainTab::Library);
++    manager.mappedInput={1,0,1}; assert(manager.handleMainTabInput());
++    assert(page.selected==9 && manager.mainTabEntryReleasePending);
++    manager.mappedInput={0,1,0}; assert(manager.handleMainTabInput());
++    assert(!manager.mainTabEntryReleasePending);
++  }
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/test/test_paperdiy_refresh_routing.py b/test/test_paperdiy_refresh_routing.py
 new file mode 100644
 --- /dev/null
