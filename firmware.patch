@@ -28,10 +28,10 @@ index 5c2bd6bb..1d9409ee 100644
  - **无线功能**：浏览器传书与设置、Calibre 无线连接、OPDS 下载、WebDAV 和设备 OTA 更新。
  - **Apps 应用中心**：数独、五子棋、中国象棋、扫雷、2048、电子木鱼、Ugly Avatar 等轻量游戏与工具。[应用说明](./src/activities/apps/README.md)。
 diff --git a/lib/I18n/translations/chinese.yaml b/lib/I18n/translations/chinese.yaml
-index a4b35fd7..d73f0f9f 100644
+index a4b35fd7..66b29803 100644
 --- a/lib/I18n/translations/chinese.yaml
 +++ b/lib/I18n/translations/chinese.yaml
-@@ -1,4 +1,10 @@
+@@ -1,4 +1,17 @@
  _language_name: "简体中文"
 +STR_LIBRARY_ACTIONS: "菜单"
 +STR_LIBRARY_REVERSE_SORT: "反向排序"
@@ -39,10 +39,17 @@ index a4b35fd7..d73f0f9f 100644
 +STR_KB_PAPERDIY_CONFIRM: "长按 B 输入；长按 A 返回"
 +STR_KB_PAPERDIY_ALTERNATE: "B 再按久些：大写或辅助字符"
 +STR_KB_PAPERDIY_CLEAR: "在退格键上按住 B 更久：清空"
++STR_PAPERDIY_FILE_ACTIONS_HINT: "长按 B 打开；B 按住更久：文件操作"
++STR_PAPERDIY_VALUE_STEP: "A -%s / B +%s"
++STR_PAPERDIY_SAVE_CANCEL: "长按 B 保存；长按 A 取消"
++STR_PAPERDIY_DATE_EDIT_HINT: "A 减 B 加；长 B 完成，长 A 撤销"
++STR_PAPERDIY_DATE_SELECT_HINT: "长按 B 编辑；选择“保存”后生效"
++STR_PAPERDIY_EDIT: "编辑"
++STR_PAPERDIY_FIXED_BUTTONS: "两键操作固定，无需前键重映射。"
  _language_code: "ZH_CN"
  _order: "23"
  _bcp47: "zh-CN"
-@@ -8,6 +14,7 @@ STR_BOOTING: "启动中"
+@@ -8,6 +21,7 @@ STR_BOOTING: "启动中"
  STR_SLEEPING: "休眠中"
  STR_ENTERING_SLEEP: "正在进入休眠"
  STR_BROWSE_FILES: "浏览文件"
@@ -51,7 +58,7 @@ index a4b35fd7..d73f0f9f 100644
  STR_APPS_TITLE: "应用"
  STR_APP_VISIBILITY: "隐藏应用"
 diff --git a/lib/I18n/translations/english.yaml b/lib/I18n/translations/english.yaml
-index df35ac5d..4615bee0 100644
+index df35ac5d..633ecf66 100644
 --- a/lib/I18n/translations/english.yaml
 +++ b/lib/I18n/translations/english.yaml
 @@ -218,6 +218,8 @@ STR_LIBRARY_TAB_RECENT: "Recent"
@@ -63,7 +70,7 @@ index df35ac5d..4615bee0 100644
  STR_LIBRARY_HOLD_SORT: "Hold: Reverse sort"
  STR_LIBRARY_HOLD_GROUPS: "Hold: Groups"
  STR_LIBRARY_HOLD_OPTIONS: "Hold: Options"
-@@ -653,6 +655,10 @@ STR_KB_HINT_TOGGLE_HIDE_PASSWORD: "Press [***] to hide password"
+@@ -653,6 +655,17 @@ STR_KB_HINT_TOGGLE_HIDE_PASSWORD: "Press [***] to hide password"
  STR_KB_HINT_TOGGLE_SHOW_PASSWORD: "Press [abc] to show password"
  STR_KB_HINT_EDIT_ENTRY: "Hold UP to edit entry"
  STR_KB_TIPS: "Tips:"
@@ -71,6 +78,13 @@ index df35ac5d..4615bee0 100644
 +STR_KB_PAPERDIY_CONFIRM: "Hold B: type; hold A: back"
 +STR_KB_PAPERDIY_ALTERNATE: "Hold B longer: alternate"
 +STR_KB_PAPERDIY_CLEAR: "Hold B on Del longer: clear"
++STR_PAPERDIY_FILE_ACTIONS_HINT: "Hold B: open; hold longer: file actions"
++STR_PAPERDIY_VALUE_STEP: "A -%s / B +%s"
++STR_PAPERDIY_SAVE_CANCEL: "Hold B: save; hold A: cancel"
++STR_PAPERDIY_DATE_EDIT_HINT: "A - / B +; hold B: done; hold A: undo"
++STR_PAPERDIY_DATE_SELECT_HINT: "Hold B: edit; choose Save to apply"
++STR_PAPERDIY_EDIT: "Edit"
++STR_PAPERDIY_FIXED_BUTTONS: "The two buttons use fixed gestures."
  STR_KB_HINT_RETURN_KEYBOARD: "Press DOWN to return to keyboard"
  STR_KB_HINT_EXIT_URL_MODE: "Press ABC to exit URL mode"
  STR_KB_HINT_CLEAR_TEXT: "Hold DEL to clear all text"
@@ -864,20 +878,22 @@ index fd2bb855..01bcbe5a 100644
  
    selectMainTab(mainTab_.load() == MainTab::Shelf ? MainTab::Manage : MainTab::Shelf);
 diff --git a/src/activities/home/FileBrowserActivity.cpp b/src/activities/home/FileBrowserActivity.cpp
-index 5615bf06..2be650fe 100644
+index 5615bf06..907d6b89 100644
 --- a/src/activities/home/FileBrowserActivity.cpp
 +++ b/src/activities/home/FileBrowserActivity.cpp
-@@ -28,7 +28,9 @@
+@@ -28,7 +28,11 @@
  namespace fui = freeink::ui;
  
  namespace {
-+#if !FREEINK_DEVICE_PAPERDIY
++#if FREEINK_DEVICE_PAPERDIY
++constexpr unsigned long FILE_ACTIONS_HOLD_MS = 1500;
++#else
  constexpr unsigned long GO_HOME_MS = 1000;
 +#endif
  constexpr size_t NAME_BUFFER_SIZE = 500;
  constexpr size_t MAX_COMPONENT_BYTES = 255;
  constexpr char MOVE_HERE_ENTRY[] = "\x01";
-@@ -119,6 +121,8 @@ bool FileBrowserActivity::usesIconLayout() const {
+@@ -119,6 +123,8 @@ bool FileBrowserActivity::usesIconLayout() const {
           InxGridGeometry::layoutFrom(SETTINGS.inxLibraryLayout) == InxItemLayout::Icons;
  }
  
@@ -886,7 +902,7 @@ index 5615bf06..2be650fe 100644
  void FileBrowserActivity::drawIconGrid(UiScreen& screen, const fui::Rect rect) {
    const int start = nav.top;
    constexpr int iconSize = 72;
-@@ -465,6 +469,7 @@ void FileBrowserActivity::activateSelected() {
+@@ -465,6 +471,7 @@ void FileBrowserActivity::activateSelected() {
  bool FileBrowserActivity::handleCustomInput() {
    if (editPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return true;
  
@@ -894,7 +910,7 @@ index 5615bf06..2be650fe 100644
    // Long press BACK (1s+) goes to root folder (Books mode only).
    // In firmware-pick mode we keep navigation simple: short Back = up dir / cancel.
    if (mode == Mode::Books && browserState == BrowserState::Browsing &&
-@@ -482,17 +487,20 @@ bool FileBrowserActivity::handleCustomInput() {
+@@ -482,13 +489,20 @@ bool FileBrowserActivity::handleCustomInput() {
      requestUpdate();
      return true;
    }
@@ -904,18 +920,19 @@ index 5615bf06..2be650fe 100644
  }
  
  bool FileBrowserActivity::handleButtons() {
-+#if !FREEINK_DEVICE_PAPERDIY
    if (mode == Mode::Books && browserState == BrowserState::Browsing &&
-       mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, GO_HOME_MS)) {
+-      mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, GO_HOME_MS)) {
++      mappedInput.wasLongPressed(MappedInputManager::Button::Confirm,
++#if FREEINK_DEVICE_PAPERDIY
++                                 FILE_ACTIONS_HOLD_MS
++#else
++                                 GO_HOME_MS
++#endif
++                                 )) {
      app.clearTapFlash();
      showEditMenu();
      return true;
-   }
-+#endif
- 
-   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-     activateSelected();
-@@ -500,8 +508,11 @@ bool FileBrowserActivity::handleButtons() {
+@@ -500,8 +514,11 @@ bool FileBrowserActivity::handleButtons() {
    }
  
    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -929,7 +946,40 @@ index 5615bf06..2be650fe 100644
        if (basepath != "/") {
          const std::string oldPath = basepath;
  
-@@ -664,7 +675,13 @@ void FileBrowserActivity::drawFooter() {
+@@ -571,10 +588,17 @@ void FileBrowserActivity::buildScreen(UiScreen& screen) {
+   // deepest directory stays visible.
+   {
+     const int pathLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
+-    const fui::Rect band = screen.takeBottom(static_cast<int16_t>(pathLineHeight + metrics.verticalSpacing));
++    const int pathBandHeight = pathLineHeight + metrics.verticalSpacing;
++#if FREEINK_DEVICE_PAPERDIY
++    const bool showActionsHint = mode == Mode::Books && browserState == BrowserState::Browsing && !files.empty();
++    const int hintHeight = showActionsHint ? pathLineHeight + metrics.verticalSpacing : 0;
++#else
++    const int hintHeight = 0;
++#endif
++    const fui::Rect band = screen.takeBottom(static_cast<int16_t>(pathBandHeight + hintHeight));
+     screen.target().fill(fui::Rect{band.x, band.y, band.width, 3}, fui::Paint::solid(fui::Color::Black));
+     const int pathY =
+-        band.y + metrics.verticalSpacing / 2 + (band.height - metrics.verticalSpacing / 2 - pathLineHeight) / 2;
++        band.y + metrics.verticalSpacing / 2 + (pathBandHeight - metrics.verticalSpacing / 2 - pathLineHeight) / 2;
+     const int pathMaxWidth = band.width - metrics.contentSidePadding * 2;
+     const char* pathStr = basepath.c_str();
+     const char* pathDisplay = pathStr;
+@@ -594,6 +618,12 @@ void FileBrowserActivity::buildScreen(UiScreen& screen) {
+       pathDisplay = leftTruncBuf;
+     }
+     renderer.drawText(SMALL_FONT_ID, band.x + metrics.contentSidePadding, pathY, pathDisplay);
++#if FREEINK_DEVICE_PAPERDIY
++    if (showActionsHint) {
++      GUI.drawHelpText(renderer, Rect{band.x, band.y + pathBandHeight, band.width, hintHeight},
++                       tr(STR_PAPERDIY_FILE_ACTIONS_HINT));
++    }
++#endif
+   }
+ 
+   if (files.empty()) {
+@@ -664,7 +694,13 @@ void FileBrowserActivity::drawFooter() {
                            nav.selected >= 0 && nav.selected < listCount() && files[nav.selected] == MOVE_HERE_ENTRY;
    const char* confirmLabel =
        files.empty() ? "" : (movingHere ? tr(STR_MOVE_HERE) : (selectingFile ? tr(STR_SELECT) : tr(STR_OPEN)));
@@ -1362,6 +1412,90 @@ index 370d39c1..e5f9aaca 100644
    // Shared tail of row activation and the options menu's Open entry.
    void openBookByPath(const std::string& path);
    void promptRebuildIndex();
+diff --git a/src/activities/reader/EpubReaderPercentSelectionActivity.cpp b/src/activities/reader/EpubReaderPercentSelectionActivity.cpp
+index ead6b341..260b4ffc 100644
+--- a/src/activities/reader/EpubReaderPercentSelectionActivity.cpp
++++ b/src/activities/reader/EpubReaderPercentSelectionActivity.cpp
+@@ -32,6 +32,10 @@ EpubReaderPercentSelectionActivity::EpubReaderPercentSelectionActivity(GfxRender
+ 
+ void EpubReaderPercentSelectionActivity::onEnter() {
+   Activity::onEnter();
++#if FREEINK_DEVICE_PAPERDIY
++  waitForConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
++  waitForBackRelease = mappedInput.isPressed(MappedInputManager::Button::Back);
++#endif
+   resetUi();
+   app.on(ACTION_SLIDER, &EpubReaderPercentSelectionActivity::onSliderEvent, this);
+   app.on(ACTION_STEP, &EpubReaderPercentSelectionActivity::onStepEvent, this);
+@@ -116,6 +120,13 @@ void EpubReaderPercentSelectionActivity::loop() {
+   }
+ 
+   // Back cancels, confirm selects, arrows adjust the percent.
++#if FREEINK_DEVICE_PAPERDIY
++  if (waitForConfirmRelease || waitForBackRelease) {
++    waitForConfirmRelease = waitForConfirmRelease && mappedInput.isPressed(MappedInputManager::Button::Confirm);
++    waitForBackRelease = waitForBackRelease && mappedInput.isPressed(MappedInputManager::Button::Back);
++    return;
++  }
++#endif
+   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+     cancel();
+     return;
+@@ -136,6 +147,13 @@ void EpubReaderPercentSelectionActivity::loop() {
+     return;
+   }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
++    setPercent(percent - kSmallStep);
++  } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
++    setPercent(percent + kSmallStep);
++  }
++#else
+   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustPercent(-kSmallStep); });
+   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustPercent(kSmallStep); });
+ 
+@@ -147,6 +165,7 @@ void EpubReaderPercentSelectionActivity::loop() {
+   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Up}, [this, upDelta] { adjustPercent(upDelta); });
+   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down},
+                                        [this, downDelta] { adjustPercent(downDelta); });
++#endif
+ }
+ 
+ void EpubReaderPercentSelectionActivity::percentScreen(UiScreen& screen, void* user) {
+@@ -157,9 +176,17 @@ void EpubReaderPercentSelectionActivity::buildPercentScreen(UiScreen& screen) {
+   char readout[16];
+   snprintf(readout, sizeof(readout), "%d%%", percent);
+   char hint1[64];
++#if FREEINK_DEVICE_PAPERDIY
++  snprintf(hint1, sizeof(hint1), tr(STR_PAPERDIY_VALUE_STEP), "1%", "1%");
++#else
+   snprintf(hint1, sizeof(hint1), "%s %d%%", I18N.get(StrId::STR_STEP_HINT_FRONT), kSmallStep);
++#endif
+   char hint2[64];
++#if FREEINK_DEVICE_PAPERDIY
++  snprintf(hint2, sizeof(hint2), "%s", tr(STR_PAPERDIY_SAVE_CANCEL));
++#else
+   snprintf(hint2, sizeof(hint2), "%s %d%%", I18N.get(StrId::STR_STEP_HINT_SIDE), kLargeStep);
++#endif
+ 
+   UiSliderDialogSpec spec;
+   spec.title = tr(STR_GO_TO_PERCENT);
+diff --git a/src/activities/reader/EpubReaderPercentSelectionActivity.h b/src/activities/reader/EpubReaderPercentSelectionActivity.h
+index 90eb0459..1737a278 100644
+--- a/src/activities/reader/EpubReaderPercentSelectionActivity.h
++++ b/src/activities/reader/EpubReaderPercentSelectionActivity.h
+@@ -35,6 +35,10 @@ class EpubReaderPercentSelectionActivity final : public Activity, private UiAppH
+   // Swallow the swipe/tap fallout of a slider drag so its release can't trigger
+   // the back gesture and cancel the dialog, or step the percent as a swipe.
+   bool draggingSlider = false;
++#if FREEINK_DEVICE_PAPERDIY
++  bool waitForConfirmRelease = false;
++  bool waitForBackRelease = false;
++#endif
+ 
+   // Change the current percent by a delta and wrap within bounds.
+   void adjustPercent(int delta);
 diff --git a/src/activities/reader/ReaderActivity.cpp b/src/activities/reader/ReaderActivity.cpp
 index 92b46ea6..8d12ffe0 100644
 --- a/src/activities/reader/ReaderActivity.cpp
@@ -1378,6 +1512,60 @@ index 92b46ea6..8d12ffe0 100644
  }
  
  void ReaderActivity::prepareForSleep() { flushReaderSession(); }
+diff --git a/src/activities/settings/ButtonRemapActivity.cpp b/src/activities/settings/ButtonRemapActivity.cpp
+index 583efff0..50fbccf9 100644
+--- a/src/activities/settings/ButtonRemapActivity.cpp
++++ b/src/activities/settings/ButtonRemapActivity.cpp
+@@ -6,6 +6,7 @@
+ #include "CrossPointSettings.h"
+ #include "MappedInputManager.h"
+ #include "components/UITheme.h"
++#include "fontIds.h"
+ 
+ namespace fui = freeink::ui;
+ 
+@@ -38,6 +39,14 @@ void ButtonRemapActivity::onEnter() {
+ }
+ 
+ void ButtonRemapActivity::loop() {
++#if FREEINK_DEVICE_PAPERDIY
++  // The two physical keys have fixed classified gestures, not four assignable
++  // front keys. A stale/direct entry must never reset their saved mapping.
++  if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
++      mappedInput.wasReleased(MappedInputManager::Button::Confirm))
++    finish();
++  return;
++#else
+   // Clear any temporary warning after its timeout.
+   if (errorUntil > 0 && millis() > errorUntil) {
+     errorMessage.clear();
+@@ -96,9 +105,18 @@ void ButtonRemapActivity::loop() {
+ 
+     requestUpdate();
+   }
++#endif
+ }
+ 
+ void ButtonRemapActivity::render(RenderLock&&) {
++#if FREEINK_DEVICE_PAPERDIY
++  renderer.clearScreen();
++  UITheme::drawCenteredWrappedText(renderer, UITheme::getContentArea(renderer), UI_12_FONT_ID,
++                                   tr(STR_PAPERDIY_FIXED_BUTTONS), 2);
++  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_BACK), "", "");
++  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
++  renderer.displayBuffer();
++#else
+   const auto labelForHardware = [&](uint8_t hardwareIndex) -> const char* {
+     for (uint8_t i = 0; i < kRoleCount; i++) {
+       if (tempMapping[i] == hardwareIndex) {
+@@ -143,6 +161,7 @@ void ButtonRemapActivity::render(RenderLock&&) {
+                       labelForHardware(CrossPointSettings::FRONT_HW_LEFT),
+                       labelForHardware(CrossPointSettings::FRONT_HW_RIGHT));
+   renderer.displayBuffer();
++#endif
+ }
+ 
+ void ButtonRemapActivity::screenTrampoline(UiScreen& screen, void* user) {
 diff --git a/src/activities/settings/ClearCacheActivity.cpp b/src/activities/settings/ClearCacheActivity.cpp
 index b3307951..1d92efe7 100644
 --- a/src/activities/settings/ClearCacheActivity.cpp
@@ -1391,6 +1579,170 @@ index b3307951..1d92efe7 100644
  
      if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
        beginClear();
+diff --git a/src/activities/settings/DateTimeSettingsActivity.cpp b/src/activities/settings/DateTimeSettingsActivity.cpp
+index 2f1a7e77..27ba8df4 100644
+--- a/src/activities/settings/DateTimeSettingsActivity.cpp
++++ b/src/activities/settings/DateTimeSettingsActivity.cpp
+@@ -66,6 +66,9 @@ void DateTimeSettingsActivity::beginManualEdit() {
+     minute = 0;
+   }
+   selectedEditField = 0;
++#if FREEINK_DEVICE_PAPERDIY
++  editingField = false;
++#endif
+   closeRouting();
+   requestUpdate();
+ }
+@@ -80,14 +83,47 @@ void DateTimeSettingsActivity::loop() {
+   if (touch) return;
+ 
+   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
++#if FREEINK_DEVICE_PAPERDIY
++    if (editingField) {
++      finishFieldEdit(true);
++      return;
++    }
++#endif
+     cancelManualEdit();
+     return;
+   }
+   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
++#if FREEINK_DEVICE_PAPERDIY
++    if (editingField) {
++      finishFieldEdit(false);
++    } else if (selectedEditField == EDIT_FIELD_COUNT) {
++      confirmManualEdit();
++    } else {
++      beginFieldEdit();
++    }
++#else
+     confirmManualEdit();
++#endif
+     return;
+   }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
++    if (editingField)
++      adjustEditField(-1);
++    else {
++      selectedEditField = ButtonNavigator::previousIndex(selectedEditField, EDIT_FIELD_COUNT + 1);
++      requestUpdate();
++    }
++  } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
++    if (editingField)
++      adjustEditField(1);
++    else {
++      selectedEditField = ButtonNavigator::nextIndex(selectedEditField, EDIT_FIELD_COUNT + 1);
++      requestUpdate();
++    }
++  }
++#else
+   buttonNavigator.onRelease({MappedInputManager::Button::Down}, [this] {
+     selectedEditField = ButtonNavigator::nextIndex(selectedEditField, EDIT_FIELD_COUNT);
+     requestUpdate();
+@@ -98,7 +134,29 @@ void DateTimeSettingsActivity::loop() {
+   });
+   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustEditField(-1); });
+   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustEditField(1); });
++#endif
++}
++
++#if FREEINK_DEVICE_PAPERDIY
++void DateTimeSettingsActivity::beginFieldEdit() {
++  if (selectedEditField < 0 || selectedEditField >= EDIT_FIELD_COUNT) return;
++  beforeFieldEdit = {year, month, day, hour, minute};
++  editingField = true;
++  requestUpdate();
++}
++
++void DateTimeSettingsActivity::finishFieldEdit(const bool cancelled) {
++  if (cancelled) {
++    year = beforeFieldEdit.year;
++    month = beforeFieldEdit.month;
++    day = beforeFieldEdit.day;
++    hour = beforeFieldEdit.hour;
++    minute = beforeFieldEdit.minute;
++  }
++  editingField = false;
++  requestUpdate();
+ }
++#endif
+ 
+ void DateTimeSettingsActivity::adjustEditField(const int delta) {
+   const auto field = static_cast<EditField>(selectedEditField);
+@@ -210,15 +268,31 @@ void DateTimeSettingsActivity::render(RenderLock&&) {
+   const int pageWidth = renderer.getScreenWidth();
+   const int pageHeight = renderer.getScreenHeight();
+   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
++  const int helpHeight =
++#if FREEINK_DEVICE_PAPERDIY
++      renderer.getLineHeight(SMALL_FONT_ID) + metrics.verticalSpacing;
++#else
++      0;
++#endif
++  const int contentHeight =
++      pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2 - helpHeight;
+ 
+   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SET_DATE_AND_TIME));
+   if (mappedInput.hasTouch()) {
+     renderUi();
+   } else {
+     GUI.drawList(
+-        renderer, Rect{0, contentTop, pageWidth, contentHeight}, EDIT_FIELD_COUNT, selectedEditField,
++        renderer, Rect{0, contentTop, pageWidth, contentHeight},
++#if FREEINK_DEVICE_PAPERDIY
++        EDIT_FIELD_COUNT + 1,
++#else
++        EDIT_FIELD_COUNT,
++#endif
++        selectedEditField,
+         [](int index) {
++#if FREEINK_DEVICE_PAPERDIY
++          if (index == EDIT_FIELD_COUNT) return std::string(tr(STR_SAVE));
++#endif
+           static constexpr StrId NAMES[] = {StrId::STR_YEAR, StrId::STR_MONTH, StrId::STR_DAY, StrId::STR_HOUR,
+                                             StrId::STR_MINUTE};
+           return std::string(I18N.get(NAMES[index]));
+@@ -244,7 +318,17 @@ void DateTimeSettingsActivity::render(RenderLock&&) {
+         true);
+   }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  GUI.drawHelpText(renderer, Rect{0, contentTop + contentHeight, pageWidth, helpHeight},
++                   editingField ? tr(STR_PAPERDIY_DATE_EDIT_HINT) : tr(STR_PAPERDIY_DATE_SELECT_HINT));
++  const auto labels = mappedInput.mapLabels(tr(editingField ? STR_CANCEL : STR_BACK),
++                                            tr(editingField                            ? STR_CONFIRM
++                                               : selectedEditField == EDIT_FIELD_COUNT ? STR_SAVE
++                                                                                       : STR_PAPERDIY_EDIT),
++                                            editingField ? "-" : tr(STR_DIR_UP), editingField ? "+" : tr(STR_DIR_DOWN));
++#else
+   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONFIRM), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
++#endif
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+   renderer.displayBuffer();
+ }
+diff --git a/src/activities/settings/DateTimeSettingsActivity.h b/src/activities/settings/DateTimeSettingsActivity.h
+index 91b2e959..ddb06b23 100644
+--- a/src/activities/settings/DateTimeSettingsActivity.h
++++ b/src/activities/settings/DateTimeSettingsActivity.h
+@@ -36,6 +36,15 @@ class DateTimeSettingsActivity final : public Activity, private UiAppHost {
+   unsigned day = 1;
+   unsigned hour = 0;
+   unsigned minute = 0;
++#if FREEINK_DEVICE_PAPERDIY
++  bool editingField = false;
++  struct EditSnapshot {
++    int year = 2024;
++    unsigned month = 1, day = 1, hour = 0, minute = 0;
++  } beforeFieldEdit;
++  void beginFieldEdit();
++  void finishFieldEdit(bool cancelled);
++#endif
+ 
+   void beginManualEdit();
+   void adjustEditField(int delta);
 diff --git a/src/activities/settings/HomeButtonSettingsActivity.cpp b/src/activities/settings/HomeButtonSettingsActivity.cpp
 index 9bf17800..a77cba99 100644
 --- a/src/activities/settings/HomeButtonSettingsActivity.cpp
@@ -1444,10 +1796,23 @@ index 88514e76..df598ad7 100644
  }
  
 diff --git a/src/activities/settings/SettingsActivity.cpp b/src/activities/settings/SettingsActivity.cpp
-index 3dde1434..f6510a85 100644
+index 3dde1434..177305a5 100644
 --- a/src/activities/settings/SettingsActivity.cpp
 +++ b/src/activities/settings/SettingsActivity.cpp
-@@ -368,7 +368,7 @@ void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valueP
+@@ -139,10 +139,12 @@ void SettingsActivity::rebuildSettingsLists() {
+   resourcesDirty = false;
+ 
+   // Append device-only ACTION items
++#if !FREEINK_DEVICE_PAPERDIY
+   if (!BoardConfig::hasTouch()) {
+     controlsSettings.insert(controlsSettings.begin(),
+                             SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
+   }
++#endif
+ #if FREEINK_CAP_BLE_HID_HOST
+   controlsSettings.push_back(SettingInfo::Action(StrId::STR_BLUETOOTH, SettingAction::Bluetooth));
+ #endif
+@@ -368,7 +370,7 @@ void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valueP
  }
  
  bool SettingsActivity::handleCustomInput() {
@@ -1456,7 +1821,7 @@ index 3dde1434..f6510a85 100644
  }
  
  void SettingsActivity::navigateButtons() {
-@@ -415,7 +415,11 @@ bool SettingsActivity::handleButtons() {
+@@ -415,7 +417,11 @@ bool SettingsActivity::handleButtons() {
    }
    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
      if (ringPos() == 0) {
@@ -1468,7 +1833,7 @@ index 3dde1434..f6510a85 100644
      } else {
        activateIndex(ringPos() - 1);
        requestUpdate();
-@@ -1000,11 +1004,21 @@ void SettingsActivity::drawFooter() {
+@@ -1000,11 +1006,21 @@ void SettingsActivity::drawFooter() {
    }
    const int ring = ringPos();
    const auto confirmLabel =
@@ -1548,6 +1913,96 @@ index ea42abe2..36fdb740 100644
    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
  }
  
+diff --git a/src/activities/util/IntervalSelectionActivity.cpp b/src/activities/util/IntervalSelectionActivity.cpp
+index 692adfdd..151b2402 100644
+--- a/src/activities/util/IntervalSelectionActivity.cpp
++++ b/src/activities/util/IntervalSelectionActivity.cpp
+@@ -46,6 +46,10 @@ int IntervalSelectionActivity::clampedValue(const int candidate) const {
+ void IntervalSelectionActivity::onEnter() {
+   Activity::onEnter();
+   value = clampedValue(value);
++#if FREEINK_DEVICE_PAPERDIY
++  waitForConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
++  waitForBackRelease = mappedInput.isPressed(MappedInputManager::Button::Back);
++#endif
+   resetUi();
+   app.on(ACTION_SLIDER, &IntervalSelectionActivity::onSliderEvent, this);
+   app.on(ACTION_STEP, &IntervalSelectionActivity::onStepEvent, this);
+@@ -121,6 +125,13 @@ void IntervalSelectionActivity::loop() {
+     return;
+   }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  if (waitForConfirmRelease || waitForBackRelease) {
++    waitForConfirmRelease = waitForConfirmRelease && mappedInput.isPressed(MappedInputManager::Button::Confirm);
++    waitForBackRelease = waitForBackRelease && mappedInput.isPressed(MappedInputManager::Button::Back);
++    return;
++  }
++#endif
+   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+     cancel();
+     return;
+@@ -131,6 +142,13 @@ void IntervalSelectionActivity::loop() {
+     return;
+   }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
++    adjustValue(-smallStep);
++  } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
++    adjustValue(smallStep);
++  }
++#else
+   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustValue(-smallStep); });
+   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustValue(smallStep); });
+ 
+@@ -142,6 +160,7 @@ void IntervalSelectionActivity::loop() {
+   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Up}, [this, upDelta] { adjustValue(upDelta); });
+   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down},
+                                        [this, downDelta] { adjustValue(downDelta); });
++#endif
+ }
+ 
+ void IntervalSelectionActivity::formatValue(char* buffer, const size_t size, const int forValue) const {
+@@ -167,6 +186,15 @@ void IntervalSelectionActivity::buildIntervalScreen(UiScreen& screen) {
+   // doesn't depend on translators preserving a hidden separator.
+   char hints[2][64];
+   char stepText[24];
++#if FREEINK_DEVICE_PAPERDIY
++  if (valueFormatId != StrId::STR_NONE_OPT) {
++    snprintf(stepText, sizeof(stepText), I18N.get(valueFormatId), static_cast<unsigned int>(smallStep));
++  } else {
++    snprintf(stepText, sizeof(stepText), "%d", smallStep);
++  }
++  snprintf(hints[0], sizeof(hints[0]), tr(STR_PAPERDIY_VALUE_STEP), stepText, stepText);
++  snprintf(hints[1], sizeof(hints[1]), "%s", tr(STR_PAPERDIY_SAVE_CANCEL));
++#else
+   int hintIndex = 0;
+   for (const auto& [labelId, step] :
+        {std::pair{StrId::STR_STEP_HINT_FRONT, smallStep}, std::pair{StrId::STR_STEP_HINT_SIDE, largeStep}}) {
+@@ -178,6 +206,7 @@ void IntervalSelectionActivity::buildIntervalScreen(UiScreen& screen) {
+     snprintf(hints[hintIndex], sizeof(hints[hintIndex]), "%s %s", I18N.get(labelId), stepText);
+     hintIndex++;
+   }
++#endif
+ 
+   char minText[32];
+   formatValue(minText, sizeof(minText), minValue);
+diff --git a/src/activities/util/IntervalSelectionActivity.h b/src/activities/util/IntervalSelectionActivity.h
+index 6c529a60..ba76ef0a 100644
+--- a/src/activities/util/IntervalSelectionActivity.h
++++ b/src/activities/util/IntervalSelectionActivity.h
+@@ -46,6 +46,10 @@ class IntervalSelectionActivity final : public Activity, private UiAppHost {
+   // Swallow the swipe/tap fallout of a slider drag so its release can't trigger
+   // the back gesture and cancel the dialog.
+   bool draggingSlider = false;
++#if FREEINK_DEVICE_PAPERDIY
++  bool waitForConfirmRelease = false;
++  bool waitForBackRelease = false;
++#endif
+ 
+   void adjustValue(int delta);
+   // Absolute value (clamped), from slider drag/tap positions.
 diff --git a/src/activities/util/KeyboardEntryActivity.cpp b/src/activities/util/KeyboardEntryActivity.cpp
 index 4ee0e3c3..ec36a9d8 100644
 --- a/src/activities/util/KeyboardEntryActivity.cpp
@@ -1790,7 +2245,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..fa24dc0f 100644
+index b0b49733..67c4ae02 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -1802,7 +2257,7 @@ index b0b49733..fa24dc0f 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,8 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,9 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -1811,6 +2266,39 @@ index b0b49733..fa24dc0f 100644
 +add_test(NAME PaperDiyKeyboardButtons COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_buttons.py)
 +add_test(NAME PaperDiyMenuNavigation COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_menu_navigation.py)
 +add_test(NAME PaperDiyDisplayDriver COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_driver.py)
++add_test(NAME PaperDiyFileSettings COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_file_settings.py)
+diff --git a/test/inx_navigation/test_theme_menus.py b/test/inx_navigation/test_theme_menus.py
+index c8de42d8..8a15d3b4 100644
+--- a/test/inx_navigation/test_theme_menus.py
++++ b/test/inx_navigation/test_theme_menus.py
+@@ -27,10 +27,11 @@ def method(text, name):
+     return re.search(r'^[^\n]*' + name + r'\(.*?\n}', text, re.M | re.S).group()
+ 
+ 
+-def run(code, directory, sdk=False):
++def run(code, directory, sdk=False, paperdiy=False):
+     cpp, binary = directory / 'check.cpp', directory / 'check'
+     cpp.write_text(code)
+     command = ['c++', '-std=c++20', '-Wall', '-Wextra', '-Wno-unused-parameter', '-I'+str(ROOT/'src'), str(cpp), '-o', str(binary)]
++    if paperdiy: command.append("-DFREEINK_DEVICE_PAPERDIY=1")
+     if sdk:
+         ui = SDK / 'libs/ui/FreeInkUI'
+         command += ['-I' + str(ui / 'include'), str(ui / 'src/FreeInkUI.cpp')]
+@@ -184,6 +185,14 @@ int main() {
+             # Added entries retain their category, relative order and action binding in INX too.
+             extras = set(baseline) - set(reference)
+             assert [x for x in baseline if x in extras] == [x for x in inx_rows if x in extras]
++    paper_output = run(code, directory, paperdiy=True)
++    for block in re.split(r'^MENU ', paper_output, flags=re.M)[1:]:
++        lines = block.splitlines()
++        flags, theme, category = map(int, lines[0].split())
++        if theme == 7:
++            continue
++        expected = [row for row in parsed[flags, theme, category] if not row.startswith('STR_REMAP_FRONT_BUTTONS ')]
++        assert lines[1:] == expected, ('PaperDIY fixed button menu', flags, theme, category)
+     print('Settings: 64 device/condition combinations × 7 themes; one Date & Time entry with or without RTC; shared entries/actions and retained upstream order pass')
+ 
+ 
 diff --git a/test/inx_navigation/test_unified_keyboard.py b/test/inx_navigation/test_unified_keyboard.py
 index 11496463..2208157c 100644
 --- a/test/inx_navigation/test_unified_keyboard.py
@@ -1944,7 +2432,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,290 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -2122,9 +2610,8 @@ new file mode 100644
 +items rather than being reinterpreted as a remove/edit modifier. Held Back in
 +the browser goes up one level or cancels a file picker at root; it does not
 +jump to root based on duration. Non-PaperDIY shortcuts remain. File edit/remove
-+long-hold shortcuts are no longer reachable via the PaperDIY two-key Confirm;
-+this candidate prioritizes reliable opening and Back, and does not invent a
-+replacement destructive shortcut.
++long-hold shortcuts were initially disabled to preserve normal opening; the
++file/settings follow-up below supplies a distinct extra-hold entry.
 +
 +No new heap allocation, task, framebuffer or per-Activity data member is added;
 +the layout-column hook adds a virtual function entry on list classes. Host
@@ -2192,6 +2679,50 @@ new file mode 100644
 +layers, real theme geometry and one-action holds. Non-PaperDIY paths are compared
 +to the pinned upstream. Passing software checks does not establish keyboard
 +hardware acceptance; obtain approval for the exact candidate before flashing.
++
++## File actions and dedicated setting controls, 2026-10-22
++
++The user stage-accepted menu navigation and basic keyboard entry/order and now
++flashes images themselves. This candidate retains those controls and the
++accepted 30-update refresh policy. It does not access the physical device.
++
++In the Books browser (including child directories), ordinary held-B release
++opens the selected entry. Continuing to hold B for another 1500 ms of logical
++Confirm time opens the existing Open/Delete/Rename/Move popup, initially on
++Open. The SDK first classifies a physical hold as Confirm, so 1500 ms is not a
++physical-button calibration. MappedInputManager's one-shot long-press and
++suppressed-release mechanism prevent that release from also opening an entry
++or choosing a popup action. Delete still requires a separate confirmation;
++protected .crosspoint entries, firmware/image pickers and move destinations do
++not expose the extra-hold menu. A help line reserves space below the path in
++both list and icon layouts. Recent/statistics removal shortcuts are outside
++this follow-up.
++
++IntervalSelectionActivity (sleep timeout and reading-guide offset) and EPUB
++percentage selection use A to decrease and B to increase by their fine step.
++Held B saves and held A cancels; inherited held-key releases are consumed on
++entry. Values clamp at their bounds; PaperDIY no longer applies the other
++boards' coarse Up/Down steps. Percentage selection changes by one point and
++does not wrap at 0/100. Other boards retain their original controls.
++
++Manual date/time uses A/B to select Year/Month/Day/Hour/Minute/Save. Held B on a
++field enters editing, where A/B decrease/increase, held B accepts that staged
++field, and held A restores its snapshot (including a day clamped by a changed
++year/month). Only the explicit Save row applies the time. Held A while browsing
++cancels all staged edits. The four-front-button remap entry is hidden on
++PaperDIY; stale/direct entry displays a fixed-controls explanation and cannot
++persist a mapping. Other list-based settings reuse the accepted navigation.
++
++No new heap allocations, tasks or framebuffers are introduced. PaperDIY-only
++state adds two bools to each numeric dialog plus a five-field date snapshot
++and mode bool; exact object padding is toolchain-dependent. Host tests compile
++production methods for two-key and retained non-PaperDIY numeric controls,
++extra-hold one-shot/release behavior, action dispatch, protected paths,
++leap-day/month undo, explicit save and inherited-release barriers. Theme-menu
++checks cover the hidden remap entry under 64 condition combinations and seven
++themes. Hardware reachability, held-button timing, visual hints and destructive
++file operations still need deliberate validation on disposable files. Host
++checks do not establish hardware acceptance or all custom-page coverage.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -2593,6 +3124,326 @@ new file mode 100644
 +                        str(work / "check.cpp"), "-o", str(binary)], check=True)
 +        subprocess.run([str(binary)], check=True)
 +print("Original whole-frame LGFX modes, no idle UI cleanup, AA bank and non-DIY routing passed")
+diff --git a/test/test_paperdiy_file_settings.py b/test/test_paperdiy_file_settings.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_file_settings.py
+@@ -0,0 +1,315 @@
++"""Compile production file/value/date owners; no device, clock or SD writes."""
++from pathlib import Path
++import os
++import sys
++import unittest
++
++ROOT = Path(__file__).resolve().parents[1]
++SOURCE = Path(os.environ.get("FILE_SETTINGS_SOURCE_ROOT", ROOT))
++sys.path.insert(0, str(ROOT / "scripts/tests"))
++from test_reading_ui_regressions import method, run_cpp
++
++
++def body(file, signature):
++    return method((SOURCE / file).read_text(encoding="utf-8"), signature)
++
++
++INPUT = r'''
++#include <algorithm>
++#include <cassert>
++#include <cstdint>
++#include <functional>
++#include <initializer_list>
++#include <string>
++#include <utility>
++#include <vector>
++struct MappedInputManager {
++  enum class Button { Up,Down,Left,Right,Confirm,Back };
++  enum class SwipeDir { None,Left,Right,Up,Down };
++  unsigned pressed=0,released=0,held=0;
++  unsigned long heldMs=0;
++  static unsigned bit(Button b) {return 1u<<static_cast<unsigned>(b);}
++  bool wasPressed(Button b) const {return pressed & bit(b);}
++  bool wasReleased(Button b) const {return released & bit(b);}
++  bool isPressed(Button b) const {return held & bit(b);}
++  unsigned long getHeldTime() const {return heldMs;}
++  SwipeDir wasSwipe() const {return SwipeDir::None;}
++  void tap(Button b) {pressed=released=bit(b);held=0;heldMs=50;}
++};
++using B=MappedInputManager::Button;
++struct ButtonNavigator {
++  MappedInputManager* input;
++  static int nextIndex(int i,int n) {return n ? (i+1)%n : 0;}
++  static int previousIndex(int i,int n) {return n ? (i+n-1)%n : 0;}
++  template<class F> void onRelease(std::initializer_list<B> keys,F action) {
++    for(auto key:keys) if(input->wasReleased(key)) {action();return;}
++  }
++  template<class F> void onPressAndContinuous(std::initializer_list<B> keys,F action) {
++    for(auto key:keys) if(input->wasPressed(key)) {action();return;}
++  }
++};
++struct Route {
++  bool routed=false;
++  struct {int dragPermille=-1;} event;
++  struct {bool touchHeld=false,touchReleased=false;int touchX=-1;} snap;
++  explicit operator bool() const {return false;}
++};
++[[maybe_unused]] struct {bool hasEdgeSideButtons() const {return false;}} gpio;
++'''
++
++
++class FileSettingsTest(unittest.TestCase):
++    def test_file_actions_extra_hold_single_fire_and_release_consumption(self):
++        code = INPUT.replace("struct MappedInputManager {", r'''
++struct HalGPIO {
++  bool wasReleased(uint8_t) const {return false;}
++  bool isCapacitivePagePressed(uint8_t) const {return false;}
++};
++struct MappedInputManager {''').replace("  unsigned long heldMs=0;", r'''
++  unsigned long heldMs=0;
++  static constexpr uint8_t kButtonCount=6;
++  mutable uint16_t longPressFiredButtons=0,suppressedReleaseButtons=0;
++  bool wasLongPressed(Button,unsigned long) const;
++  void suppressNextRelease(Button) const;
++  bool consumeSuppressedRelease() const;
++  bool mapButton(Button b,bool(HalGPIO::*fn)(uint8_t) const) const {
++    return fn==&HalGPIO::wasReleased && wasReleased(b);
++  }
++''')
++        code += r'''
++struct CrossPointSettings {enum {VIBRATION_TOUCH_PAGE};};
++struct {int vibration=0,hapticIntensity=0;} SETTINGS;
++struct HalHaptics {static void longPress(bool,int) {}};
++'''
++        for signature in ("bool MappedInputManager::wasLongPressed(",
++                          "void MappedInputManager::suppressNextRelease(",
++                          "bool MappedInputManager::consumeSuppressedRelease()"):
++            code += body("src/MappedInputManager.cpp", signature)
++        code += r'''
++#include <iterator>
++constexpr unsigned long FILE_ACTIONS_HOLD_MS=1500;
++enum class StrId {STR_OPEN,STR_DELETE,STR_RENAME,STR_MOVE,STR_FILENAME};
++struct RenderLock {template<class T> explicit RenderLock(T&) {}};
++struct ActivityResult {bool isCancelled=false;};
++struct FsHelpers {static bool isProtectedPathComponent(const std::string& s) {return s==".crosspoint";}};
++struct FileBrowserActivity {
++  enum class Mode {Books,PickFirmware,PickPng};
++  enum class BrowserState {Browsing,ChoosingMoveDestination};
++  enum class EditAction:uint8_t {Rename,Move,Delete,Open};
++  Mode mode=Mode::Books;BrowserState browserState=BrowserState::Browsing;
++  MappedInputManager mappedInput;
++  std::vector<std::string> files{"test.epub"};std::string basepath="/";
++  struct {int selected=0,top=0;void follow(int){}} nav;
++  struct {void clearTapFlash(){}} app;
++  struct Popup {
++    int shows=0,selected=-1;std::vector<StrId> labels;std::function<void(int)> callback;
++    void show(StrId,const StrId* ids,int count,int initial,std::function<void(int)> fn) {
++      ++shows;selected=initial;labels.assign(ids,ids+count);callback=std::move(fn);
++    }
++  } editPopup;
++  int opens=0,renames=0,moves=0,deletePrompts=0,finishes=0;
++  int listCount() const {return int(files.size());}
++  void requestUpdate(){} void loadFiles(){} void establishContentSelection(int){}
++  int findEntry(const std::string&) const {return 0;}
++  void activateSelected(){++opens;}void onGoHome(){}void cancelMove(){}
++  void setResult(ActivityResult&&){}void finish(){++finishes;}
++  std::string cleanEntryName(std::string s) const {if(s.back()=='/')s.pop_back();return s;}
++  std::string selectedPath() const {return files[nav.selected];}
++  void promptRename(){++renames;}void beginMove(){++moves;}
++  void promptDelete(const std::string&,const std::string&){++deletePrompts;}
++  bool handleButtons();void showEditMenu();void executeEditAction(EditAction);
++};
++'''
++        for signature in ("bool FileBrowserActivity::handleButtons()", "void FileBrowserActivity::showEditMenu()",
++                          "void FileBrowserActivity::executeEditAction("):
++            code += body("src/activities/home/FileBrowserActivity.cpp", signature)
++        code += r'''
++int main() {
++  FileBrowserActivity a;
++  a.mappedInput.held=MappedInputManager::bit(B::Confirm);a.mappedInput.heldMs=1499;
++  assert(!a.handleButtons() && a.editPopup.shows==0);
++  a.mappedInput.held=0;a.mappedInput.released=MappedInputManager::bit(B::Confirm);
++  assert(!a.mappedInput.consumeSuppressedRelease());assert(a.handleButtons() && a.opens==1);
++  a.mappedInput.released=0;a.mappedInput.held=MappedInputManager::bit(B::Confirm);a.mappedInput.heldMs=1500;
++  assert(a.handleButtons() && a.editPopup.shows==1 && a.editPopup.selected==0);
++  assert(a.editPopup.labels==std::vector<StrId>({StrId::STR_OPEN,StrId::STR_DELETE,StrId::STR_RENAME,StrId::STR_MOVE}));
++  assert(!a.handleButtons() && a.editPopup.shows==1 && a.opens==1);
++  a.mappedInput.held=0;a.mappedInput.released=MappedInputManager::bit(B::Confirm);
++  assert(a.mappedInput.consumeSuppressedRelease());assert(a.opens==1 && a.deletePrompts==0);
++  a.editPopup.callback(1);assert(a.deletePrompts==1);
++  a.editPopup.callback(2);assert(a.renames==1);a.editPopup.callback(3);assert(a.moves==1);
++  a.editPopup.callback(0);assert(a.opens==2 && a.editPopup.shows==1);
++  FileBrowserActivity protectedEntry;protectedEntry.files={".crosspoint"};
++  protectedEntry.showEditMenu();assert(protectedEntry.editPopup.shows==0);
++  for(auto mode:{FileBrowserActivity::Mode::PickFirmware,FileBrowserActivity::Mode::PickPng}) {
++    FileBrowserActivity picker;picker.mode=mode;picker.mappedInput.held=MappedInputManager::bit(B::Confirm);
++    picker.mappedInput.heldMs=2000;assert(!picker.handleButtons() && picker.editPopup.shows==0);
++  }
++  FileBrowserActivity destination;destination.browserState=FileBrowserActivity::BrowserState::ChoosingMoveDestination;
++  destination.mappedInput.held=MappedInputManager::bit(B::Confirm);destination.mappedInput.heldMs=2000;
++  assert(!destination.handleButtons() && destination.editPopup.shows==0);
++}
++'''
++        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
++
++    def test_interval_fine_steps_cancel_confirm_and_inherited_release(self):
++        code = INPUT + r'''
++struct IntervalSelectionActivity {
++  MappedInputManager mappedInput;
++  ButtonNavigator buttonNavigator{&mappedInput};
++  int value=10,minValue=0,maxValue=20,smallStep=1,largeStep=5,updates=0,saves=0,cancels=0;
++  bool draggingSlider=false,waitForConfirmRelease=false,waitForBackRelease=false;
++  struct {bool invalidated() const {return false;}} app;
++  Route routeTouch(MappedInputManager&,bool,bool) {return {};}
++  bool routingReady() const {return false;}
++  void requestUpdate() {++updates;}
++  void confirm() {++saves;}
++  void cancel() {++cancels;}
++  int clampedValue(int) const;
++  void adjustValue(int);
++  void loop();
++};
++'''
++        for signature in ("int IntervalSelectionActivity::clampedValue(",
++                          "void IntervalSelectionActivity::adjustValue(", "void IntervalSelectionActivity::loop()"):
++            code += body("src/activities/util/IntervalSelectionActivity.cpp", signature)
++        code += r'''
++int main() {
++  IntervalSelectionActivity a;
++  a.mappedInput.tap(B::Up); a.loop(); assert(a.value==(FREEINK_DEVICE_PAPERDIY ? 9 : 15));
++  a.mappedInput.tap(B::Down); a.loop(); assert(a.value==10 && a.saves==0 && a.cancels==0);
++  if(FREEINK_DEVICE_PAPERDIY) {
++    a.value=0; a.mappedInput.tap(B::Up); a.loop(); assert(a.value==0);
++    a.value=20; a.mappedInput.tap(B::Down); a.loop(); assert(a.value==20);
++    a.value=10; a.mappedInput={0,0,MappedInputManager::bit(B::Confirm),300}; a.loop();
++    assert(a.value==10 && a.saves==0);
++    a.waitForConfirmRelease=true;
++    a.mappedInput.tap(B::Confirm); a.loop(); assert(a.saves==0 && !a.waitForConfirmRelease);
++    a.mappedInput.tap(B::Confirm); a.loop(); assert(a.saves==1);
++    a.waitForBackRelease=true; a.mappedInput.tap(B::Back); a.loop(); assert(a.cancels==0);
++  }
++  a.mappedInput.tap(B::Back); a.loop(); assert(a.cancels==1);
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++    def test_percent_exact_points_and_boundaries(self):
++        code = INPUT + r'''
++constexpr int kSmallStep=1,kLargeStep=10;
++struct EpubReaderPercentSelectionActivity {
++  MappedInputManager mappedInput;
++  ButtonNavigator buttonNavigator{&mappedInput};
++  int percent=50,saves=0,cancels=0;
++  bool draggingSlider=false,waitForConfirmRelease=false,waitForBackRelease=false;
++  struct {bool invalidated() const {return false;}} app;
++  Route routeTouch(MappedInputManager&,bool,bool) {return {};}
++  bool routingReady() const {return false;}
++  void requestUpdate() {}
++  void confirm() {++saves;}
++  void cancel() {++cancels;}
++  void adjustPercent(int);
++  void setPercent(int);
++  void loop();
++};
++'''
++        for name in ("adjustPercent", "setPercent", "loop"):
++            code += body("src/activities/reader/EpubReaderPercentSelectionActivity.cpp",
++                         f"void EpubReaderPercentSelectionActivity::{name}(")
++        code += r'''
++int main() {
++  EpubReaderPercentSelectionActivity a;
++  a.mappedInput.tap(B::Up); a.loop(); assert(a.percent==(FREEINK_DEVICE_PAPERDIY ? 49 : 60));
++  a.mappedInput.tap(B::Down); a.loop(); assert(a.percent==50);
++  if(FREEINK_DEVICE_PAPERDIY) {
++    a.percent=0; a.mappedInput.tap(B::Up); a.loop(); assert(a.percent==0);
++    a.percent=100; a.mappedInput.tap(B::Down); a.loop(); assert(a.percent==100);
++    a.waitForConfirmRelease=true; a.mappedInput.tap(B::Confirm); a.loop(); assert(a.saves==0);
++    a.mappedInput.tap(B::Confirm); a.loop(); assert(a.saves==1);
++  }
++  a.mappedInput.tap(B::Back); a.loop(); assert(a.cancels==1);
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++    def test_date_fields_are_staged_undo_restores_clamped_day_save_explicit(self):
++        code = INPUT + r'''
++constexpr int MIN_YEAR=2024,MAX_YEAR=2099;
++unsigned wrapValue(unsigned v,int delta,unsigned lo,unsigned hi) {
++  int n=int(hi-lo+1),x=(int(v-lo)+delta)%n; return lo+unsigned(x<0 ? x+n : x);
++}
++struct TimeUtils {
++  static unsigned getDaysInMonth(int y,unsigned m) {
++    const unsigned days[]={31,28,31,30,31,30,31,31,30,31,30,31};
++    return m==2 && y%4==0 && (y%100!=0 || y%400==0) ? 29 : days[m-1];
++  }
++};
++struct DateTimeSettingsActivity {
++  enum class EditField:uint8_t {Year,Month,Day,Hour,Minute,Count};
++  static constexpr int EDIT_FIELD_COUNT=5;
++  MappedInputManager mappedInput;
++  ButtonNavigator buttonNavigator{&mappedInput};
++  bool waitForConfirmRelease_=false,editingField=false;
++  int selectedEditField=0,year=2024,saves=0,cancels=0;
++  unsigned month=2,day=29,hour=12,minute=30;
++  struct {int year=0;unsigned month=0,day=0,hour=0,minute=0;} beforeFieldEdit;
++  struct {bool invalidated() const {return false;}} app;
++  Route routeTouch(MappedInputManager&) {return {};}
++  void requestUpdate() {}
++  void confirmManualEdit() {++saves;}
++  void cancelManualEdit() {++cancels;}
++  void beginFieldEdit();void finishFieldEdit(bool);void adjustEditField(int);void loop();
++};
++'''
++        for name in ("beginFieldEdit", "finishFieldEdit", "adjustEditField", "loop"):
++            code += body("src/activities/settings/DateTimeSettingsActivity.cpp", f"void DateTimeSettingsActivity::{name}(")
++        code += r'''
++int main() {
++  DateTimeSettingsActivity a;
++  a.mappedInput.tap(B::Confirm); a.loop(); assert(a.editingField && a.saves==0);
++  a.mappedInput.tap(B::Down); a.loop(); assert(a.year==2025 && a.day==28 && a.saves==0);
++  a.mappedInput.tap(B::Back); a.loop(); assert(!a.editingField && a.year==2024 && a.day==29 && a.cancels==0);
++  a.mappedInput.tap(B::Confirm); a.loop();
++  a.mappedInput.tap(B::Down); a.loop();
++  a.mappedInput.tap(B::Confirm); a.loop(); assert(!a.editingField && a.year==2025 && a.saves==0);
++  a.selectedEditField=1; a.month=1;a.day=31;
++  a.mappedInput.tap(B::Confirm); a.loop(); a.mappedInput.tap(B::Down);a.loop(); assert(a.month==2&&a.day==28);
++  a.mappedInput.tap(B::Back);a.loop();assert(a.month==1&&a.day==31);
++  a.selectedEditField=0;a.mappedInput.tap(B::Up);a.loop();assert(a.selectedEditField==5);
++  a.mappedInput.tap(B::Confirm);a.loop();assert(a.saves==1);
++  a.waitForConfirmRelease_=true;a.mappedInput.tap(B::Confirm);a.loop();assert(a.saves==1);
++  a.mappedInput.tap(B::Back);a.loop();assert(a.cancels==1);
++  // Editing every field is bounded; year clamps, month/day/hour/minute wrap.
++  for(int field=0;field<5;++field) {
++    a.selectedEditField=field;a.mappedInput.tap(B::Confirm);a.loop();
++    for(int n=0;n<100;++n) {a.mappedInput.tap(B::Down);a.loop();}
++    assert(a.year>=2024 && a.year<=2099 && a.month>=1 && a.month<=12);
++    assert(a.day>=1 && a.day<=TimeUtils::getDaysInMonth(a.year,a.month) && a.hour<24 && a.minute<60);
++    a.mappedInput.tap(B::Confirm);a.loop();
++  }
++}
++'''
++        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
++
++    def test_stale_front_remap_entry_cannot_modify_settings(self):
++        code = INPUT + r'''
++struct ButtonRemapActivity {
++  MappedInputManager mappedInput;int exits=0;
++  void finish() {++exits;}
++  void loop();
++};
++'''
++        code += body("src/activities/settings/ButtonRemapActivity.cpp", "void ButtonRemapActivity::loop()")
++        code += r'''
++int main() {
++  ButtonRemapActivity a;
++  a.mappedInput.tap(B::Up);a.loop();a.mappedInput.tap(B::Down);a.loop();assert(a.exits==0);
++  a.mappedInput.tap(B::Back);a.loop();assert(a.exits==1);
++}
++'''
++        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboard_buttons.py
 new file mode 100644
 --- /dev/null
@@ -2929,7 +3780,7 @@ diff --git a/test/test_paperdiy_menu_navigation.py b/test/test_paperdiy_menu_nav
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_menu_navigation.py
-@@ -0,0 +1,686 @@
+@@ -0,0 +1,689 @@
 +"""Exercise production menu owners with PaperDIY release-only tap snapshots."""
 +import os
 +from pathlib import Path
@@ -2961,7 +3812,8 @@ new file mode 100644
 +  bool wasPressed(Button b) const { return pressed & bit(b); }
 +  bool wasReleased(Button b) const { return released & bit(b); }
 +  bool isPressed(Button b) const { return held & bit(b); }
-+  unsigned long getHeldTime() const { return 2000; }
++  unsigned long heldMs=2000;
++  unsigned long getHeldTime() const { return heldMs; }
 +  bool wasLongPressed(Button b,unsigned long threshold) { return isPressed(b) && getHeldTime()>=threshold; }
 +  static int bit(Button b) { return b==Button::NavNext ? 2|8 : b==Button::NavPrevious ? 1|4 : int(b); }
 +  bool wasScreenTapped(int&,int&) const { return false; }
@@ -3190,6 +4042,7 @@ new file mode 100644
 +#include <string>
 +#include <utility>
 +[[maybe_unused]] constexpr unsigned long GO_HOME_MS=1000;
++[[maybe_unused]] constexpr unsigned long FILE_ACTIONS_HOLD_MS=1500;
 +struct RenderLock { template<class T> explicit RenderLock(T&) {} };
 +struct ActivityResult { bool isCancelled=false; };
 +struct FileBrowserActivity {
@@ -3225,6 +4078,7 @@ new file mode 100644
 +int main() {
 +  FileBrowserActivity browser;
 +  browser.mappedInput={16,0,16};
++  if(FREEINK_DEVICE_PAPERDIY) browser.mappedInput.heldMs=500;
 +  if(FREEINK_DEVICE_PAPERDIY) assert(!browser.handleButtons() && browser.edits==0);
 +  else assert(browser.handleButtons() && browser.edits==1);
 +  browser.mappedInput={0,16,0}; assert(browser.handleButtons() && browser.opens==1);
