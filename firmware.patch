@@ -28,17 +28,21 @@ index 5c2bd6bb..1d9409ee 100644
  - **无线功能**：浏览器传书与设置、Calibre 无线连接、OPDS 下载、WebDAV 和设备 OTA 更新。
  - **Apps 应用中心**：数独、五子棋、中国象棋、扫雷、2048、电子木鱼、Ugly Avatar 等轻量游戏与工具。[应用说明](./src/activities/apps/README.md)。
 diff --git a/lib/I18n/translations/chinese.yaml b/lib/I18n/translations/chinese.yaml
-index a4b35fd7..016dc8d5 100644
+index a4b35fd7..d73f0f9f 100644
 --- a/lib/I18n/translations/chinese.yaml
 +++ b/lib/I18n/translations/chinese.yaml
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,10 @@
  _language_name: "简体中文"
 +STR_LIBRARY_ACTIONS: "菜单"
 +STR_LIBRARY_REVERSE_SORT: "反向排序"
++STR_KB_PAPERDIY_MOVE: "短按 A 向右；短按 B 向下"
++STR_KB_PAPERDIY_CONFIRM: "长按 B 输入；长按 A 返回"
++STR_KB_PAPERDIY_ALTERNATE: "B 再按久些：大写或辅助字符"
++STR_KB_PAPERDIY_CLEAR: "在退格键上按住 B 更久：清空"
  _language_code: "ZH_CN"
  _order: "23"
  _bcp47: "zh-CN"
-@@ -8,6 +10,7 @@ STR_BOOTING: "启动中"
+@@ -8,6 +14,7 @@ STR_BOOTING: "启动中"
  STR_SLEEPING: "休眠中"
  STR_ENTERING_SLEEP: "正在进入休眠"
  STR_BROWSE_FILES: "浏览文件"
@@ -47,7 +51,7 @@ index a4b35fd7..016dc8d5 100644
  STR_APPS_TITLE: "应用"
  STR_APP_VISIBILITY: "隐藏应用"
 diff --git a/lib/I18n/translations/english.yaml b/lib/I18n/translations/english.yaml
-index df35ac5d..d6dbd6a0 100644
+index df35ac5d..4615bee0 100644
 --- a/lib/I18n/translations/english.yaml
 +++ b/lib/I18n/translations/english.yaml
 @@ -218,6 +218,8 @@ STR_LIBRARY_TAB_RECENT: "Recent"
@@ -59,6 +63,17 @@ index df35ac5d..d6dbd6a0 100644
  STR_LIBRARY_HOLD_SORT: "Hold: Reverse sort"
  STR_LIBRARY_HOLD_GROUPS: "Hold: Groups"
  STR_LIBRARY_HOLD_OPTIONS: "Hold: Options"
+@@ -653,6 +655,10 @@ STR_KB_HINT_TOGGLE_HIDE_PASSWORD: "Press [***] to hide password"
+ STR_KB_HINT_TOGGLE_SHOW_PASSWORD: "Press [abc] to show password"
+ STR_KB_HINT_EDIT_ENTRY: "Hold UP to edit entry"
+ STR_KB_TIPS: "Tips:"
++STR_KB_PAPERDIY_MOVE: "Tap A: right; tap B: down"
++STR_KB_PAPERDIY_CONFIRM: "Hold B: type; hold A: back"
++STR_KB_PAPERDIY_ALTERNATE: "Hold B longer: alternate"
++STR_KB_PAPERDIY_CLEAR: "Hold B on Del longer: clear"
+ STR_KB_HINT_RETURN_KEYBOARD: "Press DOWN to return to keyboard"
+ STR_KB_HINT_EXIT_URL_MODE: "Press ABC to exit URL mode"
+ STR_KB_HINT_CLEAR_TEXT: "Hold DEL to clear all text"
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
 index 2d854fe5..f3264b0c 100644
 --- a/lib/hal/HalDisplay.cpp
@@ -1534,10 +1549,20 @@ index ea42abe2..36fdb740 100644
  }
  
 diff --git a/src/activities/util/KeyboardEntryActivity.cpp b/src/activities/util/KeyboardEntryActivity.cpp
-index 4ee0e3c3..862c4663 100644
+index 4ee0e3c3..ec36a9d8 100644
 --- a/src/activities/util/KeyboardEntryActivity.cpp
 +++ b/src/activities/util/KeyboardEntryActivity.cpp
-@@ -229,6 +229,28 @@ void KeyboardEntryActivity::moveSelectionCol(const int delta) {
+@@ -151,6 +151,9 @@ void KeyboardEntryActivity::onEnter() {
+   passwordVisible = false;
+   selRow = 0;
+   selCol = 0;
++#if FREEINK_DEVICE_PAPERDIY
++  paperDiyNavigation.reset();
++#endif
+   delPressCount = 0;
+   hintVisible = false;
+   hintShowTime = 0;
+@@ -229,6 +232,34 @@ void KeyboardEntryActivity::moveSelectionCol(const int delta) {
    selCol = (selCol + delta + cols) % cols;
  }
  
@@ -1547,13 +1572,18 @@ index 4ee0e3c3..862c4663 100644
 +  clampSelection();
 +  const int cols = layout.rows[selRow].count;
 +  if (cols > 0) selCol = (selCol + 1) % cols;
++#if FREEINK_DEVICE_PAPERDIY
++  paperDiyNavigation.reset();
++#endif
 +}
 +
 +void KeyboardEntryActivity::moveSelectionDownColumn() {
 +  const fui::KeyboardLayout& layout = currentLayout();
 +  if (layout.rowCount == 0) return;
 +  clampSelection();
-+  // Skip rows too short for this column; stay put if no other row has it.
++#if FREEINK_DEVICE_PAPERDIY
++  paperDiyNavigation.nextRow(layout, selRow, selCol);
++#else
 +  for (int step = 1; step < layout.rowCount; step++) {
 +    const int row = (selRow + step) % layout.rowCount;
 +    if (selCol < layout.rows[row].count) {
@@ -1561,12 +1591,13 @@ index 4ee0e3c3..862c4663 100644
 +      return;
 +    }
 +  }
++#endif
 +}
 +
  bool KeyboardEntryActivity::syncSelectionToValue(const int16_t value) {
    const fui::KeyboardLayout& layout = currentLayout();
    for (int r = 0; r < layout.rowCount; r++) {
-@@ -698,7 +720,12 @@ void KeyboardEntryActivity::loop() {
+@@ -698,7 +729,12 @@ void KeyboardEntryActivity::loop() {
  
    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
      if (upHeld && !upLongHandled && !cursorMode) {
@@ -1579,7 +1610,7 @@ index 4ee0e3c3..862c4663 100644
        requestUpdate();
      }
      upHeld = false;
-@@ -721,7 +748,11 @@ void KeyboardEntryActivity::loop() {
+@@ -721,7 +757,11 @@ void KeyboardEntryActivity::loop() {
  
    if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
      if (downHeld && !downLongHandled && !cursorMode) {
@@ -1591,8 +1622,58 @@ index 4ee0e3c3..862c4663 100644
        requestUpdate();
      }
      downHeld = false;
-@@ -1119,7 +1150,13 @@ void KeyboardEntryActivity::render(RenderLock&&) {
-   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+@@ -1020,7 +1060,15 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+   auto drawTip = [&](const char* tip, int y) { renderer.drawCenteredText(SMALL_FONT_ID, y, tip, true); };
+ 
+   // Reserve the Clear Text row even when the entry is empty.
+-  const int tipCount = cursorMode ? 1 : urlPanel ? 3 : symbols ? 2 : 3 + (inputType == InputType::Url ? 1 : 0);
++  const int tipCount =
++#if FREEINK_DEVICE_PAPERDIY
++      4;
++#else
++      cursorMode ? 1
++      : urlPanel ? 3
++      : symbols  ? 2
++                 : 3 + (inputType == InputType::Url ? 1 : 0);
++#endif
+   const int tipsHeight = (tipCount + 1) * tipsLh;
+   // Reserve cursor instructions even for an empty field; passwords need a second row.
+   const int tipsTop = underlineBottom + (cursorMode ? (isPassword ? 2 : 1) * tipsLh : 0);
+@@ -1029,6 +1077,15 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+     int y = tipsTop + (kbRect.y - tipsTop - tipsHeight) / 2;
+     drawTip(tr(STR_KB_TIPS), y);
+     y += tipsLh;
++#if FREEINK_DEVICE_PAPERDIY
++    drawTip(tr(STR_KB_PAPERDIY_MOVE), y);
++    y += tipsLh;
++    drawTip(tr(STR_KB_PAPERDIY_CONFIRM), y);
++    y += tipsLh;
++    drawTip(tr(STR_KB_PAPERDIY_ALTERNATE), y);
++    y += tipsLh;
++    drawTip(tr(STR_KB_PAPERDIY_CLEAR), y);
++#else
+     if (!cursorMode) {
+       drawTip(tr(STR_KB_HINT_EDIT_ENTRY), y);
+       y += tipsLh;
+@@ -1064,6 +1121,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+         drawTip(tr(STR_KB_HINT_CLEAR_TEXT), y);
+       }
+     }
++#endif
+   }
+ 
+   // The FreeInkUI keyboard draws the keys and registers their hit rects into
+@@ -1116,10 +1174,21 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+   interactions.publish();
+   interactionsReady = true;
+ 
+-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
++  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT),
++#if FREEINK_DEVICE_PAPERDIY
++                                            tr(STR_DIR_RIGHT), tr(STR_DIR_DOWN));
++#else
++                                            tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
++#endif
    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
  
 +#if FREEINK_DEVICE_PAPERDIY
@@ -1606,14 +1687,32 @@ index 4ee0e3c3..862c4663 100644
    renderer.displayBuffer();
  }
 diff --git a/src/activities/util/KeyboardEntryActivity.h b/src/activities/util/KeyboardEntryActivity.h
-index b09baf95..9aed8188 100644
+index b09baf95..cdb2f648 100644
 --- a/src/activities/util/KeyboardEntryActivity.h
 +++ b/src/activities/util/KeyboardEntryActivity.h
-@@ -125,6 +125,9 @@ class KeyboardEntryActivity : public Activity {
+@@ -8,6 +8,7 @@
+ #include <utility>
+ 
+ #include "activities/Activity.h"
++#include "components/PaperDiyKeyboardNavigation.h"
+ #include "util/ButtonNavigator.h"
+ 
+ enum class InputType { Text, Password, Url };
+@@ -67,6 +68,9 @@ class KeyboardEntryActivity : public Activity {
+   // the bottom action row is just the last row).
+   int selRow = 0;
+   int selCol = 0;
++#if FREEINK_DEVICE_PAPERDIY
++  PaperDiyKeyboardNavigation paperDiyNavigation;
++#endif
+ 
+   bool confirmHeld = false;
+   bool confirmLongHandled = false;
+@@ -125,6 +129,9 @@ class KeyboardEntryActivity : public Activity {
    void clampSelection();
    void moveSelectionRow(int delta);
    void moveSelectionCol(int delta);
-+  // PaperDIY taps: A cycles within the row, B within the column index.
++  // PaperDIY taps: A cycles within the row, B follows a remembered column path.
 +  void moveSelectionAlongRow();
 +  void moveSelectionDownColumn();
    bool syncSelectionToValue(int16_t value);
@@ -1713,7 +1812,7 @@ index b0b49733..fa24dc0f 100644
 +add_test(NAME PaperDiyMenuNavigation COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_menu_navigation.py)
 +add_test(NAME PaperDiyDisplayDriver COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_driver.py)
 diff --git a/test/inx_navigation/test_unified_keyboard.py b/test/inx_navigation/test_unified_keyboard.py
-index 11496463..be5f5962 100644
+index 11496463..2208157c 100644
 --- a/test/inx_navigation/test_unified_keyboard.py
 +++ b/test/inx_navigation/test_unified_keyboard.py
 @@ -18,7 +18,7 @@ def method(name):
@@ -1725,26 +1824,77 @@ index 11496463..be5f5962 100644
           'insertUtf8', 'backspaceUtf8', 'activateValue', 'clearAllOrAltOnSelected', 'keyboardRect', 'keyboardKeysRect', 'inputStartY', 'inputLineCount',
           'utf8Next', 'measureRange', 'lineBreakEnd', 'inputWindowStart')
  methods = [method(name) for name in names]
-@@ -212,6 +212,19 @@ int main() {
+@@ -51,6 +51,7 @@ def metrics_code(ref=None):
+ 
+ harness = r'''
+ #include <cassert>
++#include "components/PaperDiyKeyboardNavigation.h"
+ #include <cstdarg>
+ #include <cstdint>
+ #include <cstdio>
+@@ -145,6 +146,9 @@ struct KeyboardEntryActivity {
+   bool interactionsReady=false;
+   bool confirmHeld=false, confirmLongHandled=false, hintVisible=false, passwordVisible=false, togglePos=false;
+   int selRow=0, selCol=0, delPressCount=0;
++#if FREEINK_DEVICE_PAPERDIY
++  PaperDiyKeyboardNavigation paperDiyNavigation;
++#endif
+   size_t cursorPos=0, maxLength=0; unsigned long hintShowTime=0;
+   std::string text;
+   MappedInputManager mappedInput;
+@@ -212,6 +216,26 @@ int main() {
            kb.moveSelectionCol(1); assert(kb.selCol==0);
            kb.moveSelectionRow(-1); assert(kb.selRow==layout.rowCount-1);
            kb.moveSelectionRow(1); assert(kb.selRow==0);
-+          // PaperDIY taps: A cycles within the row; B keeps the column index,
-+          // skipping rows too short for it and wrapping to the top.
++          // PaperDIY follows a column path through every row; legacy helper
++          // behavior remains isolated in the non-PaperDIY build.
 +          for (int r=0; r<layout.rowCount; ++r) for (int c=0; c<layout.rows[r].count; ++c) {
 +            kb.selRow=r; kb.selCol=c;
 +            kb.moveSelectionAlongRow();
 +            assert(kb.selRow==r && kb.selCol==(c+1)%layout.rows[r].count);
 +            kb.selRow=r; kb.selCol=c;
++#if FREEINK_DEVICE_PAPERDIY
++            kb.paperDiyNavigation.reset();
++            kb.moveSelectionDownColumn();
++            assert(kb.selRow==(r+1)%layout.rowCount);
++            assert(kb.selCol>=0 && kb.selCol<layout.rows[kb.selRow].count);
++#else
 +            kb.moveSelectionDownColumn();
 +            assert(kb.selCol==c && c<layout.rows[kb.selRow].count);
 +            for (int k=(r+1)%layout.rowCount; k!=kb.selRow && k!=r; k=(k+1)%layout.rowCount)
 +              assert(c>=layout.rows[k].count);
++#endif
 +          }
 +          kb.selRow=kb.selCol=0;
            kb.draw();
            std::printf("SCENE %d %d %llu %llu\n",scene,theme,(unsigned long long)keysHash,(unsigned long long)traceHash);
          }
+@@ -267,12 +291,13 @@ replacements = {'TRACE': trace_target, 'METRICS': metrics_code(), 'LANGUAGES': l
+                 'CONFIRM': confirm, 'RENDER': render, 'METHODS': '\n'.join(methods)}
+ for name, code in replacements.items():
+     harness = harness.replace('@' + name + '@', code)
+-def run_harness(code, tmp, name, high_dpi=False):
++def run_harness(code, tmp, name, high_dpi=False, paperdiy=False):
+     cpp, binary = tmp / (name+'.cpp'), tmp / name
+     cpp.write_text(code)
+     ui = SDK / 'libs/ui/FreeInkUI'
+-    command = ['c++', '-std=c++20', '-I'+str(ui/'include'), str(cpp), str(ui/'src/FreeInkUI.cpp'), '-o', str(binary)]
++    command = ['c++', '-std=c++20', '-I'+str(ui/'include'), '-I'+str(ROOT/'src'), str(cpp), str(ui/'src/FreeInkUI.cpp'), '-o', str(binary)]
+     if high_dpi: command.append('-DCROSSMUX_UI_PROFILE_HIGH_DPI')
++    if paperdiy: command.append('-DFREEINK_DEVICE_PAPERDIY=1')
+     subprocess.run(command, check=True)
+     output = subprocess.check_output([str(binary)], text=True)
+     return {tuple(map(int,row[:2])):tuple(map(int,row[2:])) for line in output.splitlines() if line.startswith('SCENE ') for row in [line.split()[1:]]}
+@@ -281,6 +306,9 @@ with tempfile.TemporaryDirectory(prefix='unified-keyboard-', dir=os.environ.get(
+     tmp=Path(tmp)
+     regular=run_harness(harness,tmp,'regular')
+     high=run_harness(harness,tmp,'readpico',True)
++    paper=run_harness(harness,tmp,'paperdiy',paperdiy=True)
++    paper_high=run_harness(harness,tmp,'paperdiy-high',True,True)
++    assert paper==regular and paper_high==high, 'navigation must not alter key geometry or hit rectangles'
+     for scenes in (regular,high):
+         for (scene,theme), (keys,draw) in scenes.items():
+             assert scenes[scene,0][0]==keys, ('key tables',scene,theme)
 diff --git a/test/test_hal_power_sources.py b/test/test_hal_power_sources.py
 index 14a5edf5..c9712aec 100644
 --- a/test/test_hal_power_sources.py
@@ -1794,7 +1944,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,247 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -2012,6 +2162,36 @@ new file mode 100644
 +issue. They are retained, not claimed fixed by list navigation tests. Source
 +checks and host tests do not establish theme-wide hardware acceptance; obtain
 +specific approval before flashing a new candidate.
++
++
++## Keyboard column-path candidate, 2026-10-21
++
++The user stage-accepted the latest menu navigation and requested keyboard work
++next. PaperDIY A still cycles the current row; B now visits every nonempty row
++and remembers its incoming column path through wide/merged keys. Explicit paths
++for the photographed English five-row layout preserve 1/q/a/Shift/Mode,
++2/w/s/z/Space through 8/i/k/m/Space, and the 9/0 paths that merge at L/Delete/OK.
++Returning to the top restores the original path. With a language key, path 2
++reaches Language and 3..8 reach Space. This extension and the other-layout
++fallback are candidate policies, not previously user-accepted hardware results.
++
++A resets vertical memory; a wide key reached horizontally starts its leftmost
++covered path. Other scripts, symbols and URL panels map a stable column into
++the declared widthUnits/insetUnits intervals and clamp margins to edge keys.
++They never skip a short row. Only a truly empty custom row can be passed over.
++The fallback is not pixel-perfect hit-testing and requires hardware checking.
++
++PaperDiyKeyboardNavigation holds four bytes on the loop task with no allocation.
++The new state exists only in PaperDIY keyboard instances; drawing, touch hit
++geometry, SDK input/driver patches and the 30-update refresh policy are unchanged.
++Two-key translated hints replace the impossible hold-Up cursor instruction.
++Original text/alternate/delete/confirm/back behavior remains; fine cursor editing
++and password reveal do not gain new two-key entrypoints in this candidate.
++
++Host tests compile photo-path expectations, wide-key round trips, all built-in
++layers, real theme geometry and one-action holds. Non-PaperDIY paths are compared
++to the pinned upstream. Passing software checks does not establish keyboard
++hardware acceptance; obtain approval for the exact candidate before flashing.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -2044,6 +2224,124 @@ new file mode 100644
 + private:
 +  uint8_t fastUiPaints = 0;
 +};
+diff --git a/src/components/PaperDiyKeyboardNavigation.h b/src/components/PaperDiyKeyboardNavigation.h
+new file mode 100644
+--- /dev/null
++++ b/src/components/PaperDiyKeyboardNavigation.h
+@@ -0,0 +1,113 @@
++#pragma once
++
++#include <components/keyboard/keyboard.h>
++
++#include <algorithm>
++#include <cstdint>
++
++// Loop-task-only selection state. A wide key can receive several column paths;
++// remember the arriving path until the user moves horizontally or changes it.
++// Four bytes, no allocation, no render/hit geometry or SDK input changes.
++class PaperDiyKeyboardNavigation {
++ public:
++  void reset() { columns = 0; }
++
++  void nextRow(const freeink::ui::KeyboardLayout& layout, int& row, int& col) {
++    if (!layout.rows || layout.rowCount == 0) return;
++    const int count = columnCount(layout);
++    if (count == 0) return;
++    row = std::clamp(row, 0, static_cast<int>(layout.rowCount) - 1);
++    col = std::clamp(col, 0, std::max(0, static_cast<int>(layout.rows[row].count) - 1));
++    if (columns != count || lastRow != row || lastCol != col || keyForColumn(layout, row, column, count) != col) {
++      column = columnForKey(layout, row, col, count);
++    }
++    columns = static_cast<uint8_t>(count);
++    // Built-ins have no empty rows. A custom empty row has no selectable key;
++    // only those empty rows may be passed over, never an ordinary short row.
++    for (int step = 1; step <= layout.rowCount; ++step) {
++      const int next = (row + step) % layout.rowCount;
++      if (!layout.rows[next].keys || layout.rows[next].count == 0) continue;
++      row = next;
++      col = keyForColumn(layout, row, column, count);
++      lastRow = static_cast<uint8_t>(row);
++      lastCol = static_cast<uint8_t>(col);
++      return;
++    }
++  }
++
++ private:
++  uint8_t column = 0;
++  uint8_t columns = 0;
++  uint8_t lastRow = 0;
++  uint8_t lastCol = 0;
++
++  static int columnCount(const freeink::ui::KeyboardLayout& layout) {
++    int count = 0;
++    for (int row = 0; row < layout.rowCount; ++row) {
++      if (layout.rows[row].keys) count = std::max(count, static_cast<int>(layout.rows[row].count));
++    }
++    return count;
++  }
++
++  static bool hasPhotoColumnPaths(const freeink::ui::KeyboardLayout& layout) {
++    using namespace freeink::ui;
++    if (layout.rowCount != 5) return false;
++    for (int row = 0; row < 5; ++row) {
++      if (!layout.rows[row].keys) return false;
++    }
++    if (layout.rows[0].count != 10 || layout.rows[1].count != 10 || layout.rows[2].count != 9 ||
++        layout.rows[3].count != 9)
++      return false;
++    const auto& bottom = layout.rows[4];
++    if (bottom.count != 3 && bottom.count != 4) return false;
++    return (layout.rows[0].keys[0].value == '1' || layout.rows[0].keys[0].value == '!') &&
++           (layout.rows[1].keys[0].value == 'q' || layout.rows[1].keys[0].value == 'Q') &&
++           (layout.rows[2].keys[0].value == 'a' || layout.rows[2].keys[0].value == 'A') &&
++           layout.rows[3].keys[0].value == QWERTY_KEY_SHIFT && layout.rows[3].keys[8].value == QWERTY_KEY_BACKSPACE &&
++           bottom.keys[0].value == QWERTY_KEY_MODE && bottom.keys[bottom.count - 2].value == QWERTY_KEY_SPACE &&
++           bottom.keys[bottom.count - 1].value == QWERTY_KEY_ENTER &&
++           (bottom.count == 3 || bottom.keys[1].value == QWERTY_KEY_LANG);
++  }
++
++  static int keyForColumn(const freeink::ui::KeyboardLayout& layout, const int row, const int lane, const int count) {
++    using namespace freeink::ui;
++    const auto& target = layout.rows[row];
++    if (!target.keys || target.count == 0) return 0;
++    if (hasPhotoColumnPaths(layout)) {
++      // Explicit user-drawn paths, not nearest-center guesses: 9 and 0 merge
++      // at L/Delete/OK; 2..8 reach Space. A language key takes the second path
++      // when enabled. This extension is documented separately from the photo.
++      if (row < 4) return std::min(lane, static_cast<int>(target.count) - 1);
++      static constexpr uint8_t bottom[] = {0, 1, 1, 1, 1, 1, 1, 1, 2, 2};
++      static constexpr uint8_t bottomWithLanguage[] = {0, 1, 2, 2, 2, 2, 2, 2, 3, 3};
++      return target.count == 3 ? bottom[lane] : bottomWithLanguage[lane];
++    }
++
++    // Other scripts, symbols and URL panels have different shapes. Map a
++    // stable normalized column into the layout's declared width intervals,
++    // including insets and wide controls; outside insets clamp to an edge.
++    // This is a defined fallback, not a claim that their paths were user-tested.
++    uint32_t units = 2u * target.insetUnits;
++    for (int key = 0; key < target.count; ++key) units += std::max(1, static_cast<int>(target.keys[key].widthUnits));
++    const uint32_t position = static_cast<uint32_t>(2 * lane + 1) * units;
++    uint32_t edge = target.insetUnits;
++    for (int key = 0; key < target.count; ++key) {
++      edge += std::max(1, static_cast<int>(target.keys[key].widthUnits));
++      if (position < edge * static_cast<uint32_t>(2 * count)) return key;
++    }
++    return target.count - 1;
++  }
++
++  static uint8_t columnForKey(const freeink::ui::KeyboardLayout& layout, const int row, const int col,
++                              const int count) {
++    if (!layout.rows[row].keys || layout.rows[row].count == 0) return 0;
++    // Horizontal entry to a wide key starts its leftmost column path. Vertical
++    // entry keeps the arriving path, including when several paths merge.
++    for (int lane = 0; lane < count; ++lane) {
++      if (keyForColumn(layout, row, lane, count) == col) return static_cast<uint8_t>(lane);
++    }
++    return static_cast<uint8_t>(std::min(count - 1, col * count / layout.rows[row].count));
++  }
++};
++
++static_assert(sizeof(PaperDiyKeyboardNavigation) == 4);
 diff --git a/test/test_paperdiy_board_tag.py b/test/test_paperdiy_board_tag.py
 new file mode 100644
 --- /dev/null
@@ -2299,7 +2597,7 @@ diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboar
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_keyboard_buttons.py
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,327 @@
 +"""Drive the production keyboard button handling with PaperDIY two-key frames.
 +
 +Frames follow the SDK DigitalTwoButton classifier (see
@@ -2310,6 +2608,7 @@ new file mode 100644
 +"""
 +from pathlib import Path
 +import os
++import json
 +import re
 +import subprocess
 +import tempfile
@@ -2318,10 +2617,11 @@ new file mode 100644
 +SDK = Path(os.environ.get("FREEINK_SDK_ROOT", ROOT / "freeink-sdk"))
 +UI = SDK / "libs/ui/FreeInkUI"
 +source = (ROOT / "src/activities/util/KeyboardEntryActivity.cpp").read_text()
++nav_source = Path(os.environ["KEYBOARD_NAV_SOURCE"]).read_text() if os.environ.get("KEYBOARD_NAV_SOURCE") else source
 +
 +
 +def method(name):
-+    match = re.search(r"^[^\n]*KeyboardEntryActivity::" + name + r"\(.*?\n}", source, re.M | re.S)
++    match = re.search(r"^[^\n]*KeyboardEntryActivity::" + name + r"\(.*?\n}", nav_source, re.M | re.S)
 +    return match.group() if match else ""
 +
 +
@@ -2337,16 +2637,33 @@ new file mode 100644
 +                   "  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}")
 +hints_after = "  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);\n"
 +hints = between(hints_after, "  renderer.displayBuffer();")[len(hints_after):]
++tips = between("  // Reserve the Clear Text row", "  // The FreeInkUI keyboard draws")
++tip_keys = ["STR_KB_TIPS", "STR_KB_PAPERDIY_MOVE", "STR_KB_PAPERDIY_CONFIRM",
++            "STR_KB_PAPERDIY_ALTERNATE", "STR_KB_PAPERDIY_CLEAR"]
++tip_tables = []
++for language in ("english", "chinese"):
++    translations = (ROOT / f"lib/I18n/translations/{language}.yaml").read_text(encoding="utf-8")
++    values = [json.loads(re.search(r"^" + key + r": (.*)$", translations, re.M).group(1)) for key in tip_keys]
++    tip_tables.append("{" + ",".join(json.dumps(value, ensure_ascii=False) for value in values) + "}")
++tip_declarations = "enum StrId {" + ",".join(tip_keys) + "};\n"
++tip_declarations += "const char* tipStrings[2][5]={" + ",".join(tip_tables) + "};\n"
++tip_declarations += "int tipLanguage=0; const char* tr(StrId key) {return tipStrings[tipLanguage][key];}\n"
 +confirm_back = between("  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm))",
 +                       "  if (hintVisible && !cursorMode")
 +
 +harness = r'''
 +#include <components/keyboard/keyboard.h>
++#include "components/PaperDiyKeyboardNavigation.h"
 +#include <cassert>
 +#include <cstdio>
 +#include <string>
 +#include <vector>
 +namespace fui = freeink::ui;
++@TIP_DECLARATIONS@
++struct UITheme {
++  static UITheme& getInstance() { static UITheme value; return value; }
++  bool hasMainTabs() const { return false; }
++};
 +enum class InputType { Text, Password, Url };
 +unsigned long nowMs = 1000;
 +unsigned long millis() { return nowMs; }
@@ -2359,6 +2676,7 @@ new file mode 100644
 +  bool wasReleased(Button b) const { return released & bit(b); }
 +  bool isPressed(Button b) const { return held & bit(b); }
 +  unsigned long getHeldTime() const { return heldMs; }
++  bool hasTouch() const { return false; }
 +};
 +using B = MappedInputManager::Button;
 +// GfxRenderer::drawTextRotated90CW maps glyph right to screen up (screenY = base - glyphX),
@@ -2378,6 +2696,9 @@ new file mode 100644
 +  bool upHeld = false, upLongHandled = false, downHeld = false, downLongHandled = false;
 +  bool confirmHeld = false, confirmLongHandled = false;
 +  int selRow = 0, selCol = 0;
++  PaperDiyKeyboardNavigation paperDiyNavigation;
++  fui::KeyboardLayoutId layoutId = fui::KeyboardLayoutId::QwertyEn;
++  bool shifted = false, symbols = false, showLangKey = true;
 +  unsigned long hintShowTime = 0;
 +  std::vector<int> activated;
 +  int cancels = 0, alts = 0;
@@ -2386,7 +2707,7 @@ new file mode 100644
 +  const fui::KeyboardLayout* layoutOverride = nullptr;
 +  const fui::KeyboardLayout& currentLayout() const {
 +    if (layoutOverride) return *layoutOverride;
-+    return fui::builtinKeyboardLayout(fui::KeyboardLayoutId::QwertyEn, false, false, true, true);
++    return fui::builtinKeyboardLayout(layoutId, shifted, symbols, true, showLangKey);
 +  }
 +  void requestUpdate() {}
 +  void onCancel() { ++cancels; }
@@ -2407,6 +2728,16 @@ new file mode 100644
 +    step(0, m, 0, releaseAfterMs);
 +  }
 +  int16_t selected() const { return selectedKey()->value; }
++  std::vector<std::string> tips;
++  void drawTips() {
++#if FREEINK_DEVICE_PAPERDIY
++    struct Rect {int y;}; const Rect kbRect{500};
++    const int tipsLh=20,underlineBottom=100;
++    const bool isPassword=inputType==InputType::Password;
++    auto drawTip=[&](const char* line,int y) {assert(y>=100 && y+tipsLh<=kbRect.y); tips.emplace_back(line);};
++    @TIPS@
++#endif
++  }
 +  void drawHints() {
 +    @HINTS@
 +  }
@@ -2453,44 +2784,74 @@ new file mode 100644
 +    }
 +  }
 +  assert(seenDelete && seenShift && seenMode && seenLang && seenSpace && seenOk && seenDigit && seenLetter);
-+  // Tap B keeps the column and moves to the next row that has it, wrapping to the top.
-+  for (int r = 0; r < layout.rowCount; ++r) {
-+    for (int c = 0; c < layout.rows[r].count; ++c) {
-+      int rowsWithColumn = 0;
-+      for (int k = 0; k < layout.rowCount; ++k) rowsWithColumn += c < layout.rows[k].count;
-+      kb.selRow = r; kb.selCol = c;
-+      for (int i = 1; i <= rowsWithColumn; ++i) {
-+        const int from = kb.selRow;
-+        kb.tap(B::Down);
-+        checkValid(kb);
-+        assert(kb.selCol == c);
-+        for (int k = (from + 1) % layout.rowCount; k != kb.selRow; k = (k + 1) % layout.rowCount)
-+          assert(c >= layout.rows[k].count);  // only rows without the column are skipped
++  // Exact user-drawn paths, not expectations calculated from our navigation.
++  const int16_t numbers[] = {'1','2','3','4','5','6','7','8','9','0'};
++  const int16_t letters[] = {'q','w','e','r','t','y','u','i','o','p'};
++  const int16_t staggered[] = {'a','s','d','f','g','h','j','k','l','l'};
++  const int16_t controls[] = {fui::QWERTY_KEY_SHIFT,'z','x','c','v','b','n','m',8,8};
++  const int16_t bottom[] = {-2,32,32,32,32,32,32,32,13,13};
++  for(bool language : {false,true}) for(bool upper : {false,true}) {
++    kb.showLangKey=language; kb.shifted=upper;
++    for(int lane=0;lane<10;++lane) {
++      kb.paperDiyNavigation.reset(); kb.selRow=0; kb.selCol=lane;
++      const int16_t start=kb.selected();
++      if(!upper) assert(start==numbers[lane]);
++      for(int round=0;round<3;++round) {
++        kb.tap(B::Down); assert(kb.selRow==1);
++        assert(kb.selected()==(upper ? letters[lane]-'a'+'A' : letters[lane]));
++        kb.tap(B::Down); assert(kb.selRow==2);
++        assert(kb.selected()==(upper ? staggered[lane]-'a'+'A' : staggered[lane]));
++        kb.tap(B::Down); assert(kb.selRow==3);
++        assert(kb.selected()==(upper && controls[lane]>='a' ? controls[lane]-'a'+'A' : controls[lane]));
++        kb.tap(B::Down); assert(kb.selRow==4);
++        assert(kb.selected()==(language && lane==1 ? -4 : bottom[lane]));
++        kb.tap(B::Down); assert(kb.selRow==0 && kb.selCol==lane && kb.selected()==start);
 +      }
-+      assert(kb.selRow == r);  // one full cycle through the rows that have this column
 +    }
 +  }
-+  // Rows of 10, 7, 10, 9 and 3 keys: column 9 skips the 7-, 9- and 3-key rows.
-+  auto mixed = synthetic({10, 7, 10, 9, 3});
-+  kb.layoutOverride = &mixed;
-+  kb.selRow = 0; kb.selCol = 9;
-+  kb.tap(B::Down); assert(kb.selRow == 2 && kb.selCol == 9);
-+  kb.tap(B::Down); assert(kb.selRow == 0 && kb.selCol == 9);
-+  kb.selRow = 3; kb.selCol = 8;
-+  kb.tap(B::Down); assert(kb.selRow == 0 && kb.selCol == 8);
-+  kb.selRow = 4; kb.selCol = 2;
-+  kb.tap(B::Down); assert(kb.selRow == 0 && kb.selCol == 2);
-+  // A column only the current row has: B leaves the selection where it is.
-+  auto unique = synthetic({12, 10, 10});
-+  kb.layoutOverride = &unique;
-+  kb.selRow = 0; kb.selCol = 11;
-+  kb.tap(B::Down); assert(kb.selRow == 0 && kb.selCol == 11);
-+  kb.tap(B::Up); assert(kb.selRow == 0 && kb.selCol == 0);
-+  // A stale column left by a layer change is clamped into the row first.
-+  kb.selRow = 1; kb.selCol = 11;
-+  kb.tap(B::Up); checkValid(kb); assert(kb.selRow == 1 && kb.selCol == 0);
-+  kb.selRow = 1; kb.selCol = 11;
-+  kb.tap(B::Down); checkValid(kb); assert(kb.selRow == 2 && kb.selCol == 9);
++  // A on a shared wide key discards the incoming lane. The new key starts
++  // from its leftmost path: Space -> A -> OK -> B -> 9, not the old column.
++  kb.shifted=false; kb.showLangKey=false; kb.selRow=0; kb.selCol=5; kb.paperDiyNavigation.reset();
++  for(int n=0;n<4;++n) kb.tap(B::Down);
++  assert(kb.selected()==32); kb.tap(B::Up); assert(kb.selected()==13);
++  kb.tap(B::Down); assert(kb.selected()=='9');
++  kb.tap(B::Up); assert(kb.selected()=='0');
++  for(int n=0;n<5;++n) kb.tap(B::Down);
++  assert(kb.selected()=='0'); // The two merged rightmost lanes remain distinct.
++
++  // All built-in scripts/layers and every starting key: B enters the very
++  // next row, including short control rows; A can reach every key in each row.
++  for(int id=0;id<10;++id) for(bool symbols : {false,true}) for(bool upper : {false,true}) {
++    kb.layoutId=static_cast<fui::KeyboardLayoutId>(id); kb.symbols=symbols; kb.shifted=upper;
++    const auto& layer=kb.currentLayout();
++    for(int r=0;r<layer.rowCount;++r) for(int c=0;c<layer.rows[r].count;++c) {
++      kb.selRow=r; kb.selCol=c; kb.paperDiyNavigation.reset();
++      for(int n=0;n<2*layer.rowCount;++n) {
++        kb.tap(B::Down); checkValid(kb); assert(kb.selRow==(r+n+1)%layer.rowCount);
++      }
++      kb.selRow=r; kb.selCol=c;
++      for(int n=0;n<layer.rows[r].count;++n) kb.tap(B::Up);
++      assert(kb.selRow==r && kb.selCol==c);
++    }
++  }
++  kb.layoutId=fui::KeyboardLayoutId::QwertyEn; kb.symbols=false; kb.shifted=false; kb.showLangKey=true;
++  auto mixed = synthetic({10, 7, 10, 9, 3}); kb.layoutOverride = &mixed;
++  kb.selRow=0; kb.selCol=9; kb.paperDiyNavigation.reset();
++  const int expected[] = {6,9,8,2,9};
++  for(int n=0;n<5;++n) { kb.tap(B::Down); assert(kb.selRow==(n+1)%5 && kb.selCol==expected[n]); }
++  auto unique = synthetic({12,10,10}); kb.layoutOverride=&unique;
++  kb.selRow=0; kb.selCol=11; kb.paperDiyNavigation.reset();
++  kb.tap(B::Down); assert(kb.selRow==1 && kb.selCol==9);
++  kb.tap(B::Down); assert(kb.selRow==2 && kb.selCol==9);
++  kb.tap(B::Down); assert(kb.selRow==0 && kb.selCol==11);
++  kb.selRow=1; kb.selCol=11; kb.tap(B::Up); checkValid(kb); assert(kb.selCol==0);
++  // Sparse and empty custom layouts are safe; only empty rows may be skipped.
++  auto sparse=synthetic({10,0,3}); kb.layoutOverride=&sparse;
++  kb.selRow=0; kb.selCol=9; kb.paperDiyNavigation.reset();
++  kb.tap(B::Down); assert(kb.selRow==2 && kb.selCol==2);
++  kb.tap(B::Down); assert(kb.selRow==0 && kb.selCol==9);
++  fui::KeyboardLayout empty{}; kb.layoutOverride=&empty;
++  kb.tap(B::Down); kb.tap(B::Up);
 +  kb.layoutOverride = nullptr;
 +#else
 +  kb.selRow = 1; kb.selCol = 0;
@@ -2527,6 +2888,18 @@ new file mode 100644
 +#else
 +  assert(kb.selRow == 1 && kb.selCol == 2 * layout.rows[1].count / layout.rows[0].count);
 +#endif
++#if FREEINK_DEVICE_PAPERDIY
++  kb.selRow=1; kb.selCol=2;
++  const auto inputsBefore=kb.activated.size();
++  kb.hold(B::Confirm,600); assert(kb.alts==1 && kb.activated.size()==inputsBefore);
++  kb.selRow=3; kb.selCol=8;
++  kb.hold(B::Confirm,2000); assert(kb.alts==2 && kb.activated.size()==inputsBefore);
++  for(int lang=0;lang<2;++lang) {
++    tipLanguage=lang; kb.tips.clear(); kb.drawTips();
++    assert(kb.tips.size()==5);
++    for(int i=0;i<5;++i) assert(kb.tips[i]==tipStrings[lang][i]);
++  }
++#endif
 +  kb.drawHints();
 +#if FREEINK_DEVICE_PAPERDIY
 +  assert(std::string(shownDirection(GUI.top.c_str())) == "right");
@@ -2537,7 +2910,7 @@ new file mode 100644
 +  std::puts("ok");
 +}
 +'''
-+for name, code in {"DECLARATIONS": declarations, "VERTICAL": vertical, "HINTS": hints, "CONFIRM_BACK": confirm_back,
++for name, code in {"TIP_DECLARATIONS": tip_declarations, "TIPS": tips, "DECLARATIONS": declarations, "VERTICAL": vertical, "HINTS": hints, "CONFIRM_BACK": confirm_back,
 +                   "METHODS": "\n".join(methods)}.items():
 +    harness = harness.replace("@" + name + "@", code)
 +
@@ -2548,10 +2921,10 @@ new file mode 100644
 +    for paperdiy in (1, 0):
 +        binary = work / f"keyboard{paperdiy}"
 +        subprocess.run(["c++", "-std=c++20", f"-DFREEINK_DEVICE_PAPERDIY={paperdiy}",
-+                        f"-I{UI / 'include'}", str(cpp), str(UI / "src/FreeInkUI.cpp"), "-o", str(binary)],
++                        f"-I{UI / 'include'}", f"-I{ROOT / 'src'}", str(cpp), str(UI / "src/FreeInkUI.cpp"), "-o", str(binary)],
 +                       check=True)
 +        subprocess.run([str(binary)], check=True)
-+print("PaperDIY A cycles within the row, B cycles within the column, holds keep Back/Confirm, hints show right/down; other boards unchanged")
++print("PaperDIY A cycles within the row, B follows all photo columns without skipping rows, holds keep Back/Confirm, hints show right/down; other boards unchanged")
 diff --git a/test/test_paperdiy_menu_navigation.py b/test/test_paperdiy_menu_navigation.py
 new file mode 100644
 --- /dev/null
