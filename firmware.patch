@@ -1580,7 +1580,7 @@ index b3307951..1d92efe7 100644
      if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
        beginClear();
 diff --git a/src/activities/settings/DateTimeSettingsActivity.cpp b/src/activities/settings/DateTimeSettingsActivity.cpp
-index 2f1a7e77..27ba8df4 100644
+index 2f1a7e77..79bf53ef 100644
 --- a/src/activities/settings/DateTimeSettingsActivity.cpp
 +++ b/src/activities/settings/DateTimeSettingsActivity.cpp
 @@ -66,6 +66,9 @@ void DateTimeSettingsActivity::beginManualEdit() {
@@ -1712,10 +1712,10 @@ index 2f1a7e77..27ba8df4 100644
 +#if FREEINK_DEVICE_PAPERDIY
 +  GUI.drawHelpText(renderer, Rect{0, contentTop + contentHeight, pageWidth, helpHeight},
 +                   editingField ? tr(STR_PAPERDIY_DATE_EDIT_HINT) : tr(STR_PAPERDIY_DATE_SELECT_HINT));
-+  const auto labels = mappedInput.mapLabels(tr(editingField ? STR_CANCEL : STR_BACK),
-+                                            tr(editingField                            ? STR_CONFIRM
-+                                               : selectedEditField == EDIT_FIELD_COUNT ? STR_SAVE
-+                                                                                       : STR_PAPERDIY_EDIT),
++  const auto labels = mappedInput.mapLabels(editingField ? tr(STR_CANCEL) : tr(STR_BACK),
++                                            editingField                            ? tr(STR_CONFIRM)
++                                            : selectedEditField == EDIT_FIELD_COUNT ? tr(STR_SAVE)
++                                                                                    : tr(STR_PAPERDIY_EDIT),
 +                                            editingField ? "-" : tr(STR_DIR_UP), editingField ? "+" : tr(STR_DIR_DOWN));
 +#else
    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONFIRM), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
@@ -3128,10 +3128,11 @@ diff --git a/test/test_paperdiy_file_settings.py b/test/test_paperdiy_file_setti
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_file_settings.py
-@@ -0,0 +1,315 @@
+@@ -0,0 +1,388 @@
 +"""Compile production file/value/date owners; no device, clock or SD writes."""
 +from pathlib import Path
 +import os
++import re
 +import sys
 +import unittest
 +
@@ -3440,6 +3441,78 @@ new file mode 100644
 +}
 +'''
 +        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
++
++    def test_date_render_exposes_save_and_current_edit_mode(self):
++        render = body("src/activities/settings/DateTimeSettingsActivity.cpp", "void DateTimeSettingsActivity::render(")
++        ids = sorted(set(re.findall(r"STR_\w+", render)))
++        code = r'''
++#include <cassert>
++#include <string>
++#include <vector>
++#include <cstddef>
++struct RenderLock {};
++struct Rect {int x,y,width,height;};
++[[maybe_unused]] constexpr int SMALL_FONT_ID=1;
++struct Renderer {
++  void clearScreen() {} int getScreenWidth() {return 540;} int getScreenHeight() {return 960;}
++  int getLineHeight(int) {return 18;} void displayBuffer() {}
++};
++'''
++        code += 'enum class StrId {' + ','.join(ids) + '};\n'
++        code += 'struct {const char* get(StrId id) {switch(id) {\n'
++        code += ''.join(f'case StrId::{key}: return "{key}";\n' for key in ids)
++        code += '} return "";}} I18N;\n'
++        # Use the production translation macro: it only accepts one enum name.
++        macro = next(line for line in (ROOT / "lib/I18n/I18n.h").read_text().splitlines()
++                     if line.startswith("#define tr("))
++        code += macro.replace('I18n::getInstance()', 'I18N') + '\n'
++        code += r'''
++struct UITheme {
++  struct Metrics {int topPadding=10,headerHeight=30,verticalSpacing=8,buttonHintsHeight=40;} metrics;
++  static UITheme& getInstance() {static UITheme t;return t;} const Metrics& getMetrics() {return metrics;}
++};
++struct Gui {
++  std::vector<std::string> names,values;std::string help;Rect rows{},helpRect{};
++  void drawHeader(Renderer&,Rect,const char*) {}
++  template<class L,class V> void drawList(Renderer&,Rect r,int n,int,L label,std::nullptr_t,std::nullptr_t,V value,bool) {
++    rows=r;names.clear();values.clear();for(int i=0;i<n;++i){names.push_back(label(i));values.push_back(value(i));}
++  }
++  void drawHelpText(Renderer&,Rect r,const char* s) {help=s;helpRect=r;}
++  void drawButtonHints(Renderer&,const char*,const char*,const char*,const char*) {}
++} GUI;
++struct DateTimeSettingsActivity {
++  enum class EditField {Year,Month,Day,Hour,Minute,Count};static constexpr int EDIT_FIELD_COUNT=5;
++  Renderer renderer;int year=2024,selectedEditField=0;unsigned month=2,day=29,hour=12,minute=30;
++  bool editingField=false;
++  struct Input {
++    struct Labels {const char* btn1;const char* btn2;const char* btn3;const char* btn4;} labels{};
++    bool hasTouch() {return false;}
++    Labels mapLabels(const char* a,const char* b,const char* c,const char* d) {return labels={a,b,c,d};}
++  } mappedInput;
++  void renderUi() {} void render(RenderLock&&);
++};
++std::string twoDigits(unsigned v) {return (v<10 ? "0" : "")+std::to_string(v);}
++'''
++        code += render
++        code += r'''
++int main() {
++  DateTimeSettingsActivity a;a.render(RenderLock{});
++  assert(GUI.names.size()==(FREEINK_DEVICE_PAPERDIY ? 6u : 5u));
++  assert(GUI.names[0]=="STR_YEAR" && GUI.values[0]=="2024" && GUI.values[2]=="29");
++  if(FREEINK_DEVICE_PAPERDIY) {
++    assert(GUI.names.back()=="STR_SAVE" && GUI.values.back().empty());
++    assert(GUI.help=="STR_PAPERDIY_DATE_SELECT_HINT");
++    assert(GUI.helpRect.y>=GUI.rows.y+GUI.rows.height && GUI.helpRect.y+GUI.helpRect.height<920);
++    assert(std::string(a.mappedInput.labels.btn2)=="STR_PAPERDIY_EDIT");
++    a.selectedEditField=5;a.render(RenderLock{});assert(std::string(a.mappedInput.labels.btn2)=="STR_SAVE");
++    a.selectedEditField=1;a.editingField=true;a.render(RenderLock{});
++    assert(GUI.help=="STR_PAPERDIY_DATE_EDIT_HINT" && std::string(a.mappedInput.labels.btn1)=="STR_CANCEL");
++    assert(std::string(a.mappedInput.labels.btn2)=="STR_CONFIRM" && std::string(a.mappedInput.labels.btn3)=="-");
++  } else {assert(std::string(a.mappedInput.labels.btn3)=="STR_DIR_LEFT");}
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
 +
 +
 +if __name__ == "__main__":
