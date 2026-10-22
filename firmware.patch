@@ -28,7 +28,7 @@ index 5c2bd6bb..1d9409ee 100644
  - **无线功能**：浏览器传书与设置、Calibre 无线连接、OPDS 下载、WebDAV 和设备 OTA 更新。
  - **Apps 应用中心**：数独、五子棋、中国象棋、扫雷、2048、电子木鱼、Ugly Avatar 等轻量游戏与工具。[应用说明](./src/activities/apps/README.md)。
 diff --git a/lib/I18n/translations/chinese.yaml b/lib/I18n/translations/chinese.yaml
-index a4b35fd7..66b29803 100644
+index a4b35fd7..c767b9f8 100644
 --- a/lib/I18n/translations/chinese.yaml
 +++ b/lib/I18n/translations/chinese.yaml
 @@ -1,4 +1,17 @@
@@ -57,8 +57,21 @@ index a4b35fd7..66b29803 100644
  STR_FILE_TRANSFER: "文件传输"
  STR_APPS_TITLE: "应用"
  STR_APP_VISIBILITY: "隐藏应用"
+@@ -472,6 +486,12 @@ STR_BOTTOM: "底部"
+ STR_TOP: "顶部"
+ STR_UI_THEME: "界面主题"
+ STR_SHOW_BUTTON_HINTS: "显示底部按键"
++STR_SHOW_OPERATION_HINTS: "显示操作提示"
++STR_PAPERDIY_TAP_A: "短按 A：%s"
++STR_PAPERDIY_TAP_B: "短按 B：%s"
++STR_PAPERDIY_HOLD_A: "长按 A：%s"
++STR_PAPERDIY_HOLD_B: "长按 B：%s"
++STR_PAPERDIY_NEXT_CATEGORY: "切分类"
+ STR_THEME_CLASSIC: "Classic"
+ STR_THEME_LYRA: "Lyra"
+ STR_THEME_ROUNDEDRAFF: "RoundedRaff"
 diff --git a/lib/I18n/translations/english.yaml b/lib/I18n/translations/english.yaml
-index df35ac5d..633ecf66 100644
+index df35ac5d..13b60766 100644
 --- a/lib/I18n/translations/english.yaml
 +++ b/lib/I18n/translations/english.yaml
 @@ -218,6 +218,8 @@ STR_LIBRARY_TAB_RECENT: "Recent"
@@ -70,7 +83,20 @@ index df35ac5d..633ecf66 100644
  STR_LIBRARY_HOLD_SORT: "Hold: Reverse sort"
  STR_LIBRARY_HOLD_GROUPS: "Hold: Groups"
  STR_LIBRARY_HOLD_OPTIONS: "Hold: Options"
-@@ -653,6 +655,17 @@ STR_KB_HINT_TOGGLE_HIDE_PASSWORD: "Press [***] to hide password"
+@@ -483,6 +485,12 @@ STR_HOUR: "Hour"
+ STR_MINUTE: "Minute"
+ STR_UI_THEME: "UI Theme"
+ STR_SHOW_BUTTON_HINTS: "Show Bottom Buttons"
++STR_SHOW_OPERATION_HINTS: "Show Operation Hints"
++STR_PAPERDIY_TAP_A: "Tap A: %s"
++STR_PAPERDIY_TAP_B: "Tap B: %s"
++STR_PAPERDIY_HOLD_A: "Hold A: %s"
++STR_PAPERDIY_HOLD_B: "Hold B: %s"
++STR_PAPERDIY_NEXT_CATEGORY: "Next category"
+ STR_THEME_CLASSIC: "Classic"
+ STR_THEME_LYRA: "Lyra"
+ STR_THEME_ROUNDEDRAFF: "RoundedRaff"
+@@ -653,6 +661,17 @@ STR_KB_HINT_TOGGLE_HIDE_PASSWORD: "Press [***] to hide password"
  STR_KB_HINT_TOGGLE_SHOW_PASSWORD: "Press [abc] to show password"
  STR_KB_HINT_EDIT_ENTRY: "Hold UP to edit entry"
  STR_KB_TIPS: "Tips:"
@@ -546,6 +572,34 @@ index 141fc9cd..283c337e 100644
      def test_release_only_taps_and_holds(self):
          source = (WEREAD / "WeReadActivity.cpp").read_text()
          navigation = (ROOT / "src/util/ButtonNavigator.cpp").read_text()
+diff --git a/src/SettingsList.h b/src/SettingsList.h
+index 82f3d4c7..66768a54 100644
+--- a/src/SettingsList.h
++++ b/src/SettingsList.h
+@@ -347,7 +347,13 @@ inline const std::vector<SettingInfo>& getBaseSettingsList() {
+     v.insert(v.end(), {
+         SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
+                             StrId::STR_CAT_DISPLAY),
+-        SettingInfo::Toggle(StrId::STR_SHOW_BUTTON_HINTS, &CrossPointSettings::showButtonHints, "showButtonHints",
++        SettingInfo::Toggle(
++#if FREEINK_DEVICE_PAPERDIY
++                            StrId::STR_SHOW_OPERATION_HINTS,
++#else
++                            StrId::STR_SHOW_BUTTON_HINTS,
++#endif
++                            &CrossPointSettings::showButtonHints, "showButtonHints",
+                             StrId::STR_CAT_DISPLAY),
+ #if FREEINK_CAP_FRONTLIGHT
+         SettingInfo::Toggle(StrId::STR_RESTORE_LIGHT_ON_WAKE, &CrossPointSettings::frontlightRestoreOnWake,
+@@ -747,7 +753,7 @@ inline bool isSettingAvailableOnBoard(const SettingInfo& setting) {
+   if (!BoardConfig::hasTouch()) return true;
+   return setting.nameId != StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION &&
+          setting.nameId != StrId::STR_SUNLIGHT_FADING_FIX && setting.nameId != StrId::STR_SHOW_BUTTON_HINTS &&
+-         setting.nameId != StrId::STR_BACK_SHORT_TO_FILE_BROWSER;
++         setting.nameId != StrId::STR_SHOW_OPERATION_HINTS && setting.nameId != StrId::STR_BACK_SHORT_TO_FILE_BROWSER;
+ }
+ 
+ // Visits the shared list without copying it. Dynamic font entries are built
 diff --git a/src/activities/Activity.cpp b/src/activities/Activity.cpp
 index 789f24f8..46a55db5 100644
 --- a/src/activities/Activity.cpp
@@ -1796,7 +1850,7 @@ index 88514e76..df598ad7 100644
  }
  
 diff --git a/src/activities/settings/SettingsActivity.cpp b/src/activities/settings/SettingsActivity.cpp
-index 3dde1434..177305a5 100644
+index 3dde1434..77883013 100644
 --- a/src/activities/settings/SettingsActivity.cpp
 +++ b/src/activities/settings/SettingsActivity.cpp
 @@ -139,10 +139,12 @@ void SettingsActivity::rebuildSettingsLists() {
@@ -1848,7 +1902,7 @@ index 3dde1434..177305a5 100644
 -  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
 +  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel,
 +#if FREEINK_DEVICE_PAPERDIY
-+                                            tr(STR_DIR_RIGHT),
++                                            tr(STR_PAPERDIY_NEXT_CATEGORY),
 +#else
 +                                            tr(STR_DIR_UP),
 +#endif
@@ -2004,7 +2058,7 @@ index 6c529a60..ba76ef0a 100644
    void adjustValue(int delta);
    // Absolute value (clamped), from slider drag/tap positions.
 diff --git a/src/activities/util/KeyboardEntryActivity.cpp b/src/activities/util/KeyboardEntryActivity.cpp
-index 4ee0e3c3..ec36a9d8 100644
+index 4ee0e3c3..51225da5 100644
 --- a/src/activities/util/KeyboardEntryActivity.cpp
 +++ b/src/activities/util/KeyboardEntryActivity.cpp
 @@ -151,6 +151,9 @@ void KeyboardEntryActivity::onEnter() {
@@ -2118,7 +2172,7 @@ index 4ee0e3c3..ec36a9d8 100644
    }
  
    // The FreeInkUI keyboard draws the keys and registers their hit rects into
-@@ -1116,10 +1174,21 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+@@ -1116,10 +1174,17 @@ void KeyboardEntryActivity::render(RenderLock&&) {
    interactions.publish();
    interactionsReady = true;
  
@@ -2131,11 +2185,7 @@ index 4ee0e3c3..ec36a9d8 100644
 +#endif
    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
  
-+#if FREEINK_DEVICE_PAPERDIY
-+  // Side labels are drawn rotated (glyph right = screen up): "v" reads as right
-+  // for tap A, "<" as down for tap B.
-+  GUI.drawSideButtonHints(renderer, "v", "<");
-+#else
++#if !FREEINK_DEVICE_PAPERDIY
    GUI.drawSideButtonHints(renderer, ">", "<");
 +#endif
  
@@ -2203,6 +2253,220 @@ index cd8e9ca0..5bda4ddb 100644
      return handleButtons(input.wasPressed(MappedInputManager::Button::NavPrevious),
                           input.wasPressed(MappedInputManager::Button::NavNext),
                           input.wasReleased(MappedInputManager::Button::Confirm),
+diff --git a/src/components/UITheme.cpp b/src/components/UITheme.cpp
+index 82b18d67..4a0b9180 100644
+--- a/src/components/UITheme.cpp
++++ b/src/components/UITheme.cpp
+@@ -143,6 +143,10 @@ const ThemeMetrics& UITheme::getMetrics() const {
+   if (!metricsValid || showButtonHints != metricsForButtonHints) {
+     adjustedMetrics = *currentMetrics;
+     UiHighDpiProfile::apply(adjustedMetrics);
++#if FREEINK_DEVICE_PAPERDIY
++    adjustedMetrics.buttonHintsHeight = BaseTheme::PAPERDIY_HINT_HEIGHT;
++    adjustedMetrics.sideButtonHintsWidth = 0;
++#endif
+     if (!showButtonHints) {
+       adjustedMetrics.buttonHintsHeight = 0;
+     }
+diff --git a/src/components/themes/BaseTheme.cpp b/src/components/themes/BaseTheme.cpp
+index c52ca879..22256a8a 100644
+--- a/src/components/themes/BaseTheme.cpp
++++ b/src/components/themes/BaseTheme.cpp
+@@ -6,9 +6,12 @@
+ #include <HalPowerManager.h>
+ #include <HalStorage.h>
+ #include <Logging.h>
++#include <Utf8.h>
+ 
+ #include <algorithm>
+ #include <cstdint>
++#include <cstdio>
++#include <cstring>
+ #include <string>
+ 
+ #include "BleInput.h"
+@@ -333,8 +336,77 @@ void BaseTheme::drawButtonHintsWithStyle(GfxRenderer& renderer, const char* btn1
+   drawButtonHints(renderer, btn1, btn2, btn3, btn4);
+ }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++namespace {
++void drawPaperDiyHintCell(const GfxRenderer& renderer, const int fontId, const Rect cell, const StrId format,
++                          const char* action) {
++  if (!action || !*action || cell.width <= 0 || cell.height <= 0) return;
++  // Leave room for an ellipsis. Keep formatting and width fitting on the stack,
++  // including long translated labels and dynamic book/tab names.
++  char text[160];
++  const int formatted = snprintf(text, sizeof(text) - 3, I18N.get(format), action);
++  int length = utf8SafeTruncateBuffer(text, static_cast<int>(strlen(text)));
++  text[length] = '\0';
++  if (formatted >= static_cast<int>(sizeof(text) - 3) || renderer.getTextWidth(fontId, text) > cell.width) {
++    constexpr char ellipsis[] = "\xe2\x80\xa6";
++    const int ellipsisWidth = renderer.getTextWidth(fontId, ellipsis);
++    if (ellipsisWidth > cell.width) return;
++    while (length > 0 && renderer.getTextWidth(fontId, text) + ellipsisWidth > cell.width) {
++      --length;
++      while (length > 0 && (static_cast<uint8_t>(text[length]) & 0xC0) == 0x80) --length;
++      text[length] = '\0';
++    }
++    memcpy(text + length, ellipsis, sizeof(ellipsis));
++  }
++  const GfxRenderer::ClipScope clip(renderer, cell.x, cell.y, cell.width, cell.height);
++  const int y = cell.y + std::max(0, (cell.height - renderer.getTextHeight(fontId)) / 2);
++  renderer.drawText(fontId, cell.x, y, text);
++}
++}  // namespace
++
++void BaseTheme::drawPaperDiyButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
++                                        const char* btn4) const {
++  if (!buttonHintsVisible()) return;
++  const auto original = renderer.getOrientation();
++  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
++  const int width = renderer.getScreenWidth();
++  const auto& metrics = UITheme::getInstance().getMetrics();
++  const int height = std::min(metrics.buttonHintsHeight, renderer.getScreenHeight());
++  const int top = renderer.getScreenHeight() - height;
++  const bool grayscale = renderer.getRenderMode() != GfxRenderer::BW && !renderer.grayPlanesAreAbsolute();
++  {
++    const GfxRenderer::ClipScope clip(renderer, 0, top, width, height);
++    renderer.fillRect(0, top, width, height, grayscale);
++    if (!grayscale) {
++      const char* labels[] = {btn1, btn2, btn3, btn4};
++      const auto labelForRole = [&](const uint8_t hardware) { return hardware < 4 ? labels[hardware] : ""; };
++      const int padding = std::min(metrics.contentSidePadding, width / 8);
++      constexpr int columnGap = 12;
++      constexpr int rowGap = 4;
++      const int cellWidth = std::max(0, (width - 2 * padding - columnGap) / 2);
++      const int cellHeight = std::max(0, (height - rowGap - 8) / 2);
++      const int y = top + 4;
++      const int right = padding + cellWidth + columnGap;
++      const int font = uiScaleSpec().smallFontId;
++      drawPaperDiyHintCell(renderer, font, Rect{padding, y, cellWidth, cellHeight}, StrId::STR_PAPERDIY_TAP_A,
++                           labelForRole(SETTINGS.frontButtonLeft));
++      drawPaperDiyHintCell(renderer, font, Rect{right, y, cellWidth, cellHeight}, StrId::STR_PAPERDIY_TAP_B,
++                           labelForRole(SETTINGS.frontButtonRight));
++      drawPaperDiyHintCell(renderer, font, Rect{padding, y + cellHeight + rowGap, cellWidth, cellHeight},
++                           StrId::STR_PAPERDIY_HOLD_A, labelForRole(SETTINGS.frontButtonBack));
++      drawPaperDiyHintCell(renderer, font, Rect{right, y + cellHeight + rowGap, cellWidth, cellHeight},
++                           StrId::STR_PAPERDIY_HOLD_B, labelForRole(SETTINGS.frontButtonConfirm));
++    }
++  }
++  renderer.setOrientation(original);
++}
++#endif
++
+ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
+                                 const char* btn4) const {
++#if FREEINK_DEVICE_PAPERDIY
++  drawPaperDiyButtonHints(renderer, btn1, btn2, btn3, btn4);
++#else
+   if (!buttonHintsVisible()) return;
+ 
+   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
+@@ -365,6 +437,7 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
+   }
+ 
+   renderer.setOrientation(orig_orientation);
++#endif
+ }
+ 
+ // Retain the established theme component interface.
+diff --git a/src/components/themes/BaseTheme.h b/src/components/themes/BaseTheme.h
+index 03ce0835..5478f983 100644
+--- a/src/components/themes/BaseTheme.h
++++ b/src/components/themes/BaseTheme.h
+@@ -328,6 +328,11 @@ class BaseTheme {
+   virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
+                                const char* btn4) const;
+   bool buttonHintsVisible() const;
++#if FREEINK_DEVICE_PAPERDIY
++  static constexpr int PAPERDIY_HINT_HEIGHT = 64;
++  void drawPaperDiyButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
++                               const char* btn4) const;
++#endif
+   void drawActionButton(const GfxRenderer& renderer, Rect rect, const char* label, bool active = false) const;
+   // Shared by every theme's drawButtonHints(): centres a hint label in its box,
+   // wrapping to two lines rather than overflowing when it's too wide to fit.
+diff --git a/src/components/themes/inx/InxTheme.cpp b/src/components/themes/inx/InxTheme.cpp
+index c1fd52bf..b0b920bf 100644
+--- a/src/components/themes/inx/InxTheme.cpp
++++ b/src/components/themes/inx/InxTheme.cpp
+@@ -33,6 +33,7 @@ constexpr int kIconGap = 10;
+ constexpr int kMaxValueWidth = 200;
+ constexpr int kSideHintY = 345;
+ constexpr int kX3SideHintY = 155;
++#if !FREEINK_DEVICE_PAPERDIY
+ constexpr int kHintWidth = 80;
+ constexpr int kHintBarWidth = kHintWidth * 4 / 5;
+ constexpr int kHintBarInset = (kHintWidth - kHintBarWidth) / 2;
+@@ -52,6 +53,7 @@ const char* hintLabel(const char* label) {
+   if (std::strcmp(label, tr(STR_DIR_RIGHT)) == 0) return ">";
+   return label;
+ }
++#endif
+ 
+ const uint8_t* iconForTab(const MainTab tab) {
+   switch (tab) {
+@@ -197,6 +199,9 @@ bool InxTheme::tabIndexFromPoint(const GfxRenderer&, const Rect rect, const std:
+ 
+ void InxTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
+                                const char* btn4) const {
++#if FREEINK_DEVICE_PAPERDIY
++  drawPaperDiyButtonHints(renderer, btn1, btn2, btn3, btn4);
++#else
+   if (!buttonHintsVisible()) return;
+ 
+   const GfxRenderer::Orientation original = renderer.getOrientation();
+@@ -220,6 +225,7 @@ void InxTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const ch
+     drawHintText(renderer, hintLabel(labels[i]), positions[i], hintY, contentBottom);
+   }
+   renderer.setOrientation(original);
++#endif
+ }
+ 
+ void InxTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const {
+diff --git a/src/components/themes/lyra/LyraTheme.cpp b/src/components/themes/lyra/LyraTheme.cpp
+index 72dddd59..115be639 100644
+--- a/src/components/themes/lyra/LyraTheme.cpp
++++ b/src/components/themes/lyra/LyraTheme.cpp
+@@ -358,6 +358,9 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int
+ 
+ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
+                                 const char* btn4) const {
++#if FREEINK_DEVICE_PAPERDIY
++  drawPaperDiyButtonHints(renderer, btn1, btn2, btn3, btn4);
++#else
+   if (!buttonHintsVisible()) {
+     return;
+   }
+@@ -399,6 +402,7 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
+   }
+ 
+   renderer.setOrientation(orig_orientation);
++#endif
+ }
+ 
+ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const {
+diff --git a/src/components/themes/roundedraff/RoundedRaffTheme.cpp b/src/components/themes/roundedraff/RoundedRaffTheme.cpp
+index 5f13b077..3da43201 100644
+--- a/src/components/themes/roundedraff/RoundedRaffTheme.cpp
++++ b/src/components/themes/roundedraff/RoundedRaffTheme.cpp
+@@ -220,6 +220,9 @@ void RoundedRaffTheme::drawTextField(const GfxRenderer& renderer, Rect rect, con
+ 
+ void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
+                                        const char* btn4) const {
++#if FREEINK_DEVICE_PAPERDIY
++  drawPaperDiyButtonHints(renderer, btn1, btn2, btn3, btn4);
++#else
+   if (!buttonHintsVisible()) {
+     return;
+   }
+@@ -278,4 +281,5 @@ void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1,
+   renderer.drawText(kGuideFontId, downX, textY, downText.c_str(), true, EpdFontFamily::REGULAR);
+ 
+   renderer.setOrientation(origOrientation);
++#endif
+ }
 diff --git a/src/main.cpp b/src/main.cpp
 index 607d299a..d51ffbad 100644
 --- a/src/main.cpp
@@ -2245,7 +2509,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..67c4ae02 100644
+index b0b49733..39dea003 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -2257,7 +2521,7 @@ index b0b49733..67c4ae02 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,9 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,10 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -2267,8 +2531,9 @@ index b0b49733..67c4ae02 100644
 +add_test(NAME PaperDiyMenuNavigation COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_menu_navigation.py)
 +add_test(NAME PaperDiyDisplayDriver COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_driver.py)
 +add_test(NAME PaperDiyFileSettings COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_file_settings.py)
++add_test(NAME PaperDiyFooterHints COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_hints.py)
 diff --git a/test/inx_navigation/test_theme_menus.py b/test/inx_navigation/test_theme_menus.py
-index c8de42d8..8a15d3b4 100644
+index c8de42d8..15aff39f 100644
 --- a/test/inx_navigation/test_theme_menus.py
 +++ b/test/inx_navigation/test_theme_menus.py
 @@ -27,10 +27,11 @@ def method(text, name):
@@ -2284,7 +2549,7 @@ index c8de42d8..8a15d3b4 100644
      if sdk:
          ui = SDK / 'libs/ui/FreeInkUI'
          command += ['-I' + str(ui / 'include'), str(ui / 'src/FreeInkUI.cpp')]
-@@ -184,6 +185,14 @@ int main() {
+@@ -184,6 +185,15 @@ int main() {
              # Added entries retain their category, relative order and action binding in INX too.
              extras = set(baseline) - set(reference)
              assert [x for x in baseline if x in extras] == [x for x in inx_rows if x in extras]
@@ -2294,7 +2559,8 @@ index c8de42d8..8a15d3b4 100644
 +        flags, theme, category = map(int, lines[0].split())
 +        if theme == 7:
 +            continue
-+        expected = [row for row in parsed[flags, theme, category] if not row.startswith('STR_REMAP_FRONT_BUTTONS ')]
++        expected = [row.replace('STR_SHOW_BUTTON_HINTS ', 'STR_SHOW_OPERATION_HINTS ')
++                    for row in parsed[flags, theme, category] if not row.startswith('STR_REMAP_FRONT_BUTTONS ')]
 +        assert lines[1:] == expected, ('PaperDIY fixed button menu', flags, theme, category)
      print('Settings: 64 device/condition combinations × 7 themes; one Date & Time entry with or without RTC; shared entries/actions and retained upstream order pass')
  
@@ -2432,7 +2698,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,323 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -2723,6 +2989,39 @@ new file mode 100644
 +themes. Hardware reachability, held-button timing, visual hints and destructive
 +file operations still need deliberate validation on disposable files. Host
 +checks do not establish hardware acceptance or all custom-page coverage.
++
++## PaperDIY text operation footer, 2026-10-22
++
++After basic hardware acceptance of file actions and dedicated setting controls,
++the user requested replacing the four simulated front-key boxes with two rows
++of operation text. PaperDIY's Base/Lyra/INX/RoundedRaff footer owners now share
++one renderer (including inherited Extended/Carousel/Cover Grid themes): first
++row Tap A / Tap B, second row Hold A / Hold B. Labels come from the existing
++page owner; Settings names A's action as Next category. Empty actions stay
++empty. Front-label mapping is decoded back to logical roles, so saved front
++mapping order does not silently put Back in the short-A position.
++
++The footer reserves 64 logical pixels in the shared adjusted metrics, and its
++side-hint width is zero. The existing showButtonHints persistence/web key is
++retained; only PaperDIY's visible setting label becomes Show Operation Hints.
++Disabling it reserves zero footer height and draws no footer. The keyboard's
++duplicate side-key diagrams are removed on PaperDIY, with row/column paths,
++alternate input and gesture classification retained.
++
++The renderer clears the footer band and draws four bounded text cells without
++button frames or touch hit regions. It restores orientation and nested clips;
++relative grayscale passes hold the monochrome footer. Formatting uses a
++160-byte stack buffer per cell, UTF-8-safe byte/pixel fitting and an ellipsis.
++No new heap allocation, persistent activity state, task, framebuffer or refresh
++call is introduced. Other boards retain their original footer implementations.
++
++Production-method host coverage verifies all four theme routes, 24 saved-label
++permutations in English/Chinese, empty actions, long CJK text, 160/240/540/960
++width bounds, orientation/clip restoration, relative/absolute gray planes,
++invalid saved role indices, and live hidden/shown metrics caching. Existing
++keyboard and theme-menu checks cover preserved input and the renamed setting.
++Only PaperDIY firmware is built; checks do not establish device readability,
++row spacing, night/landscape quality or hardware acceptance. User self-flashes.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -3517,11 +3816,196 @@ new file mode 100644
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/test/test_paperdiy_footer_hints.py b/test/test_paperdiy_footer_hints.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_footer_hints.py
+@@ -0,0 +1,180 @@
++"""Compile production footer drawing, label mapping and reserved-height policy."""
++from pathlib import Path
++import json
++import re
++import sys
++import unittest
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT / "scripts/tests"))
++from test_reading_ui_regressions import method, run_cpp
++
++
++def body(path, signature):
++    return method((ROOT / path).read_text(encoding="utf-8"), signature)
++
++
++class FooterHintsTest(unittest.TestCase):
++    def test_text_roles_bounds_utf8_and_gray_planes(self):
++        code = r'''
++#include <algorithm>
++#include <array>
++#include <cassert>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++struct Rect {int x,y,width,height;};
++enum class StrId {STR_PAPERDIY_TAP_A,STR_PAPERDIY_TAP_B,STR_PAPERDIY_HOLD_A,STR_PAPERDIY_HOLD_B};
++const char* formats[4];
++struct {const char* get(StrId id) {return formats[static_cast<int>(id)];}} I18N;
++struct {
++  uint8_t frontButtonBack=0,frontButtonConfirm=1,frontButtonLeft=2,frontButtonRight=3;
++  bool showButtonHints=true;
++} SETTINGS;
++struct {bool touch=false;bool hasTouch() const {return touch;}} gpio;
++struct GfxRenderer {
++  enum Orientation {Portrait,Landscape};enum {BW,Gray};
++  int width=540,height=960,mode=BW;bool absolute=false;Orientation orientation=Landscape;
++  mutable std::array<int,4> clip={3,4,500,900};
++  struct Text {int x,y;std::string value;std::array<int,4> clip;};
++  mutable std::vector<Text> texts;int fills=0;bool fillColor=false;
++  Orientation getOrientation() const {return orientation;}void setOrientation(Orientation o) {orientation=o;}
++  int getScreenWidth() const {return width;}int getScreenHeight() const {return height;}
++  int getRenderMode() const {return mode;}bool grayPlanesAreAbsolute() const {return absolute;}
++  int getTextHeight(int) const {return 18;}
++  int getTextWidth(int,const char* s) const {
++    int w=0;for(;*s;++s) if((static_cast<unsigned char>(*s)&0xc0)!=0x80)w+=8;return w;
++  }
++  struct ClipScope {
++    const GfxRenderer& r;std::array<int,4> old;
++    ClipScope(const GfxRenderer& rr,int x,int y,int w,int h):r(rr),old(rr.clip){r.clip={x,y,w,h};}
++    ~ClipScope(){r.clip=old;}
++  };
++  void fillRect(int,int,int,int,bool c){++fills;fillColor=c;}
++  void drawText(int,int x,int y,const char* s)const{texts.push_back({x,y,s,clip});}
++};
++struct BaseTheme {bool buttonHintsVisible()const;void drawPaperDiyButtonHints(GfxRenderer&,const char*,const char*,const char*,const char*)const;};
++struct ThemeMetrics {int buttonHintsHeight=64,contentSidePadding=32;};
++struct UITheme {
++  ThemeMetrics metrics;
++  static UITheme& getInstance(){static UITheme t;return t;}
++  const ThemeMetrics& getMetrics(){return metrics;}
++};
++struct {int smallFontId=1;} scale;
++auto uiScaleSpec(){return scale;}
++int utf8CodepointLen(unsigned char c){return c<128?1:c<224?2:c<240?3:4;}
++'''
++        code += body("lib/Utf8/Utf8.cpp", "int utf8SafeTruncateBuffer(")
++        code += body("src/components/themes/BaseTheme.cpp", "bool BaseTheme::buttonHintsVisible()")
++        code += body("src/components/themes/BaseTheme.cpp", "void drawPaperDiyHintCell(")
++        code += body("src/components/themes/BaseTheme.cpp", "void BaseTheme::drawPaperDiyButtonHints(")
++        keys = ("STR_PAPERDIY_TAP_A", "STR_PAPERDIY_TAP_B", "STR_PAPERDIY_HOLD_A", "STR_PAPERDIY_HOLD_B")
++        for language in ("english", "chinese"):
++            yaml = (ROOT / f"lib/I18n/translations/{language}.yaml").read_text(encoding="utf-8")
++            values = [json.loads(re.search(r"^" + key + r": (.*)$", yaml, re.M).group(1)) for key in keys]
++            code += 'const char* ' + language + '[]={'+','.join(json.dumps(v, ensure_ascii=False) for v in values)+'};\n'
++        code += r'''
++void checkUtf8(const std::string& s) {
++  for(size_t i=0;i<s.size();) {
++    int n=utf8CodepointLen(static_cast<unsigned char>(s[i]));assert(i+n<=s.size());
++    for(int j=1;j<n;++j)assert((static_cast<unsigned char>(s[i+j])&0xc0)==0x80);i+=n;
++  }
++}
++int main() {
++  BaseTheme theme;
++  for(const auto* language:{english,chinese}) {
++    std::copy(language,language+4,formats);
++    std::array<uint8_t,4> permutation{0,1,2,3};
++    do {
++      SETTINGS.frontButtonBack=permutation[0];SETTINGS.frontButtonConfirm=permutation[1];
++      SETTINGS.frontButtonLeft=permutation[2];SETTINGS.frontButtonRight=permutation[3];
++      const char* labels[4];labels[permutation[0]]="Back";labels[permutation[1]]="Open";
++      labels[permutation[2]]="Up";labels[permutation[3]]="Down";
++      GfxRenderer r;auto originalClip=r.clip;
++      theme.drawPaperDiyButtonHints(r,labels[0],labels[1],labels[2],labels[3]);
++      assert(r.texts.size()==4 && r.fills==1 && !r.fillColor && r.orientation==GfxRenderer::Landscape);
++      assert(r.clip==originalClip);
++      const char* actions[]={"Up","Down","Back","Open"};
++      for(int i=0;i<4;++i){char expected[100];snprintf(expected,sizeof(expected),formats[i],actions[i]);assert(r.texts[i].value==expected);}
++      assert(r.texts[0].y==r.texts[1].y && r.texts[0].y<r.texts[2].y && r.texts[2].y==r.texts[3].y);
++    } while(std::next_permutation(permutation.begin(),permutation.end()));
++  }
++  SETTINGS.frontButtonBack=0;SETTINGS.frontButtonConfirm=1;SETTINGS.frontButtonLeft=2;SETTINGS.frontButtonRight=3;
++  for(int w:{160,240,540,960}) {
++    GfxRenderer r;r.width=w;
++    std::string longLabel;for(int n=0;n<100;++n)longLabel+="分类中文";
++    theme.drawPaperDiyButtonHints(r,nullptr,"Save",longLabel.c_str(),"");
++    assert(r.texts.size()==2);
++    for(const auto& t:r.texts){checkUtf8(t.value);assert(t.value.size()<160);
++      assert(t.x>=0 && t.x+r.getTextWidth(1,t.value.c_str())<=w);
++      assert(t.y>=896 && t.y+18<=960 && t.clip[1]>=896 && t.clip[1]+t.clip[3]<=960);}
++    assert(r.texts[0].value.ends_with("…"));
++  }
++  GfxRenderer gray;gray.mode=GfxRenderer::Gray;
++  theme.drawPaperDiyButtonHints(gray,"Back","Open","Up","Down");
++  assert(gray.texts.empty() && gray.fillColor && gray.orientation==GfxRenderer::Landscape);
++  gray.absolute=true;theme.drawPaperDiyButtonHints(gray,"Back","Open","Up","Down");assert(gray.texts.size()==4);
++  GfxRenderer hidden;SETTINGS.showButtonHints=false;
++  theme.drawPaperDiyButtonHints(hidden,"Back","Open","Up","Down");assert(hidden.fills==0 && hidden.texts.empty());
++  SETTINGS.showButtonHints=true;gpio.touch=true;
++  theme.drawPaperDiyButtonHints(hidden,"Back","Open","Up","Down");assert(hidden.fills==0);
++  gpio.touch=false;SETTINGS.frontButtonLeft=255;
++  GfxRenderer invalid;theme.drawPaperDiyButtonHints(invalid,"Back","Open","Up","Down");assert(invalid.texts.size()==3);
++}
++'''
++        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
++
++    def test_all_theme_owners_route_to_text(self):
++        code = r'''
++#include <cassert>
++struct GfxRenderer {};
++struct BaseTheme {
++  mutable int calls=0;
++  void drawPaperDiyButtonHints(GfxRenderer&,const char*,const char*,const char*,const char*)const{++calls;}
++  virtual void drawButtonHints(GfxRenderer&,const char*,const char*,const char*,const char*)const;
++};
++struct LyraTheme:BaseTheme{void drawButtonHints(GfxRenderer&,const char*,const char*,const char*,const char*)const override;};
++struct InxTheme:LyraTheme{void drawButtonHints(GfxRenderer&,const char*,const char*,const char*,const char*)const override;};
++struct RoundedRaffTheme:BaseTheme{void drawButtonHints(GfxRenderer&,const char*,const char*,const char*,const char*)const override;};
++'''
++        for file, name in (("BaseTheme", "BaseTheme"), ("lyra/LyraTheme", "LyraTheme"),
++                           ("inx/InxTheme", "InxTheme"), ("roundedraff/RoundedRaffTheme", "RoundedRaffTheme")):
++            code += body(f"src/components/themes/{file}.cpp", f"void {name}::drawButtonHints(")
++        code += r'''
++int main(){GfxRenderer r;BaseTheme a;LyraTheme b;InxTheme c;RoundedRaffTheme d;
++  for(auto* theme:{&a,static_cast<BaseTheme*>(&b),static_cast<BaseTheme*>(&c),static_cast<BaseTheme*>(&d)}) {
++    theme->drawButtonHints(r,"Back","Open","Up","Down");assert(theme->calls==1);
++  }
++}
++'''
++        code = '#include <initializer_list>\n' + code
++        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
++
++    def test_reserved_height_and_toggle_cache(self):
++        code = r'''
++#include <cassert>
++struct BaseTheme {static constexpr int PAPERDIY_HINT_HEIGHT=64;bool visible=true;bool buttonHintsVisible(){return visible;}};
++struct ThemeMetrics{int buttonHintsHeight=40,sideButtonHintsWidth=30;};
++namespace UiHighDpiProfile{void apply(ThemeMetrics&) {}}
++struct UITheme {
++  BaseTheme theme;BaseTheme* currentTheme=&theme;ThemeMetrics metrics;const ThemeMetrics* currentMetrics=&metrics;
++  mutable ThemeMetrics adjustedMetrics;mutable bool metricsValid=false,metricsForButtonHints=false;
++  const ThemeMetrics& getMetrics()const;
++};
++'''
++        code += body("src/components/UITheme.cpp", "const ThemeMetrics& UITheme::getMetrics() const")
++        code += r'''
++int main(){UITheme ui;assert(ui.getMetrics().buttonHintsHeight==(FREEINK_DEVICE_PAPERDIY?64:40));
++  assert(ui.getMetrics().sideButtonHintsWidth==(FREEINK_DEVICE_PAPERDIY?0:30));
++  ui.theme.visible=false;assert(ui.getMetrics().buttonHintsHeight==0);
++  ui.theme.visible=true;assert(ui.getMetrics().buttonHintsHeight==(FREEINK_DEVICE_PAPERDIY?64:40));
++}
++'''
++        for device in (0, 1):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboard_buttons.py
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_keyboard_buttons.py
-@@ -0,0 +1,327 @@
+@@ -0,0 +1,326 @@
 +"""Drive the production keyboard button handling with PaperDIY two-key frames.
 +
 +Frames follow the SDK DigitalTwoButton classifier (see
@@ -3826,8 +4310,7 @@ new file mode 100644
 +#endif
 +  kb.drawHints();
 +#if FREEINK_DEVICE_PAPERDIY
-+  assert(std::string(shownDirection(GUI.top.c_str())) == "right");
-+  assert(std::string(shownDirection(GUI.bottom.c_str())) == "down");
++  assert(GUI.top.empty() && GUI.bottom.empty());  // Two-row footer owns the A/B hints.
 +#else
 +  assert(GUI.top == ">" && GUI.bottom == "<");
 +#endif
@@ -3848,7 +4331,7 @@ new file mode 100644
 +                        f"-I{UI / 'include'}", f"-I{ROOT / 'src'}", str(cpp), str(UI / "src/FreeInkUI.cpp"), "-o", str(binary)],
 +                       check=True)
 +        subprocess.run([str(binary)], check=True)
-+print("PaperDIY A cycles within the row, B follows all photo columns without skipping rows, holds keep Back/Confirm, hints show right/down; other boards unchanged")
++print("PaperDIY A cycles within the row, B follows all photo columns without skipping rows, holds keep Back/Confirm, duplicate side hints removed; other boards unchanged")
 diff --git a/test/test_paperdiy_menu_navigation.py b/test/test_paperdiy_menu_navigation.py
 new file mode 100644
 --- /dev/null
