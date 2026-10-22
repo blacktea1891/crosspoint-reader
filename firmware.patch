@@ -2649,6 +2649,34 @@ index 11496463..2208157c 100644
      for scenes in (regular,high):
          for (scene,theme), (keys,draw) in scenes.items():
              assert scenes[scene,0][0]==keys, ('key tables',scene,theme)
+diff --git a/test/settings_api/test_settings_api_keys.py b/test/settings_api/test_settings_api_keys.py
+index 47ced41a..64a1a7d7 100644
+--- a/test/settings_api/test_settings_api_keys.py
++++ b/test/settings_api/test_settings_api_keys.py
+@@ -148,10 +148,15 @@ def main():
+         "CROSSPOINT_CAP_SOUND_FEEDBACK",
+         "FREEINK_CAP_HAPTIC",
+         "FREEINK_CAP_WARMLIGHT",
++        "FREEINK_DEVICE_PAPERDIY",
+     )
++    keys_by_capabilities = {}
+     for values in product((False, True), repeat=len(capability_names)):
+         capabilities = dict(zip(capability_names, values))
+         keys = setting_keys(source, capabilities)
++        feature_values = values[:-1]
++        expected_keys = keys_by_capabilities.setdefault(feature_values, keys)
++        assert keys == expected_keys, f"PaperDIY label changed persisted/API keys for {capabilities}"
+         duplicates = sorted(key for key, count in Counter(keys).items() if count > 1)
+         assert not duplicates, (
+             f"duplicate Web Settings API keys for {capabilities}: {', '.join(duplicates)}"
+@@ -177,6 +182,7 @@ def main():
+     print(f"Web Settings API keys are unique across {2 ** len(capability_names)} capability combinations")
+     print("Base settings capacity matches every capability combination without vector growth")
+     print("Every settings initializer batch has at most four entries")
++    print("PaperDIY operation-hint label preserves the persisted/Web API keys")
+ 
+ 
+ if __name__ == "__main__":
 diff --git a/test/test_hal_power_sources.py b/test/test_hal_power_sources.py
 index 14a5edf5..c9712aec 100644
 --- a/test/test_hal_power_sources.py
@@ -3820,7 +3848,7 @@ diff --git a/test/test_paperdiy_footer_hints.py b/test/test_paperdiy_footer_hint
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_footer_hints.py
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,183 @@
 +"""Compile production footer drawing, label mapping and reserved-height policy."""
 +from pathlib import Path
 +import json
@@ -3902,7 +3930,10 @@ new file mode 100644
 +void checkUtf8(const std::string& s) {
 +  for(size_t i=0;i<s.size();) {
 +    int n=utf8CodepointLen(static_cast<unsigned char>(s[i]));assert(i+n<=s.size());
-+    for(int j=1;j<n;++j)assert((static_cast<unsigned char>(s[i+j])&0xc0)==0x80);i+=n;
++    for(int j=1;j<n;++j) {
++      assert((static_cast<unsigned char>(s[i+j])&0xc0)==0x80);
++    }
++    i+=n;
 +  }
 +}
 +int main() {
