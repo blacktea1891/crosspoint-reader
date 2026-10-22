@@ -2269,7 +2269,7 @@ index 82b18d67..4a0b9180 100644
        adjustedMetrics.buttonHintsHeight = 0;
      }
 diff --git a/src/components/themes/BaseTheme.cpp b/src/components/themes/BaseTheme.cpp
-index c52ca879..22256a8a 100644
+index c52ca879..a3f5d207 100644
 --- a/src/components/themes/BaseTheme.cpp
 +++ b/src/components/themes/BaseTheme.cpp
 @@ -6,9 +6,12 @@
@@ -2312,7 +2312,7 @@ index c52ca879..22256a8a 100644
 +    memcpy(text + length, ellipsis, sizeof(ellipsis));
 +  }
 +  const GfxRenderer::ClipScope clip(renderer, cell.x, cell.y, cell.width, cell.height);
-+  const int y = cell.y + std::max(0, (cell.height - renderer.getTextHeight(fontId)) / 2);
++  const int y = cell.y + std::max(0, (cell.height - renderer.getLineHeight(fontId)) / 2);
 +  renderer.drawText(fontId, cell.x, y, text);
 +}
 +}  // namespace
@@ -2372,15 +2372,16 @@ index c52ca879..22256a8a 100644
  
  // Retain the established theme component interface.
 diff --git a/src/components/themes/BaseTheme.h b/src/components/themes/BaseTheme.h
-index 03ce0835..5478f983 100644
+index 03ce0835..c93933b8 100644
 --- a/src/components/themes/BaseTheme.h
 +++ b/src/components/themes/BaseTheme.h
-@@ -328,6 +328,11 @@ class BaseTheme {
+@@ -328,6 +328,12 @@ class BaseTheme {
    virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                 const char* btn4) const;
    bool buttonHintsVisible() const;
 +#if FREEINK_DEVICE_PAPERDIY
-+  static constexpr int PAPERDIY_HINT_HEIGHT = 64;
++  // Two rows fit NotoSans 12's advance plus the centered CJK fallback and gap.
++  static constexpr int PAPERDIY_HINT_HEIGHT = 88;
 +  void drawPaperDiyButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
 +                               const char* btn4) const;
 +#endif
@@ -2726,7 +2727,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,325 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -3029,7 +3030,7 @@ new file mode 100644
 +empty. Front-label mapping is decoded back to logical roles, so saved front
 +mapping order does not silently put Back in the short-A position.
 +
-+The footer reserves 64 logical pixels in the shared adjusted metrics, and its
++The footer reserves 88 logical pixels in the shared adjusted metrics, and its
 +side-hint width is zero. The existing showButtonHints persistence/web key is
 +retained; only PaperDIY's visible setting label becomes Show Operation Hints.
 +Disabling it reserves zero footer height and draws no footer. The keyboard's
@@ -3046,7 +3047,9 @@ new file mode 100644
 +Production-method host coverage verifies all four theme routes, 24 saved-label
 +permutations in English/Chinese, empty actions, long CJK text, 160/240/540/960
 +width bounds, orientation/clip restoration, relative/absolute gray planes,
-+invalid saved role indices, and live hidden/shown metrics caching. Existing
++invalid saved role indices, and live hidden/shown metrics caching. Vertical
++fitting reads the actual NotoSans 12 and CJK 12 font metrics rather than using
++an estimated glyph height; line advance is used for centering. Existing
 +keyboard and theme-menu checks cover preserved input and the renamed setting.
 +Only PaperDIY firmware is built; checks do not establish device readability,
 +row spacing, night/landscape quality or hardware acceptance. User self-flashes.
@@ -3848,7 +3851,7 @@ diff --git a/test/test_paperdiy_footer_hints.py b/test/test_paperdiy_footer_hint
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_footer_hints.py
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,199 @@
 +"""Compile production footer drawing, label mapping and reserved-height policy."""
 +from pathlib import Path
 +import json
@@ -3863,6 +3866,11 @@ new file mode 100644
 +
 +def body(path, signature):
 +    return method((ROOT / path).read_text(encoding="utf-8"), signature)
++
++
++def footer_height():
++    header = (ROOT / "src/components/themes/BaseTheme.h").read_text(encoding="utf-8")
++    return re.search(r"PAPERDIY_HINT_HEIGHT = (\d+)", header).group(1)
 +
 +
 +class FooterHintsTest(unittest.TestCase):
@@ -3894,7 +3902,8 @@ new file mode 100644
 +  Orientation getOrientation() const {return orientation;}void setOrientation(Orientation o) {orientation=o;}
 +  int getScreenWidth() const {return width;}int getScreenHeight() const {return height;}
 +  int getRenderMode() const {return mode;}bool grayPlanesAreAbsolute() const {return absolute;}
-+  int getTextHeight(int) const {return 18;}
++  int getTextHeight(int) const {return @ASCENDER@;}
++  int getLineHeight(int) const {return @LINE_HEIGHT@;}
 +  int getTextWidth(int,const char* s) const {
 +    int w=0;for(;*s;++s) if((static_cast<unsigned char>(*s)&0xc0)!=0x80)w+=8;return w;
 +  }
@@ -3907,7 +3916,7 @@ new file mode 100644
 +  void drawText(int,int x,int y,const char* s)const{texts.push_back({x,y,s,clip});}
 +};
 +struct BaseTheme {bool buttonHintsVisible()const;void drawPaperDiyButtonHints(GfxRenderer&,const char*,const char*,const char*,const char*)const;};
-+struct ThemeMetrics {int buttonHintsHeight=64,contentSidePadding=32;};
++struct ThemeMetrics {int buttonHintsHeight=@FOOTER_HEIGHT@,contentSidePadding=32;};
 +struct UITheme {
 +  ThemeMetrics metrics;
 +  static UITheme& getInstance(){static UITheme t;return t;}
@@ -3963,7 +3972,7 @@ new file mode 100644
 +    assert(r.texts.size()==2);
 +    for(const auto& t:r.texts){checkUtf8(t.value);assert(t.value.size()<160);
 +      assert(t.x>=0 && t.x+r.getTextWidth(1,t.value.c_str())<=w);
-+      assert(t.y>=896 && t.y+18<=960 && t.clip[1]>=896 && t.clip[1]+t.clip[3]<=960);}
++      assert(t.y>=872 && t.y+@INK_HEIGHT@<=t.clip[1]+t.clip[3] && t.clip[1]>=872 && t.clip[1]+t.clip[3]<=960);}
 +    assert(r.texts[0].value.ends_with("…"));
 +  }
 +  GfxRenderer gray;gray.mode=GfxRenderer::Gray;
@@ -3978,6 +3987,16 @@ new file mode 100644
 +  GfxRenderer invalid;theme.drawPaperDiyButtonHints(invalid,"Back","Open","Up","Down");assert(invalid.texts.size()==3);
 +}
 +'''
++        def font_metrics(name):
++            source = (ROOT / f"lib/EpdFont/builtinFonts/{name}.h").read_text(encoding="utf-8")
++            fields = re.search(r"static const EpdFontData " + name + r" = \{(.*?)\};", source, re.S).group(1).split(",")
++            return tuple(int(value.strip()) for value in fields[4:7])
++
++        advance, ascender, descender = font_metrics("notosans_12_regular")
++        cjk_advance, cjk_ascender, cjk_descender = font_metrics("notosans_cjk_12")
++        ink_height = max(ascender - descender, cjk_ascender - cjk_descender + int((advance - cjk_advance) / 2))
++        code = code.replace("@ASCENDER@", str(ascender)).replace("@LINE_HEIGHT@", str(advance)).replace("@INK_HEIGHT@", str(ink_height))
++        code = code.replace("@FOOTER_HEIGHT@", footer_height())
 +        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
 +
 +    def test_all_theme_owners_route_to_text(self):
@@ -4009,7 +4028,7 @@ new file mode 100644
 +    def test_reserved_height_and_toggle_cache(self):
 +        code = r'''
 +#include <cassert>
-+struct BaseTheme {static constexpr int PAPERDIY_HINT_HEIGHT=64;bool visible=true;bool buttonHintsVisible(){return visible;}};
++struct BaseTheme {static constexpr int PAPERDIY_HINT_HEIGHT=@FOOTER_HEIGHT@;bool visible=true;bool buttonHintsVisible(){return visible;}};
 +struct ThemeMetrics{int buttonHintsHeight=40,sideButtonHintsWidth=30;};
 +namespace UiHighDpiProfile{void apply(ThemeMetrics&) {}}
 +struct UITheme {
@@ -4020,14 +4039,14 @@ new file mode 100644
 +'''
 +        code += body("src/components/UITheme.cpp", "const ThemeMetrics& UITheme::getMetrics() const")
 +        code += r'''
-+int main(){UITheme ui;assert(ui.getMetrics().buttonHintsHeight==(FREEINK_DEVICE_PAPERDIY?64:40));
++int main(){UITheme ui;assert(ui.getMetrics().buttonHintsHeight==(FREEINK_DEVICE_PAPERDIY?88:40));
 +  assert(ui.getMetrics().sideButtonHintsWidth==(FREEINK_DEVICE_PAPERDIY?0:30));
 +  ui.theme.visible=false;assert(ui.getMetrics().buttonHintsHeight==0);
-+  ui.theme.visible=true;assert(ui.getMetrics().buttonHintsHeight==(FREEINK_DEVICE_PAPERDIY?64:40));
++  ui.theme.visible=true;assert(ui.getMetrics().buttonHintsHeight==(FREEINK_DEVICE_PAPERDIY?88:40));
 +}
 +'''
 +        for device in (0, 1):
-+            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++            run_cpp(code.replace("@FOOTER_HEIGHT@", footer_height()), defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
 +
 +
 +if __name__ == "__main__":
