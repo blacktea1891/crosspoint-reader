@@ -28,10 +28,10 @@ index 5c2bd6bb..1d9409ee 100644
  - **无线功能**：浏览器传书与设置、Calibre 无线连接、OPDS 下载、WebDAV 和设备 OTA 更新。
  - **Apps 应用中心**：数独、五子棋、中国象棋、扫雷、2048、电子木鱼、Ugly Avatar 等轻量游戏与工具。[应用说明](./src/activities/apps/README.md)。
 diff --git a/lib/I18n/translations/chinese.yaml b/lib/I18n/translations/chinese.yaml
-index a4b35fd7..c767b9f8 100644
+index a4b35fd7..79c6da83 100644
 --- a/lib/I18n/translations/chinese.yaml
 +++ b/lib/I18n/translations/chinese.yaml
-@@ -1,4 +1,17 @@
+@@ -1,4 +1,19 @@
  _language_name: "简体中文"
 +STR_LIBRARY_ACTIONS: "菜单"
 +STR_LIBRARY_REVERSE_SORT: "反向排序"
@@ -40,6 +40,8 @@ index a4b35fd7..c767b9f8 100644
 +STR_KB_PAPERDIY_ALTERNATE: "B 再按久些：大写或辅助字符"
 +STR_KB_PAPERDIY_CLEAR: "在退格键上按住 B 更久：清空"
 +STR_PAPERDIY_FILE_ACTIONS_HINT: "长按 B 打开；B 按住更久：文件操作"
++STR_PAPERDIY_OPEN_REMOVE: "打开；久按移除"
++STR_PAPERDIY_SELECT_REMOVE_STATS: "选择；久按删记录"
 +STR_PAPERDIY_VALUE_STEP: "A -%s / B +%s"
 +STR_PAPERDIY_SAVE_CANCEL: "长按 B 保存；长按 A 取消"
 +STR_PAPERDIY_DATE_EDIT_HINT: "A 减 B 加；长 B 完成，长 A 撤销"
@@ -49,7 +51,7 @@ index a4b35fd7..c767b9f8 100644
  _language_code: "ZH_CN"
  _order: "23"
  _bcp47: "zh-CN"
-@@ -8,6 +21,7 @@ STR_BOOTING: "启动中"
+@@ -8,6 +23,7 @@ STR_BOOTING: "启动中"
  STR_SLEEPING: "休眠中"
  STR_ENTERING_SLEEP: "正在进入休眠"
  STR_BROWSE_FILES: "浏览文件"
@@ -57,7 +59,7 @@ index a4b35fd7..c767b9f8 100644
  STR_FILE_TRANSFER: "文件传输"
  STR_APPS_TITLE: "应用"
  STR_APP_VISIBILITY: "隐藏应用"
-@@ -472,6 +486,12 @@ STR_BOTTOM: "底部"
+@@ -472,6 +488,12 @@ STR_BOTTOM: "底部"
  STR_TOP: "顶部"
  STR_UI_THEME: "界面主题"
  STR_SHOW_BUTTON_HINTS: "显示底部按键"
@@ -71,7 +73,7 @@ index a4b35fd7..c767b9f8 100644
  STR_THEME_LYRA: "Lyra"
  STR_THEME_ROUNDEDRAFF: "RoundedRaff"
 diff --git a/lib/I18n/translations/english.yaml b/lib/I18n/translations/english.yaml
-index df35ac5d..13b60766 100644
+index df35ac5d..de05f7ec 100644
 --- a/lib/I18n/translations/english.yaml
 +++ b/lib/I18n/translations/english.yaml
 @@ -218,6 +218,8 @@ STR_LIBRARY_TAB_RECENT: "Recent"
@@ -96,7 +98,7 @@ index df35ac5d..13b60766 100644
  STR_THEME_CLASSIC: "Classic"
  STR_THEME_LYRA: "Lyra"
  STR_THEME_ROUNDEDRAFF: "RoundedRaff"
-@@ -653,6 +661,17 @@ STR_KB_HINT_TOGGLE_HIDE_PASSWORD: "Press [***] to hide password"
+@@ -653,6 +661,19 @@ STR_KB_HINT_TOGGLE_HIDE_PASSWORD: "Press [***] to hide password"
  STR_KB_HINT_TOGGLE_SHOW_PASSWORD: "Press [abc] to show password"
  STR_KB_HINT_EDIT_ENTRY: "Hold UP to edit entry"
  STR_KB_TIPS: "Tips:"
@@ -105,6 +107,8 @@ index df35ac5d..13b60766 100644
 +STR_KB_PAPERDIY_ALTERNATE: "Hold B longer: alternate"
 +STR_KB_PAPERDIY_CLEAR: "Hold B on Del longer: clear"
 +STR_PAPERDIY_FILE_ACTIONS_HINT: "Hold B: open; hold longer: file actions"
++STR_PAPERDIY_OPEN_REMOVE: "Open; longer: remove"
++STR_PAPERDIY_SELECT_REMOVE_STATS: "Select; longer: delete record"
 +STR_PAPERDIY_VALUE_STEP: "A -%s / B +%s"
 +STR_PAPERDIY_SAVE_CANCEL: "Hold B: save; hold A: cancel"
 +STR_PAPERDIY_DATE_EDIT_HINT: "A - / B +; hold B: done; hold A: undo"
@@ -296,6 +300,38 @@ index baacb3e2..e45c0fcb 100644
 +  -DCROSSPOINT_VERSION=\"${crosspoint.version}-paperdiy\"
 +  -DENABLE_SERIAL_LOG
 +  -DLOG_LEVEL=2
+diff --git a/scripts/tests/test_app_visibility.py b/scripts/tests/test_app_visibility.py
+index 996230df..496e694e 100644
+--- a/scripts/tests/test_app_visibility.py
++++ b/scripts/tests/test_app_visibility.py
+@@ -80,7 +80,11 @@ int main() {
+         AppId::Standby, AppId::AirPage, AppId::Buddy, AppId::Sokoban, AppId::PixelSwitch,
+         AppId::FileTransfer, AppId::OpdsBrowser, AppId::Calculator, AppId::Woodfish, AppId::Library};
+     for (unsigned i = 0; i < 18; ++i) assert(static_cast<unsigned>(ids[i]) == i);
+-    constexpr uint32_t expected = (1u<<4)|(1u<<5)|(1u<<6)|(1u<<7)|(1u<<10)|(1u<<11)|(1u<<12)|(1u<<16);
++    constexpr uint32_t expected = (1u<<4)|(1u<<5)|(1u<<6)|(1u<<7)|(1u<<10)|(1u<<11)|(1u<<12)|(1u<<16)
++#if FREEINK_DEVICE_PAPERDIY
++        | (1u<<2) | (1u<<3) | (1u<<15)
++#endif
++        ;
+     static_assert(DEFAULT_HIDDEN_APPS_MASK == expected);
+     assert(SETTINGS.hiddenAppsMask == expected);
+     SETTINGS.load({{std::nullopt}, {1}});
+@@ -129,9 +133,11 @@ int main() {
+             cpp = Path(directory) / 'visibility.cpp'
+             binary = Path(directory) / 'visibility'
+             cpp.write_text(source)
+-            subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+-                            '-I', str(ROOT / 'src'), str(cpp), '-o', str(binary)], check=True)
+-            subprocess.run([str(binary)], check=True)
++            for device in (0, 1):
++                subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
++                                f'-DFREEINK_DEVICE_PAPERDIY={device}',
++                                '-I', str(ROOT / 'src'), str(cpp), '-o', str(binary)], check=True)
++                subprocess.run([str(binary)], check=True)
+ 
+ 
+ if __name__ == '__main__':
 diff --git a/scripts/tests/test_ble_c3_config.py b/scripts/tests/test_ble_c3_config.py
 index 89cbf2f6..fdcfe66c 100644
 --- a/scripts/tests/test_ble_c3_config.py
@@ -572,6 +608,30 @@ index 141fc9cd..283c337e 100644
      def test_release_only_taps_and_holds(self):
          source = (WEREAD / "WeReadActivity.cpp").read_text()
          navigation = (ROOT / "src/util/ButtonNavigator.cpp").read_text()
+diff --git a/src/AppVisibility.h b/src/AppVisibility.h
+index 3976e7d8..94fc2ae7 100644
+--- a/src/AppVisibility.h
++++ b/src/AppVisibility.h
+@@ -29,10 +29,18 @@ enum class AppId : uint8_t {
+ 
+ constexpr uint32_t appBit(const AppId id) { return uint32_t{1} << static_cast<uint8_t>(id); }
+ 
+-constexpr uint32_t DEFAULT_HIDDEN_APPS_MASK =
++constexpr uint32_t COMMON_DEFAULT_HIDDEN_APPS_MASK =
+     appBit(AppId::ChineseChess) | appBit(AppId::Minesweeper) | appBit(AppId::Game2048) | appBit(AppId::UglyAvatar) |
+     appBit(AppId::Buddy) | appBit(AppId::Sokoban) | appBit(AppId::PixelSwitch) | appBit(AppId::Woodfish);
+ 
++#if FREEINK_DEVICE_PAPERDIY
++// These four-direction apps remain available in visibility settings.
++constexpr uint32_t DEFAULT_HIDDEN_APPS_MASK =
++    COMMON_DEFAULT_HIDDEN_APPS_MASK | appBit(AppId::Sudoku) | appBit(AppId::Gomoku) | appBit(AppId::Calculator);
++#else
++constexpr uint32_t DEFAULT_HIDDEN_APPS_MASK = COMMON_DEFAULT_HIDDEN_APPS_MASK;
++#endif
++
+ static_assert(static_cast<uint8_t>(AppId::Count) <= 32, "app IDs must fit the persisted mask");
+ 
+ }  // namespace appVisibility
 diff --git a/src/SettingsList.h b/src/SettingsList.h
 index 82f3d4c7..66768a54 100644
 --- a/src/SettingsList.h
@@ -875,22 +935,34 @@ index 35028103..7850c135 100644
    void rebuildRowItems();
    void openSelected();
 diff --git a/src/activities/apps/reading-stats/ReadingStatsActivity.cpp b/src/activities/apps/reading-stats/ReadingStatsActivity.cpp
-index 34711d9d..b9896e25 100644
+index 34711d9d..21042532 100644
 --- a/src/activities/apps/reading-stats/ReadingStatsActivity.cpp
 +++ b/src/activities/apps/reading-stats/ReadingStatsActivity.cpp
-@@ -29,7 +29,9 @@
+@@ -29,7 +29,11 @@
  #include "util/ReadingStatsAnalytics.h"
  
  namespace {
-+#if !FREEINK_DEVICE_PAPERDIY
++#if FREEINK_DEVICE_PAPERDIY
++constexpr unsigned long STATS_REMOVE_HOLD_MS = 1500;
++#else
  constexpr unsigned long BOOK_LONG_PRESS_MS = 1000;
 +#endif
  constexpr int SUMMARY_CARD_HEIGHT = 76;
  constexpr int SUMMARY_GAP = 10;
  constexpr int DETAILS_BUTTON_HEIGHT = 58;
-@@ -403,10 +405,12 @@ ReadingStatsActivity::InputFlow ReadingStatsActivity::handleButtons() {
+@@ -402,11 +406,22 @@ ReadingStatsActivity::InputFlow ReadingStatsActivity::handleButtons() {
+   }
  
    if (consumeSelectionEntryInput()) flow = InputFlow::TouchOnly;
++#if FREEINK_DEVICE_PAPERDIY
++  if (flow == InputFlow::All && selectedIndex > 0 &&
++      selectedIndex <= static_cast<int>(READING_STATS.getBooks().size()) &&
++      mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, STATS_REMOVE_HOLD_MS)) {
++    app.clearTapFlash();
++    confirmRemoveSelectedBook();
++    return InputFlow::Stop;
++  }
++#endif
    if (flow == InputFlow::All && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
 +#if !FREEINK_DEVICE_PAPERDIY
      if (selectedIndex > 0 && mappedInput.getHeldTime() >= BOOK_LONG_PRESS_MS) {
@@ -901,7 +973,7 @@ index 34711d9d..b9896e25 100644
  
      openSelectedEntry();
      return InputFlow::Stop;
-@@ -451,6 +455,16 @@ void ReadingStatsActivity::loop() {
+@@ -451,6 +466,16 @@ void ReadingStatsActivity::loop() {
    if (defersContentSelection() || showMainTabContentSelection()) prepareVisibleCover();
    if (flow == InputFlow::TouchOnly) return;
  
@@ -918,6 +990,40 @@ index 34711d9d..b9896e25 100644
    buttonNavigator.onNextRelease(
        [this, selectableCount] { moveSelectionTo(ButtonNavigator::nextIndex(selectedIndex, selectableCount)); });
  
+@@ -661,7 +686,15 @@ void ReadingStatsActivity::render(RenderLock&&) {
+     }
+   }
+ 
+-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
++  const auto labels = mappedInput.mapLabels(tr(STR_BACK),
++#if FREEINK_DEVICE_PAPERDIY
++                                            selectedIndex > 0 && selectedIndex <= static_cast<int>(books.size())
++                                                ? tr(STR_PAPERDIY_SELECT_REMOVE_STATS)
++                                                : tr(STR_SELECT),
++#else
++                                            tr(STR_SELECT),
++#endif
++                                            tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+ 
+   renderUi();
+@@ -841,7 +874,15 @@ void ReadingStatsActivity::renderInx(const int view) {
+                             EpdFontFamily::BOLD);
+   }
+ 
+-  const auto labels = mainTabButtonLabels(tr(STR_BACK), tr(STR_SELECT), !books.empty());
++  const auto labels = mainTabButtonLabels(tr(STR_BACK),
++#if FREEINK_DEVICE_PAPERDIY
++                                          selectedIndex > 0 && selectedIndex <= static_cast<int>(books.size())
++                                              ? tr(STR_PAPERDIY_SELECT_REMOVE_STATS)
++                                              : tr(STR_SELECT),
++#else
++                                          tr(STR_SELECT),
++#endif
++                                          !books.empty());
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+   renderUi();
+   renderer.displayBuffer();
 diff --git a/src/activities/apps/weread/webapi/WeReadActivity.cpp b/src/activities/apps/weread/webapi/WeReadActivity.cpp
 index fd2bb855..01bcbe5a 100644
 --- a/src/activities/apps/weread/webapi/WeReadActivity.cpp
@@ -1259,7 +1365,7 @@ index 55ad1fc6..31d94644 100644
    bool restoreCoverBuffer();  // Restore frame buffer from stored cover
    void freeCoverBuffer();     // Free the stored cover buffer
 diff --git a/src/activities/home/InxRecentActivity.cpp b/src/activities/home/InxRecentActivity.cpp
-index 161236e3..a452dbe6 100644
+index 161236e3..62606fda 100644
 --- a/src/activities/home/InxRecentActivity.cpp
 +++ b/src/activities/home/InxRecentActivity.cpp
 @@ -128,6 +128,22 @@ InxRecentLayout InxRecentActivity::layout() const {
@@ -1285,6 +1391,20 @@ index 161236e3..a452dbe6 100644
  Rect InxRecentActivity::contentRect() const {
    Rect content = pageContentRect();
    const auto& metrics = UITheme::getInstance().getMetrics();
+@@ -563,7 +579,12 @@ void InxRecentActivity::drawFooter() {
+   const auto& metrics = UITheme::getInstance().getMetrics();
+   const int width = renderer.getScreenWidth();
+   const Rect safeArea = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+-  const auto labels = mainTabButtonLabels(SETTINGS.standbyShortcutEnabled ? tr(STR_STANDBY_TITLE) : "", tr(STR_OPEN),
++  const auto labels = mainTabButtonLabels(SETTINGS.standbyShortcutEnabled ? tr(STR_STANDBY_TITLE) : "",
++#if FREEINK_DEVICE_PAPERDIY
++                                          books && !books->empty() ? tr(STR_PAPERDIY_OPEN_REMOVE) : "",
++#else
++                                          tr(STR_OPEN),
++#endif
+                                           books && books->size() > 1, false);
+   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+   if (usesMainTabBar() && mappedInput.hasTouch() && !mainTabsAtBottom()) {
 diff --git a/src/activities/home/InxRecentActivity.h b/src/activities/home/InxRecentActivity.h
 index 66657ba5..67979b2a 100644
 --- a/src/activities/home/InxRecentActivity.h
@@ -1298,30 +1418,53 @@ index 66657ba5..67979b2a 100644
    const ReadingBookStats* statsAt(int index) const;
    void setThumbnailHeight(int displayHeight);
 diff --git a/src/activities/home/RecentBooksActivity.cpp b/src/activities/home/RecentBooksActivity.cpp
-index 9fb9ad18..5c87d6c8 100644
+index 9fb9ad18..59ae0b1e 100644
 --- a/src/activities/home/RecentBooksActivity.cpp
 +++ b/src/activities/home/RecentBooksActivity.cpp
-@@ -15,10 +15,12 @@
- 
+@@ -16,8 +16,13 @@
  namespace fui = freeink::ui;
  
-+#if !FREEINK_DEVICE_PAPERDIY
  namespace {
++#if FREEINK_DEVICE_PAPERDIY
++// Same logical Confirm hold as FileBrowser; SDK classification precedes it.
++constexpr unsigned long RECENT_REMOVE_HOLD_MS = 1500;
++#else
  // Hold threshold for the long-press "remove from list" action (firmware convention).
  constexpr unsigned long LONG_PRESS_MS = 1000;
- }  // namespace
 +#endif
+ }  // namespace
  
  RecentBooksActivity::RecentBooksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-     : UiListActivity("RecentBooks", renderer, mappedInput, /*wantsTouchLongPress=*/true) {}
-@@ -101,12 +103,17 @@ void RecentBooksActivity::onRowLongPress(const int index) {
+@@ -65,6 +70,9 @@ void RecentBooksActivity::rebuildRowItems() {
+ 
+ void RecentBooksActivity::onEnter() {
+   UiListActivity::onEnter();
++#if FREEINK_DEVICE_PAPERDIY
++  waitForConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
++#endif
+ 
+   // Prune entries whose backing files are gone; this is one of two interaction
+   // points where the persistent store gets cleaned (the other is addBook).
+@@ -100,13 +108,29 @@ void RecentBooksActivity::onRowLongPress(const int index) {
+ }
  
  bool RecentBooksActivity::handleButtons() {
++#if FREEINK_DEVICE_PAPERDIY
++  if (waitForConfirmRelease) {
++    if (!mappedInput.isPressed(MappedInputManager::Button::Confirm)) waitForConfirmRelease = false;
++    return true;  // Consume the inherited hold and its release frame.
++  }
++  if (nav.selected >= 0 && nav.selected < listCount() &&
++      mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, RECENT_REMOVE_HOLD_MS)) {
++    onRowLongPress(nav.selected);
++    return true;
++  }
++#endif
    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
 -    if (!recentBooks.empty() && nav.selected < listCount()) {
 +    if (!recentBooks.empty() && nav.selected >= 0 && nav.selected < listCount()) {
 +#if FREEINK_DEVICE_PAPERDIY
-+      // Holding B is the board's only Confirm gesture, not a delete modifier.
++      // An extra hold above opens removal; its release is consumed by the manager.
 +      activateIndex(nav.selected);
 +#else
        if (mappedInput.getHeldTime() >= LONG_PRESS_MS) {
@@ -1333,20 +1476,39 @@ index 9fb9ad18..5c87d6c8 100644
        return true;
      }
    }
-@@ -181,7 +188,13 @@ void RecentBooksActivity::buildScreen(UiScreen& screen) {
+@@ -181,7 +205,13 @@ void RecentBooksActivity::buildScreen(UiScreen& screen) {
  void RecentBooksActivity::drawFooter() {
    // No rows: blank the row-action hints, same as FileBrowserActivity.
    const bool empty = recentBooks.empty();
 +#if FREEINK_DEVICE_PAPERDIY
 +  const int columns = menuNavigationColumns();
-+  const auto labels =
-+      mainTabButtonLabels(tr(STR_HOME), empty ? "" : tr(STR_OPEN), listCount() > columns, true, !empty && columns > 1);
++  const auto labels = mainTabButtonLabels(tr(STR_HOME), empty ? "" : tr(STR_PAPERDIY_OPEN_REMOVE),
++                                          listCount() > columns, true, !empty && columns > 1);
 +#else
    const auto labels = mappedInput.mapLabels(tr(STR_HOME), empty ? "" : tr(STR_OPEN), empty ? "" : tr(STR_DIR_UP),
                                              empty ? "" : tr(STR_DIR_DOWN));
 +#endif
    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
  }
+diff --git a/src/activities/home/RecentBooksActivity.h b/src/activities/home/RecentBooksActivity.h
+index 2fc06d95..2a51b3bb 100644
+--- a/src/activities/home/RecentBooksActivity.h
++++ b/src/activities/home/RecentBooksActivity.h
+@@ -18,9 +18,12 @@ class RecentBooksActivity : public UiListActivity {
+   void buildScreen(UiScreen& screen) override;
+   void activateIndex(int index) override;
+   void onRowLongPress(int index) override;
+-  // Confirm activates on RELEASE here (a hold is "remove from list"), and Back
+-  // goes home rather than finishing.
++  // Confirm opens on release; PaperDIY requires an extra hold to remove.
++  // Back goes home rather than finishing.
+   bool handleButtons() override;
++#if FREEINK_DEVICE_PAPERDIY
++  bool waitForConfirmRelease = false;
++#endif
+   const char* headerTitle() const override { return tr(STR_MENU_RECENT_BOOKS); }
+   void drawFooter() override;
+ 
 diff --git a/src/activities/library/LibraryListActivity.cpp b/src/activities/library/LibraryListActivity.cpp
 index 90991f95..00b91fc9 100644
 --- a/src/activities/library/LibraryListActivity.cpp
@@ -2559,7 +2721,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..9a1f68fc 100644
+index b0b49733..425418a4 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -2571,7 +2733,7 @@ index b0b49733..9a1f68fc 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,11 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,12 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -2583,6 +2745,7 @@ index b0b49733..9a1f68fc 100644
 +add_test(NAME PaperDiyFileSettings COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_file_settings.py)
 +add_test(NAME PaperDiyFooterHints COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_hints.py)
 +add_test(NAME PaperDiyFooterGeometry COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_geometry.py)
++add_test(NAME PaperDiyRecordActions COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_record_actions.py)
 diff --git a/test/inx_navigation/test_theme_menus.py b/test/inx_navigation/test_theme_menus.py
 index c8de42d8..15aff39f 100644
 --- a/test/inx_navigation/test_theme_menus.py
@@ -2777,7 +2940,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,351 @@
+@@ -0,0 +1,386 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -3129,6 +3292,41 @@ new file mode 100644
 +No SDK logic, heap allocation, activity state, framebuffer, task, input update
 +or refresh call is added. Hardware orientation and long-list acceptance are
 +still required; the agent does not flash the user's device.
++
++## App defaults and record removal, 2026-10-24
++
++PaperDIY's default app visibility additionally hides Sudoku, Gomoku and
++Calculator. They remain compiled and can be enabled in the existing visibility
++settings. This default applies to new/reset settings or a missing hiddenAppsMask;
++an explicitly saved mask is preserved, including a user's choice to show them.
++Other boards retain the previous default. No settings migration or format change
++is introduced.
++
++Recent Books (including INX layouts) and the book entries in Reading Statistics
++retain normal held-B Confirm release to open/select. Continuing that same hold
++to the logical Confirm threshold of 1500 ms opens the existing removal
++confirmation. The SDK classifies the physical hold before this timer; this is
++not a calibrated physical duration. MappedInputManager's existing one-shot and
++suppressed-release contract prevents repeat prompts or opening a book on release.
++The recent page additionally gates an inherited Confirm hold through its release
++frame on entry. INX tab/content routing retains ownership; deletion is available
++on selected book content, not the tab bar or statistics summary.
++
++Both confirmations start at Cancel and require a new gesture to select/confirm.
++Recent removal affects only its recent-list record; statistics removal affects
++the selected book's statistics through the existing store. Neither shortcut
++deletes the book file. Existing store persistence/failure behavior is unchanged.
++After removal, selection is clamped and lists/covers rebuild through their
++existing owners. Touch and non-PaperDIY shortcuts are unchanged.
++
++Footer action text names the extra-hold action; no new hint band or list geometry
++is added. The new strings use the normal translation generator and English
++fallback. No new heap allocation, task, framebuffer or refresh operation is
++introduced; one PaperDIY-only bool guards recent-page entry (padding depends on
++the toolchain). Tests drive production input owners and confirmation callbacks
++with in-memory stores, including cancellation, last-entry removal, stale indices,
++summary/empty states, inherited holds and one-shot/release suppression. Existing
++visibility tests exercise both board defaults and preserve saved masks.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -4683,7 +4881,7 @@ diff --git a/test/test_paperdiy_menu_navigation.py b/test/test_paperdiy_menu_nav
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_menu_navigation.py
-@@ -0,0 +1,689 @@
+@@ -0,0 +1,695 @@
 +"""Exercise production menu owners with PaperDIY release-only tap snapshots."""
 +import os
 +from pathlib import Path
@@ -5002,11 +5200,14 @@ new file mode 100644
 +    def test_statistics_confirm_opens_without_remove_modifier(self):
 +        code = INPUT + r'''
 +[[maybe_unused]] constexpr unsigned long BOOK_LONG_PRESS_MS=1000;
++[[maybe_unused]] constexpr unsigned long STATS_REMOVE_HOLD_MS=1500;
++struct {std::vector<int> books{1}; const auto& getBooks() const{return books;}} READING_STATS;
 +struct ReadingStatsActivity {
 +  enum class InputFlow { All,Stop,TouchOnly };
 +  MappedInputManager mappedInput;
 +  bool waitForBackRelease=false,waitForConfirmRelease=false;
 +  int selectedIndex=1,opens=0,removes=0,finishes=0;
++  struct {void clearTapFlash(){}} app;
 +  bool defersContentSelection() const { return false; }
 +  bool consumeSelectionEntryInput() { return false; }
 +  void openSelectedEntry() { ++opens; }
@@ -5138,6 +5339,7 @@ new file mode 100644
 +        code = INPUT + r'''
 +#include <string>
 +[[maybe_unused]] constexpr unsigned long LONG_PRESS_MS=1000;
++[[maybe_unused]] constexpr unsigned long RECENT_REMOVE_HOLD_MS=1500;
 +struct Input : MappedInputManager { unsigned long getHeldTime() const { return 2000; } };
 +struct RecentBooksActivity {
 +  struct Book { std::string path,title; };
@@ -5145,9 +5347,11 @@ new file mode 100644
 +  struct { int selected=0; } nav;
 +  Input mappedInput;
 +  int opens=0,removes=0,homes=0;
++  bool waitForConfirmRelease=false;
 +  int listCount() const { return int(recentBooks.size()); }
 +  void activateIndex(int) { ++opens; }
 +  void promptRemoveBook(const std::string&,const std::string&) { ++removes; }
++  void onRowLongPress(int) { ++removes; }
 +  void onGoHome() { ++homes; }
 +  bool handleButtons();
 +};
@@ -5369,6 +5573,206 @@ new file mode 100644
 +'''
 +        for device in (0, 1):
 +            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={device}",))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/test_paperdiy_record_actions.py b/test/test_paperdiy_record_actions.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_record_actions.py
+@@ -0,0 +1,195 @@
++"""Exercise record-removal gestures and production confirmation callbacks in memory."""
++from pathlib import Path
++import os
++import sys
++import unittest
++
++ROOT = Path(__file__).resolve().parents[1]
++SOURCE = Path(os.environ.get("RECORD_ACTIONS_SOURCE_ROOT", ROOT))
++sys.path.insert(0, str(ROOT / "scripts/tests"))
++sys.path.insert(0, str(ROOT / "test"))
++from test_reading_ui_regressions import method, run_cpp
++from test_paperdiy_file_settings import INPUT
++
++
++def body(file, signature):
++    return method((SOURCE / file).read_text(encoding="utf-8"), signature)
++
++
++def program():
++    code = INPUT.replace("struct MappedInputManager {", r'''
++struct HalGPIO {
++  bool wasReleased(uint8_t) const {return false;}
++  bool isCapacitivePagePressed(uint8_t) const {return false;}
++};
++struct MappedInputManager {''').replace("  unsigned long heldMs=0;", r'''
++  unsigned long heldMs=0;
++  static constexpr uint8_t kButtonCount=6;
++  mutable uint16_t longPressFiredButtons=0,suppressedReleaseButtons=0;
++  bool wasLongPressed(Button,unsigned long) const;
++  void suppressNextRelease(Button) const;
++  bool consumeSuppressedRelease() const;
++  bool mapButton(Button b,bool(HalGPIO::*fn)(uint8_t) const) const {
++    return fn==&HalGPIO::wasReleased && wasReleased(b);
++  }
++  void hold(unsigned long ms) {released=pressed=0;held=bit(Button::Confirm);heldMs=ms;}
++  bool release() {
++    held=pressed=0;released=bit(Button::Confirm);
++    const bool consumed=consumeSuppressedRelease();longPressFiredButtons=0;return consumed;
++  }
++  void idle() {held=pressed=released=0;}
++''')
++    code += r'''
++struct CrossPointSettings {enum {VIBRATION_TOUCH_PAGE};};
++struct {int vibration=0,hapticIntensity=0;} SETTINGS;
++struct HalHaptics {static void longPress(bool,int) {}};
++#define LOG_DBG(...) ((void)0)
++struct RenderLock {template<class T> explicit RenderLock(T&) {}};
++struct ActivityResult {bool isCancelled=false;};
++struct ConfirmationActivity {};
++enum StrId {STR_REMOVE_FROM_RECENTS,STR_DELETE_STATS_ENTRY};
++const char* tr(StrId id) {return id==STR_REMOVE_FROM_RECENTS ? "Remove from recents" : "Delete stats record";}
++struct Book {std::string path,title;};
++using ReadingBookStats=Book;
++const std::string& getBookTitle(const Book& b) {return b.title;}
++struct Store {
++  std::vector<Book> books{{"one.epub","One"},{"two.epub","Two"}};
++  int removals=0,saves=0;
++  const auto& getBooks() const{return books;}
++  bool pruneMissing(){return false;}
++  void saveToFile(){++saves;}
++  bool removeByPath(const std::string& p) {
++    auto it=std::find_if(books.begin(),books.end(),[&](const Book& b){return b.path==p;});
++    if(it==books.end())return false;books.erase(it);++removals;++saves;return true;
++  }
++  bool removeBook(const std::string& p){return removeByPath(p);}
++} RECENT_BOOKS,READING_STATS;
++struct UiListActivity {void onEnter(){}};
++struct App {int clears=0;void clearTapFlash(){++clears;}};
++struct Owner {
++  MappedInputManager mappedInput;App app;
++  std::function<void(const ActivityResult&)> result;
++  std::string heading,title;int prompts=0,opens=0,updates=0,finishes=0;
++  template<class T,class F> void startActivityForResultWith(F f,const char* h,const std::string& t) {
++    ++prompts;heading=h;title=t;result=std::move(f);
++  }
++  void requestUpdate(bool=false){++updates;}
++  void finish(){++finishes;}
++  void closeRouting(){}
++};
++'''
++    for signature in ("bool MappedInputManager::wasLongPressed(",
++                      "void MappedInputManager::suppressNextRelease(",
++                      "bool MappedInputManager::consumeSuppressedRelease()"):
++        code += body("src/MappedInputManager.cpp", signature)
++    return code
++
++
++class RecordActionsTest(unittest.TestCase):
++    def test_recents_open_extra_hold_cancel_remove_and_entry_barrier(self):
++        code = program() + r'''
++constexpr unsigned long RECENT_REMOVE_HOLD_MS=1500;
++[[maybe_unused]] constexpr unsigned long LONG_PRESS_MS=1000;
++struct RecentBooksActivity : Owner,UiListActivity {
++  const std::vector<Book>& recentBooks=RECENT_BOOKS.getBooks();
++  struct {int selected=0;void requestSelection(int){}} nav;
++  bool waitForConfirmRelease=false;int homes=0,loads=0;
++  int listCount()const{return int(recentBooks.size());}
++  void onEnter();bool handleButtons();void onRowLongPress(int);
++  void promptRemoveBook(const std::string&,const std::string&);
++  void activateIndex(int){++opens;}void onGoHome(){++homes;}
++  void loadRecentBooks(){++loads;}
++};
++'''
++        for signature in ("void RecentBooksActivity::onEnter()", "bool RecentBooksActivity::handleButtons()",
++                          "void RecentBooksActivity::onRowLongPress(", "void RecentBooksActivity::promptRemoveBook("):
++            code += body("src/activities/home/RecentBooksActivity.cpp", signature)
++        code += r'''
++int main(){
++  RecentBooksActivity a;
++  a.mappedInput.hold(3000);a.onEnter();assert(a.waitForConfirmRelease);
++  assert(a.handleButtons() && a.prompts==0);
++  a.mappedInput.release();assert(a.handleButtons() && !a.waitForConfirmRelease && a.opens==0);
++  a.mappedInput.hold(1499);assert(!a.handleButtons());
++  assert(!a.mappedInput.release());assert(a.handleButtons() && a.opens==1 && a.prompts==0);
++  a.mappedInput.hold(1500);assert(a.handleButtons() && a.prompts==1 && a.opens==1);
++  assert(a.heading=="Remove from recents" && a.title=="One");
++  for(int i=0;i<5;++i)assert(!a.handleButtons());
++  assert(a.prompts==1 && RECENT_BOOKS.removals==0);
++  assert(a.mappedInput.release()); // Manager consumes release before popup can confirm.
++  a.result({true});assert(RECENT_BOOKS.books.size()==2 && RECENT_BOOKS.removals==0);
++  a.mappedInput.hold(1500);assert(a.handleButtons() && a.prompts==2);
++  assert(a.mappedInput.release());a.result({false});
++  assert(RECENT_BOOKS.books.size()==1 && RECENT_BOOKS.books[0].path=="two.epub");
++  a.nav.selected=0;a.mappedInput.hold(1500);assert(a.handleButtons());
++  a.mappedInput.release();a.result({false});
++  assert(RECENT_BOOKS.books.empty() && a.nav.selected==0 && RECENT_BOOKS.saves==2);
++  a.mappedInput.hold(3000);assert(!a.handleButtons());
++  RECENT_BOOKS.books={{"one.epub","One"}};a.nav.selected=-1;
++  assert(!a.handleButtons());a.nav.selected=1;assert(!a.handleButtons());
++  a.mappedInput.idle();a.mappedInput.released=MappedInputManager::bit(B::Back);
++  assert(a.handleButtons() && a.homes==1);
++}
++'''
++        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
++
++    def test_stats_remove_valid_book_only_and_confirmation_cancel(self):
++        code = program() + r'''
++constexpr unsigned long STATS_REMOVE_HOLD_MS=1500;
++[[maybe_unused]] constexpr unsigned long BOOK_LONG_PRESS_MS=1000;
++struct InxStatisticsGeometry {static int clampView(int n,int count){return std::clamp(n,0,count);}};
++struct ReadingStatsActivity : Owner {
++  enum class InputFlow {All,Stop,TouchOnly};
++  bool waitForConfirmRelease=false,waitForBackRelease=false,deferred=false,entryConsumed=false;
++  int selectedIndex=1,attemptedCoverView=0;std::atomic<int> viewIndex{1};
++  struct {void clear(){}} contentSelection;
++  bool defersContentSelection()const{return deferred;}
++  bool consumeSelectionEntryInput(){return entryConsumed;}
++  void openSelectedEntry(){++opens;}
++  InputFlow handleButtons();void confirmRemoveSelectedBook();void guardBackReturn();
++};
++'''
++        code = '#include <atomic>\n' + code
++        for signature in ("ReadingStatsActivity::InputFlow ReadingStatsActivity::handleButtons()",
++                          "void ReadingStatsActivity::confirmRemoveSelectedBook()",
++                          "void ReadingStatsActivity::guardBackReturn()"):
++            code += body("src/activities/apps/reading-stats/ReadingStatsActivity.cpp", signature)
++        code += r'''
++int main(){
++  using F=ReadingStatsActivity::InputFlow;
++  ReadingStatsActivity a;
++  a.mappedInput.hold(1499);assert(a.handleButtons()==F::All);
++  assert(!a.mappedInput.release());assert(a.handleButtons()==F::Stop && a.opens==1 && a.prompts==0);
++  a.mappedInput.hold(1500);assert(a.handleButtons()==F::Stop && a.prompts==1);
++  assert(a.title=="One" && a.heading=="Delete stats record");
++  assert(a.handleButtons()==F::All && a.prompts==1 && READING_STATS.removals==0);
++  assert(a.mappedInput.release());a.result({true});assert(READING_STATS.books.size()==2);
++  a.mappedInput.idle();a.handleButtons();
++  a.selectedIndex=2;a.mappedInput.hold(1500);assert(a.handleButtons()==F::Stop);
++  assert(a.mappedInput.release());a.result({false});
++  assert(READING_STATS.books.size()==1 && READING_STATS.books[0].path=="one.epub" && a.selectedIndex==1);
++  assert(RECENT_BOOKS.books.size()==2); // Stats removal cannot modify recents.
++  a.mappedInput.idle();a.handleButtons();
++  a.selectedIndex=0;a.mappedInput.hold(3000);assert(a.handleButtons()==F::All);
++  assert(!a.mappedInput.release());assert(a.handleButtons()==F::Stop && a.opens==2);
++  int prompts=a.prompts;
++  for(int invalid:{-1,2}){a.selectedIndex=invalid;a.mappedInput.hold(3000);assert(a.handleButtons()==F::All);}
++  assert(a.prompts==prompts);
++  a.selectedIndex=1;a.waitForConfirmRelease=true;a.mappedInput.hold(3000);
++  assert(a.handleButtons()==F::Stop && a.prompts==prompts);
++  a.mappedInput.release();assert(a.handleButtons()==F::Stop && !a.waitForConfirmRelease);
++  a.deferred=true;a.entryConsumed=true;a.mappedInput.hold(3000);
++  assert(a.handleButtons()==F::TouchOnly && a.prompts==prompts);
++  a.entryConsumed=false;a.mappedInput.idle();a.selectedIndex=1;
++  a.mappedInput.hold(1500);assert(a.handleButtons()==F::Stop);
++  a.mappedInput.release();a.result({false});
++  assert(READING_STATS.books.empty() && a.selectedIndex==0 && a.viewIndex==0);
++  a.mappedInput.idle();a.handleButtons();a.mappedInput.hold(3000);
++  assert(a.handleButtons()==F::All);
++}
++'''
++        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
 +
 +
 +if __name__ == "__main__":
