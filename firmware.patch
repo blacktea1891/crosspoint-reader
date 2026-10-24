@@ -2480,7 +2480,7 @@ index 82b18d67..e6ec49fc 100644
  }
  
 diff --git a/src/components/themes/BaseTheme.cpp b/src/components/themes/BaseTheme.cpp
-index c52ca879..30ff3153 100644
+index c52ca879..d816e967 100644
 --- a/src/components/themes/BaseTheme.cpp
 +++ b/src/components/themes/BaseTheme.cpp
 @@ -6,9 +6,12 @@
@@ -2496,7 +2496,7 @@ index c52ca879..30ff3153 100644
  #include <string>
  
  #include "BleInput.h"
-@@ -333,8 +336,77 @@ void BaseTheme::drawButtonHintsWithStyle(GfxRenderer& renderer, const char* btn1
+@@ -333,8 +336,96 @@ void BaseTheme::drawButtonHintsWithStyle(GfxRenderer& renderer, const char* btn1
    drawButtonHints(renderer, btn1, btn2, btn3, btn4);
  }
  
@@ -2551,15 +2551,34 @@ index c52ca879..30ff3153 100644
 +      const int cellHeight = std::max(0, (height - rowGap - 8) / 2);
 +      const int y = top + 4;
 +      const int left = area.x + padding;
-+      const int right = left + cellWidth + columnGap;
 +      const int font = uiScaleSpec().smallFontId;
-+      drawPaperDiyHintCell(renderer, font, Rect{left, y, cellWidth, cellHeight}, StrId::STR_PAPERDIY_TAP_A,
++      const auto textWidth = [&](const StrId format, const char* action) {
++        if (!action || !*action) return 0;
++        char text[160];
++        snprintf(text, sizeof(text) - 3, I18N.get(format), action);
++        text[utf8SafeTruncateBuffer(text, static_cast<int>(strlen(text)))] = '\0';
++        return renderer.getTextWidth(font, text);
++      };
++      const int rightNeeded =
++          std::max(textWidth(StrId::STR_PAPERDIY_TAP_B, labelForRole(SETTINGS.frontButtonRight)),
++                   textWidth(StrId::STR_PAPERDIY_HOLD_B, labelForRole(SETTINGS.frontButtonConfirm)));
++      int shift = 0;
++      if (rightNeeded > cellWidth) {
++        const int leftNeeded = std::max(textWidth(StrId::STR_PAPERDIY_TAP_A, labelForRole(SETTINGS.frontButtonLeft)),
++                                        textWidth(StrId::STR_PAPERDIY_HOLD_A, labelForRole(SETTINGS.frontButtonBack)));
++        // Borrow unused A-column space, keeping both rows aligned and A intact.
++        shift = std::min(rightNeeded - cellWidth, std::max(0, cellWidth - leftNeeded));
++      }
++      const int leftWidth = cellWidth - shift;
++      const int rightWidth = cellWidth + shift;
++      const int right = left + leftWidth + columnGap;
++      drawPaperDiyHintCell(renderer, font, Rect{left, y, leftWidth, cellHeight}, StrId::STR_PAPERDIY_TAP_A,
 +                           labelForRole(SETTINGS.frontButtonLeft));
-+      drawPaperDiyHintCell(renderer, font, Rect{right, y, cellWidth, cellHeight}, StrId::STR_PAPERDIY_TAP_B,
++      drawPaperDiyHintCell(renderer, font, Rect{right, y, rightWidth, cellHeight}, StrId::STR_PAPERDIY_TAP_B,
 +                           labelForRole(SETTINGS.frontButtonRight));
-+      drawPaperDiyHintCell(renderer, font, Rect{left, y + cellHeight + rowGap, cellWidth, cellHeight},
++      drawPaperDiyHintCell(renderer, font, Rect{left, y + cellHeight + rowGap, leftWidth, cellHeight},
 +                           StrId::STR_PAPERDIY_HOLD_A, labelForRole(SETTINGS.frontButtonBack));
-+      drawPaperDiyHintCell(renderer, font, Rect{right, y + cellHeight + rowGap, cellWidth, cellHeight},
++      drawPaperDiyHintCell(renderer, font, Rect{right, y + cellHeight + rowGap, rightWidth, cellHeight},
 +                           StrId::STR_PAPERDIY_HOLD_B, labelForRole(SETTINGS.frontButtonConfirm));
 +    }
 +  }
@@ -2574,7 +2593,7 @@ index c52ca879..30ff3153 100644
    if (!buttonHintsVisible()) return;
  
    const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
-@@ -365,6 +437,7 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
+@@ -365,6 +456,7 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
    }
  
    renderer.setOrientation(orig_orientation);
@@ -2940,7 +2959,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,386 @@
+@@ -0,0 +1,412 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -3327,6 +3346,32 @@ new file mode 100644
 +with in-memory stores, including cancellation, last-entry removal, stale indices,
 +summary/empty states, inherited holds and one-shot/release suppression. Existing
 +visibility tests exercise both board defaults and preserve saved masks.
++
++## Record footer width follow-up, 2026-10-24
++
++Hardware feedback found the long-B Statistics instruction truncated before
++"delete record" completed. The user requested moving it left. PaperDIY's shared
++text footer now measures both formatted B instructions with the active renderer
++font. Only when they exceed their equal half does it borrow the unused portion
++of A's half, bounded by the wider formatted A instruction. Both B rows move
++together, the A origin stays fixed, and the existing 12 px inter-column gap and
++outer padding remain. Pages whose B column fits keep their previous positions.
++
++This keeps the existing translated action text, font size, 88 px footer height,
++orientation/viewable-inset policy, hints toggle and ellipsis safety fallback. If
++the two columns physically cannot fit together, A is protected and B retains
++bounded truncation. There is no new persistent state, heap-owned storage,
++framebuffer, task or refresh call; formatted width measurements use a bounded
++160-byte stack buffer and the existing renderer measurement API.
++
++Regression coverage renders the production footer with the real built-in CJK
++10/12 glyph advances and ink bounds (no kerning in these font tables), both
++record action translations, 24 saved-role permutations, four orientations,
++20/32 px theme padding and 0/8 px viewable insets. Instructions must remain
++complete whenever the pair's measured widths fit the available band; oversized
++font/inset cases must retain safe ellipsis. A negative control against the
++previous equal-width method fails on the complete-label assertion. Existing
++four-direction content geometry and full-row list tests remain in force.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -4125,7 +4170,7 @@ diff --git a/test/test_paperdiy_footer_geometry.py b/test/test_paperdiy_footer_g
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_footer_geometry.py
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,220 @@
 +"""Exercise oriented footer/content geometry and complete-row list paging."""
 +from pathlib import Path
 +import sys
@@ -4150,9 +4195,13 @@ new file mode 100644
 +#include <array>
 +#include <cassert>
 +#include <cstdint>
++#include <cstdio>
++#include <cstring>
 +#include <vector>
 +struct Rect {int x,y,width,height;};
 +enum class StrId {STR_PAPERDIY_TAP_A,STR_PAPERDIY_TAP_B,STR_PAPERDIY_HOLD_A,STR_PAPERDIY_HOLD_B};
++[[maybe_unused]] struct {const char* get(StrId)const{return "%s";}} I18N;
++[[maybe_unused]] int utf8SafeTruncateBuffer(char*,int length){return length;}
 +[[maybe_unused]] struct {uint8_t frontButtonBack=0,frontButtonConfirm=1,frontButtonLeft=2,frontButtonRight=3;} SETTINGS;
 +struct GfxRenderer {
 +  enum class Orientation {Portrait,LandscapeClockwise,PortraitInverted,LandscapeCounterClockwise};
@@ -4165,6 +4214,7 @@ new file mode 100644
 +  void setOrientation(Orientation v){orientation=v;}
 +  void getOrientedViewableTRBL(int* t,int* r,int* b,int* l)const{*t=8;*r=12;*b=18;*l=6;}
 +  int getRenderMode()const{return BW;}bool grayPlanesAreAbsolute()const{return false;}
++  int getTextWidth(int,const char* s)const{return static_cast<int>(strlen(s));}
 +  struct Cell{Rect rect;Orientation orientation;};
 +  mutable std::vector<Cell> cells;
 +  std::array<int,4> clip={1,2,500,900};
@@ -4345,10 +4395,11 @@ diff --git a/test/test_paperdiy_footer_hints.py b/test/test_paperdiy_footer_hint
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_footer_hints.py
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,349 @@
 +"""Compile production footer drawing, label mapping and reserved-height policy."""
 +from pathlib import Path
 +import json
++import os
 +import re
 +import sys
 +import unittest
@@ -4368,6 +4419,154 @@ new file mode 100644
 +
 +
 +class FooterHintsTest(unittest.TestCase):
++    def test_record_labels_borrow_left_space_with_builtin_cjk_metrics(self):
++        font_dir = ROOT / "lib/EpdFont/builtinFonts"
++        intervals = (font_dir / "notosans_cjk_common_intervals.h").read_text(encoding="utf-8")
++        intervals = intervals.split("Intervals[] = {", 1)[1].split("};", 1)[0]
++        intervals = [[int(x.strip(), 0) for x in row.split(",")]
++                     for row in re.findall(r"\{([^{}]+)\}", intervals)]
++        yaml = (ROOT / "lib/I18n/translations/chinese.yaml").read_text(encoding="utf-8")
++        keys = ("STR_PAPERDIY_TAP_A", "STR_PAPERDIY_TAP_B", "STR_PAPERDIY_HOLD_A", "STR_PAPERDIY_HOLD_B")
++        formats = [json.loads(re.search(r"^" + key + r": (.*)$", yaml, re.M)[1]) for key in keys]
++        action_keys = ("STR_PAPERDIY_SELECT_REMOVE_STATS", "STR_PAPERDIY_OPEN_REMOVE")
++        actions = [json.loads(re.search(r"^" + key + r": (.*)$", yaml, re.M)[1]) for key in action_keys]
++        characters = set("".join(formats + actions) + "« 返回上下选择…W")
++        code = r'''
++#include <algorithm>
++#include <array>
++#include <cassert>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++struct Glyph {uint32_t cp;int width,advance,left;};
++'''
++        for size in (10, 12):
++            source = (font_dir / f"notosans_cjk_{size}.h").read_text(encoding="utf-8")
++            source = source.split(f"notosans_cjk_{size}Glyphs[] = {{", 1)[1].split("};", 1)[0]
++            glyphs = [[int(x.strip(), 0) for x in row.split(",")]
++                      for row in re.findall(r"\{([^{}]+)\}", source)]
++            rows = []
++            for character in sorted(characters):
++                cp = ord(character)
++                interval = next(i for i in intervals if i[0] <= cp <= i[1])
++                glyph = glyphs[interval[2] + cp - interval[0]]
++                rows.append(f"{{{cp},{glyph[0]},{glyph[2]},{glyph[3]}}}")
++            code += f"const Glyph glyphs{size}[]={{" + ",".join(rows) + "};\n"
++        code += 'const char* formats[]={' + ','.join(json.dumps(v, ensure_ascii=False) for v in formats) + '};\n'
++        code += 'const char* actions[]={' + ','.join(json.dumps(v, ensure_ascii=False) for v in actions) + '};\n'
++        code += r'''
++struct Rect {int x,y,width,height;};
++enum class StrId {STR_PAPERDIY_TAP_A,STR_PAPERDIY_TAP_B,STR_PAPERDIY_HOLD_A,STR_PAPERDIY_HOLD_B};
++struct {const char* get(StrId i)const{return formats[static_cast<int>(i)];}} I18N;
++struct {uint8_t frontButtonBack=0,frontButtonConfirm=1,frontButtonLeft=2,frontButtonRight=3;bool showButtonHints=true;} SETTINGS;
++struct {bool hasTouch()const{return false;}} gpio;
++struct GfxRenderer {
++  enum Orientation {Portrait,Inverted,LandscapeCW,LandscapeCCW};enum {BW,Gray};
++  int width=540,height=960,inset=0,size=12;Orientation orientation=Portrait;
++  mutable std::array<int,4> clip={0,0,540,960};
++  struct Text {int x,y;std::string value;std::array<int,4> clip;};
++  mutable std::vector<Text> texts;
++  int getScreenWidth()const{return width;}int getScreenHeight()const{return height;}
++  int getRenderMode()const{return BW;}bool grayPlanesAreAbsolute()const{return false;}
++  int getLineHeight(int)const{return size==10?30:36;}
++  int getTextWidth(int,const char* s)const{
++    // The CJK tables have no kerning. Measure actual advance and ink bounds;
++    // these test strings contain no combining marks, ligatures or RTL text.
++    int cursor=0,previousAdvance=0,minX=0,maxX=0;bool first=true;
++    while(*s){
++      auto lead=static_cast<unsigned char>(*s++);uint32_t cp=lead;
++      int count=lead<0x80?0:lead<0xe0?1:lead<0xf0?2:3;
++      if(count)cp=lead&((1u<<(6-count))-1);
++      for(int n=0;n<count;++n)cp=(cp<<6)|(static_cast<unsigned char>(*s++)&0x3f);
++      const auto& table=size==10?glyphs10:glyphs12;
++      const Glyph* glyph=nullptr;
++      for(const auto& g:table){if(g.cp==cp){glyph=&g;break;}}
++      assert(glyph);
++      if(!first)cursor+=previousAdvance/16;
++      minX=std::min(minX,cursor+glyph->left);maxX=std::max(maxX,cursor+glyph->left+glyph->width);
++      previousAdvance=glyph->advance;first=false;
++    }
++    return maxX-minX;
++  }
++  struct ClipScope {
++    const GfxRenderer& r;std::array<int,4> old;
++    ClipScope(const GfxRenderer& rr,int x,int y,int w,int h):r(rr),old(rr.clip){r.clip={x,y,w,h};}
++    ~ClipScope(){r.clip=old;}
++  };
++  void fillRect(int,int,int,int,bool){}
++  void drawText(int,int x,int y,const char* s)const{texts.push_back({x,y,s,clip});}
++};
++struct ThemeMetrics {int buttonHintsHeight=88,contentSidePadding=20;};
++struct UITheme {
++  ThemeMetrics metrics;static UITheme& getInstance(){static UITheme t;return t;}
++  const ThemeMetrics& getMetrics(){return metrics;}
++  static Rect getContentArea(const GfxRenderer& r){return {r.inset,r.inset,r.width-2*r.inset,r.height-2*r.inset};}
++};
++struct {int smallFontId=1;} scale;
++auto uiScaleSpec(){return scale;}
++struct BaseTheme {bool buttonHintsVisible()const;void drawPaperDiyButtonHints(GfxRenderer&,const char*,const char*,const char*,const char*)const;};
++int utf8CodepointLen(unsigned char c){return c<128?1:c<224?2:c<240?3:4;}
++'''
++        code += body("lib/Utf8/Utf8.cpp", "int utf8SafeTruncateBuffer(")
++        source_root = Path(os.environ.get("FOOTER_FITTING_SOURCE_ROOT", ROOT))
++        source = (source_root / "src/components/themes/BaseTheme.cpp").read_text(encoding="utf-8")
++        for signature in ("bool BaseTheme::buttonHintsVisible()", "void drawPaperDiyHintCell(",
++                          "void BaseTheme::drawPaperDiyButtonHints("):
++            code += method(source, signature)
++        code += r'''
++int main(){
++  BaseTheme theme;int borrowed=0,unchanged=0;
++  for(int size:{10,12})for(int padding:{20,32})for(int inset:{0,8})
++  for(auto orientation:{GfxRenderer::Portrait,GfxRenderer::Inverted,GfxRenderer::LandscapeCW,GfxRenderer::LandscapeCCW})
++  for(const char* action:actions){
++    GfxRenderer r;r.size=size;r.inset=inset;r.orientation=orientation;
++    if(orientation==GfxRenderer::LandscapeCW || orientation==GfxRenderer::LandscapeCCW){r.width=960;r.height=540;}
++    UITheme::getInstance().metrics.contentSidePadding=padding;
++    std::array<uint8_t,4> roles{0,1,2,3};
++    do {
++      r.texts.clear();SETTINGS.frontButtonBack=roles[0];SETTINGS.frontButtonConfirm=roles[1];
++      SETTINGS.frontButtonLeft=roles[2];SETTINGS.frontButtonRight=roles[3];
++      const char* labels[4];labels[roles[0]]="« 返回";labels[roles[1]]=action;
++      labels[roles[2]]="上";labels[roles[3]]="下";
++      auto oldClip=r.clip;theme.drawPaperDiyButtonHints(r,labels[0],labels[1],labels[2],labels[3]);
++      assert(r.texts.size()==4 && r.clip==oldClip && r.orientation==orientation);
++      const char* logical[]={"上","下","« 返回",action};
++      int widths[4];
++      for(int i=0;i<4;++i){char full[160];snprintf(full,sizeof(full),formats[i],logical[i]);widths[i]=r.getTextWidth(1,full);}
++      const bool fits=std::max(widths[0],widths[2])+std::max(widths[1],widths[3])
++                      <=r.width-2*inset-2*padding-12;
++      for(int i=0;i<4;++i){
++        char full[160];snprintf(full,sizeof(full),formats[i],logical[i]);
++        if((fits || i!=3) && r.texts[i].value!=full){
++          fprintf(stderr,"font=%d padding=%d inset=%d orientation=%d role=%d cell=%d needed=%d actual=%s expected=%s\n",
++                  size,padding,inset,int(orientation),i,r.texts[i].clip[2],r.getTextWidth(1,full),r.texts[i].value.c_str(),full);
++        }
++        if(fits || i!=3){assert(r.texts[i].value==full);} // Complete whenever the pair physically fits.
++        else{assert(r.texts[i].value.ends_with("…"));} // Oversized font/insets retain bounded truncation.
++        assert(r.texts[i].x>=inset && r.texts[i].x+r.getTextWidth(1,r.texts[i].value.c_str())<=r.width-inset-padding);
++        assert(r.texts[i].clip[3]==38 && r.texts[i].clip[1]+38<=r.height-inset);
++      }
++      assert(r.texts[0].x==r.texts[2].x && r.texts[1].x==r.texts[3].x);
++      for(int i:{0,2})assert(r.texts[i].x+r.getTextWidth(1,r.texts[i].value.c_str())+12<=r.texts[i+1].x);
++      int equalWidth=(r.width-2*inset-2*padding-12)/2;
++      int oldRight=inset+padding+equalWidth+12;
++      if(r.getTextWidth(1,r.texts[3].value.c_str())>equalWidth){assert(r.texts[3].x<oldRight);++borrowed;}
++      else{assert(r.texts[3].x==oldRight);++unchanged;}
++    } while(std::next_permutation(roles.begin(),roles.end()));
++  }
++  assert(borrowed>0 && unchanged>0);
++  // Both actions too long: the existing bounded ellipsis fallback remains safe.
++  SETTINGS.frontButtonBack=0;SETTINGS.frontButtonConfirm=1;SETTINGS.frontButtonLeft=2;SETTINGS.frontButtonRight=3;
++  GfxRenderer narrow;narrow.width=240;std::string longAction(80,'W');
++  theme.drawPaperDiyButtonHints(narrow,longAction.c_str(),longAction.c_str(),"上","下");
++  assert(narrow.texts.size()==4 && narrow.texts[2].value.ends_with("…") && narrow.texts[3].value.ends_with("…"));
++  assert(narrow.texts[2].clip[0]+narrow.texts[2].clip[2]+12<=narrow.texts[3].clip[0]);
++}
++'''
++        run_cpp(code, defines=("FREEINK_DEVICE_PAPERDIY=1",))
++
 +    def test_text_roles_bounds_utf8_and_gray_planes(self):
 +        code = r'''
 +#include <algorithm>
