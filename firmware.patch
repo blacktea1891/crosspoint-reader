@@ -5581,7 +5581,7 @@ diff --git a/test/test_paperdiy_record_actions.py b/test/test_paperdiy_record_ac
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_record_actions.py
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,199 @@
 +"""Exercise record-removal gestures and production confirmation callbacks in memory."""
 +from pathlib import Path
 +import os
@@ -5644,7 +5644,11 @@ new file mode 100644
 +  void saveToFile(){++saves;}
 +  bool removeByPath(const std::string& p) {
 +    auto it=std::find_if(books.begin(),books.end(),[&](const Book& b){return b.path==p;});
-+    if(it==books.end())return false;books.erase(it);++removals;++saves;return true;
++    if(it==books.end()) return false;
++    books.erase(it);
++    ++removals;
++    ++saves;
++    return true;
 +  }
 +  bool removeBook(const std::string& p){return removeByPath(p);}
 +} RECENT_BOOKS,READING_STATS;
