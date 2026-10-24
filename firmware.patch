@@ -28,10 +28,10 @@ index 5c2bd6bb..1d9409ee 100644
  - **无线功能**：浏览器传书与设置、Calibre 无线连接、OPDS 下载、WebDAV 和设备 OTA 更新。
  - **Apps 应用中心**：数独、五子棋、中国象棋、扫雷、2048、电子木鱼、Ugly Avatar 等轻量游戏与工具。[应用说明](./src/activities/apps/README.md)。
 diff --git a/lib/I18n/translations/chinese.yaml b/lib/I18n/translations/chinese.yaml
-index a4b35fd7..79c6da83 100644
+index a4b35fd7..c6cdb189 100644
 --- a/lib/I18n/translations/chinese.yaml
 +++ b/lib/I18n/translations/chinese.yaml
-@@ -1,4 +1,19 @@
+@@ -1,4 +1,23 @@
  _language_name: "简体中文"
 +STR_LIBRARY_ACTIONS: "菜单"
 +STR_LIBRARY_REVERSE_SORT: "反向排序"
@@ -39,6 +39,10 @@ index a4b35fd7..79c6da83 100644
 +STR_KB_PAPERDIY_CONFIRM: "长按 B 输入；长按 A 返回"
 +STR_KB_PAPERDIY_ALTERNATE: "B 再按久些：大写或辅助字符"
 +STR_KB_PAPERDIY_CLEAR: "在退格键上按住 B 更久：清空"
++STR_KB_PAPERDIY_CURSOR_EDIT: "在 OK 上按住 B 更久：编辑光标"
++STR_KB_PAPERDIY_CURSOR_MOVE: "短按 A 光标左移；短按 B 右移"
++STR_KB_PAPERDIY_CURSOR_RETURN: "长按 A 或 B：返回键盘"
++STR_KB_PAPERDIY_KEYBOARD: "键盘"
 +STR_PAPERDIY_FILE_ACTIONS_HINT: "长按 B 打开；B 按住更久：文件操作"
 +STR_PAPERDIY_OPEN_REMOVE: "打开；久按移除"
 +STR_PAPERDIY_SELECT_REMOVE_STATS: "选择；久按删记录"
@@ -51,7 +55,7 @@ index a4b35fd7..79c6da83 100644
  _language_code: "ZH_CN"
  _order: "23"
  _bcp47: "zh-CN"
-@@ -8,6 +23,7 @@ STR_BOOTING: "启动中"
+@@ -8,6 +27,7 @@ STR_BOOTING: "启动中"
  STR_SLEEPING: "休眠中"
  STR_ENTERING_SLEEP: "正在进入休眠"
  STR_BROWSE_FILES: "浏览文件"
@@ -59,7 +63,7 @@ index a4b35fd7..79c6da83 100644
  STR_FILE_TRANSFER: "文件传输"
  STR_APPS_TITLE: "应用"
  STR_APP_VISIBILITY: "隐藏应用"
-@@ -472,6 +488,12 @@ STR_BOTTOM: "底部"
+@@ -472,6 +492,12 @@ STR_BOTTOM: "底部"
  STR_TOP: "顶部"
  STR_UI_THEME: "界面主题"
  STR_SHOW_BUTTON_HINTS: "显示底部按键"
@@ -73,7 +77,7 @@ index a4b35fd7..79c6da83 100644
  STR_THEME_LYRA: "Lyra"
  STR_THEME_ROUNDEDRAFF: "RoundedRaff"
 diff --git a/lib/I18n/translations/english.yaml b/lib/I18n/translations/english.yaml
-index df35ac5d..de05f7ec 100644
+index df35ac5d..84df7186 100644
 --- a/lib/I18n/translations/english.yaml
 +++ b/lib/I18n/translations/english.yaml
 @@ -218,6 +218,8 @@ STR_LIBRARY_TAB_RECENT: "Recent"
@@ -98,7 +102,7 @@ index df35ac5d..de05f7ec 100644
  STR_THEME_CLASSIC: "Classic"
  STR_THEME_LYRA: "Lyra"
  STR_THEME_ROUNDEDRAFF: "RoundedRaff"
-@@ -653,6 +661,19 @@ STR_KB_HINT_TOGGLE_HIDE_PASSWORD: "Press [***] to hide password"
+@@ -653,6 +661,23 @@ STR_KB_HINT_TOGGLE_HIDE_PASSWORD: "Press [***] to hide password"
  STR_KB_HINT_TOGGLE_SHOW_PASSWORD: "Press [abc] to show password"
  STR_KB_HINT_EDIT_ENTRY: "Hold UP to edit entry"
  STR_KB_TIPS: "Tips:"
@@ -106,6 +110,10 @@ index df35ac5d..de05f7ec 100644
 +STR_KB_PAPERDIY_CONFIRM: "Hold B: type; hold A: back"
 +STR_KB_PAPERDIY_ALTERNATE: "Hold B longer: alternate"
 +STR_KB_PAPERDIY_CLEAR: "Hold B on Del longer: clear"
++STR_KB_PAPERDIY_CURSOR_EDIT: "Hold B on OK longer: edit cursor"
++STR_KB_PAPERDIY_CURSOR_MOVE: "Tap A: cursor left; tap B: cursor right"
++STR_KB_PAPERDIY_CURSOR_RETURN: "Hold A or B: return to keyboard"
++STR_KB_PAPERDIY_KEYBOARD: "Keyboard"
 +STR_PAPERDIY_FILE_ACTIONS_HINT: "Hold B: open; hold longer: file actions"
 +STR_PAPERDIY_OPEN_REMOVE: "Open; longer: remove"
 +STR_PAPERDIY_SELECT_REMOVE_STATS: "Select; longer: delete record"
@@ -2240,7 +2248,7 @@ index 6c529a60..ba76ef0a 100644
    void adjustValue(int delta);
    // Absolute value (clamped), from slider drag/tap positions.
 diff --git a/src/activities/util/KeyboardEntryActivity.cpp b/src/activities/util/KeyboardEntryActivity.cpp
-index 4ee0e3c3..51225da5 100644
+index 4ee0e3c3..062a8ede 100644
 --- a/src/activities/util/KeyboardEntryActivity.cpp
 +++ b/src/activities/util/KeyboardEntryActivity.cpp
 @@ -151,6 +151,9 @@ void KeyboardEntryActivity::onEnter() {
@@ -2288,7 +2296,138 @@ index 4ee0e3c3..51225da5 100644
  bool KeyboardEntryActivity::syncSelectionToValue(const int16_t value) {
    const fui::KeyboardLayout& layout = currentLayout();
    for (int r = 0; r < layout.rowCount; r++) {
-@@ -698,7 +729,12 @@ void KeyboardEntryActivity::loop() {
+@@ -354,6 +385,14 @@ bool KeyboardEntryActivity::activateValue(const int16_t value, const bool longPr
+ bool KeyboardEntryActivity::clearAllOrAltOnSelected() {
+   const fui::KeyboardKey* key = selectedKey();
+   if (!key) return false;
++#if FREEINK_DEVICE_PAPERDIY
++  if (key->value == fui::QWERTY_KEY_ENTER) {
++    cursorMode = true;
++    togglePos = false;
++    hintVisible = false;
++    return true;
++  }
++#endif
+   if (key->value == fui::QWERTY_KEY_BACKSPACE) {
+     text.clear();
+     cursorPos = 0;
+@@ -363,6 +402,10 @@ bool KeyboardEntryActivity::clearAllOrAltOnSelected() {
+   const char* alt = fui::keyboardAltOutputFor(currentLayout(), key->value);
+   if (alt) {
+     insertUtf8(alt);
++    if (shifted && !symbols) {
++      shifted = false;
++      clampSelection();
++    }
+     return true;
+   }
+   return false;
+@@ -374,14 +417,13 @@ std::string KeyboardEntryActivity::displayTextForCurrentState() const {
+     return displayText;
+   }
+ 
+-  size_t revealPos;
+-  if (cursorMode) {
+-    revealPos = text.length();  // no reveal in displayText; block draws actual char directly
+-  } else {
+-    revealPos = (text.length() > 0 && cursorPos > 0) ? cursorPos - 1 : std::string::npos;
+-  }
++  // Keep byte offsets shared with text/cursor hit-testing, but reveal a whole
++  // code point, never only its final continuation byte. Other bytes stay ASCII
++  // masks; cursor mode reveals only the character drawn inside the block.
++  const size_t revealEnd = !cursorMode ? std::min(cursorPos, text.length()) : 0;
++  const size_t revealStart = utf8Prev(text, revealEnd);
+   for (size_t i = 0; i < displayText.length(); i++) {
+-    if (i != revealPos) {
++    if (i < revealStart || i >= revealEnd) {
+       displayText[i] = '*';
+     }
+   }
+@@ -488,11 +530,12 @@ bool KeyboardEntryActivity::cursorPositionFromPoint(const int x, const int y, si
+   }
+   const int effectiveMargin = (content.width - availableWidth * metrics.keyboardTextFieldWidthPercent / 100) / 2;
+   const int textLeft = content.x + effectiveMargin;
+-  const int toggleGap = inputType == InputType::Password ? 4 : 0;
+-  const int toggleReserve = inputType == InputType::Password ? std::max(renderer.getTextWidth(UI_12_FONT_ID, "[abc]"),
+-                                                                        renderer.getTextWidth(UI_12_FONT_ID, "[***]")) +
+-                                                                   toggleGap
+-                                                             : 0;
++  const int toggleGap = PASSWORD_TOGGLE_ENABLED && inputType == InputType::Password ? 4 : 0;
++  const int toggleReserve =
++      PASSWORD_TOGGLE_ENABLED && inputType == InputType::Password
++          ? std::max(renderer.getTextWidth(UI_12_FONT_ID, "[abc]"), renderer.getTextWidth(UI_12_FONT_ID, "[***]")) +
++                toggleGap
++          : 0;
+   const int textAreaWidth = content.width - 2 * effectiveMargin - toggleReserve;
+   const int maxLineWidth = textAreaWidth;
+   const bool centerText = metrics.keyboardCenteredText;
+@@ -552,7 +595,7 @@ bool KeyboardEntryActivity::cursorPositionFromPoint(const int x, const int y, si
+     lineStartIdx = lineEndIdx;
+   }
+ 
+-  if (inputType == InputType::Password) {
++  if (PASSWORD_TOGGLE_ENABLED && inputType == InputType::Password) {
+     const int toggleWidth =
+         std::max(renderer.getTextWidth(UI_12_FONT_ID, "[abc]"), renderer.getTextWidth(UI_12_FONT_ID, "[***]"));
+     const int toggleX = content.x + content.width - effectiveMargin - toggleWidth;
+@@ -622,6 +665,36 @@ fui::Rect KeyboardEntryActivity::keyboardKeysRect() const {
+                    static_cast<int16_t>(height)};
+ }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++bool KeyboardEntryActivity::handlePaperDiyCursorInput() {
++  if (!cursorMode) return false;
++  // Continued Confirm on OK entered this owner while still held. Consume its
++  // release before a fresh Confirm can return to the keyboard; never submit OK.
++  if (confirmLongHandled) {
++    if (!mappedInput.isPressed(MappedInputManager::Button::Confirm)) {
++      confirmHeld = false;
++      confirmLongHandled = false;
++    }
++    return true;
++  }
++  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
++    cursorPos = utf8Prev(text, cursorPos);
++    requestUpdate();
++  } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
++    cursorPos = utf8Next(text, cursorPos);
++    requestUpdate();
++  } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
++             mappedInput.wasReleased(MappedInputManager::Button::Back)) {
++    cursorMode = false;
++    togglePos = false;
++    confirmHeld = false;
++    hintVisible = false;
++    requestUpdate();
++  }
++  return true;
++}
++#endif
++
+ void KeyboardEntryActivity::loop() {
+   int tx = 0;
+   int ty = 0;
+@@ -629,7 +702,7 @@ void KeyboardEntryActivity::loop() {
+   size_t touchedCursorPos = 0;
+   bool touchedPasswordToggle = false;
+   if (mappedInput.wasScreenTapped(tx, ty) && cursorPositionFromPoint(tx, ty, touchedCursorPos, touchedPasswordToggle)) {
+-    if (touchedPasswordToggle) {
++    if (PASSWORD_TOGGLE_ENABLED && touchedPasswordToggle) {
+       haptic_feedback::touchAction();
+       passwordVisible = !passwordVisible;
+       cursorMode = false;
+@@ -682,6 +755,10 @@ void KeyboardEntryActivity::loop() {
+     }
+   }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  if (handlePaperDiyCursorInput()) return;
++#endif
++
+   if (!cursorMode && mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+     upHeld = true;
+     upLongHandled = false;
+@@ -698,7 +775,12 @@ void KeyboardEntryActivity::loop() {
  
    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
      if (upHeld && !upLongHandled && !cursorMode) {
@@ -2301,7 +2440,7 @@ index 4ee0e3c3..51225da5 100644
        requestUpdate();
      }
      upHeld = false;
-@@ -721,7 +757,11 @@ void KeyboardEntryActivity::loop() {
+@@ -721,7 +803,11 @@ void KeyboardEntryActivity::loop() {
  
    if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
      if (downHeld && !downLongHandled && !cursorMode) {
@@ -2313,14 +2452,85 @@ index 4ee0e3c3..51225da5 100644
        requestUpdate();
      }
      downHeld = false;
-@@ -1020,7 +1060,15 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+@@ -748,7 +834,7 @@ void KeyboardEntryActivity::loop() {
+   }
+ 
+   if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+-    if (cursorMode && inputType == InputType::Password && !togglePos) {
++    if (PASSWORD_TOGGLE_ENABLED && cursorMode && inputType == InputType::Password && !togglePos) {
+       rightHeld = true;
+       rightLongHandled = false;
+       rightStartCursorPos = cursorPos;
+@@ -763,7 +849,7 @@ void KeyboardEntryActivity::loop() {
+ 
+   if (rightHeld && !rightLongHandled && mappedInput.isPressed(MappedInputManager::Button::Right) &&
+       mappedInput.getHeldTime() > LONG_PRESS_MS) {
+-    if (cursorMode && inputType == InputType::Password && !togglePos) {
++    if (PASSWORD_TOGGLE_ENABLED && cursorMode && inputType == InputType::Password && !togglePos) {
+       savedCursorPos = rightStartCursorPos;
+       togglePos = true;
+       rightLongHandled = true;
+@@ -813,7 +899,8 @@ void KeyboardEntryActivity::loop() {
+       if (selKey && activateValue(selKey->value, false)) {
+         requestUpdate();
+       }
+-    } else if (confirmHeld && !confirmLongHandled && cursorMode && inputType == InputType::Password && togglePos) {
++    } else if (PASSWORD_TOGGLE_ENABLED && confirmHeld && !confirmLongHandled && cursorMode &&
++               inputType == InputType::Password && togglePos) {
+       passwordVisible = !passwordVisible;
+       requestUpdate();
+     }
+@@ -856,11 +943,12 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+   }
+   const int effectiveMargin = (content.width - availableWidth * metrics.keyboardTextFieldWidthPercent / 100) / 2;
+   const int textLeft = content.x + effectiveMargin;
+-  const int toggleGap = isPassword ? 4 : 0;
+-  const int toggleReserve = isPassword ? std::max(renderer.getTextWidth(UI_12_FONT_ID, "[abc]"),
+-                                                  renderer.getTextWidth(UI_12_FONT_ID, "[***]")) +
+-                                             toggleGap
+-                                       : 0;
++  const int toggleGap = PASSWORD_TOGGLE_ENABLED && isPassword ? 4 : 0;
++  const int toggleReserve =
++      PASSWORD_TOGGLE_ENABLED && isPassword
++          ? std::max(renderer.getTextWidth(UI_12_FONT_ID, "[abc]"), renderer.getTextWidth(UI_12_FONT_ID, "[***]")) +
++                toggleGap
++          : 0;
+   const int textAreaWidth = content.width - 2 * effectiveMargin - toggleReserve;
+   const int maxLineWidth = textAreaWidth;
+   const bool centerText = metrics.keyboardCenteredText;
+@@ -975,7 +1063,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+     renderer.drawLine(cX + 1, cBottom, cX + serifW, cBottom, 2, true);
+   }
+ 
+-  if (isPassword) {
++  if (PASSWORD_TOGGLE_ENABLED && isPassword) {
+     const char* toggleLabel = passwordVisible ? "[***]" : "[abc]";
+     const int toggleWidth = renderer.getTextWidth(UI_12_FONT_ID, toggleLabel);
+     const int toggleX = content.x + content.width - effectiveMargin - toggleWidth;
+@@ -990,6 +1078,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+     }
+   }
+ 
++#if !FREEINK_DEVICE_PAPERDIY
+   if ((!UITheme::getInstance().hasMainTabs() || !mappedInput.hasTouch()) && hintVisible && cursorMode &&
+       !text.empty()) {
+     const int hintLh = renderer.getLineHeight(SMALL_FONT_ID);
+@@ -1011,6 +1100,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+       }
+     }
+   }
++#endif
+ 
+   const fui::Rect kbRect = keyboardRect();
+   const fui::Rect keysRect = keyboardKeysRect();
+@@ -1020,7 +1110,15 @@ void KeyboardEntryActivity::render(RenderLock&&) {
    auto drawTip = [&](const char* tip, int y) { renderer.drawCenteredText(SMALL_FONT_ID, y, tip, true); };
  
    // Reserve the Clear Text row even when the entry is empty.
 -  const int tipCount = cursorMode ? 1 : urlPanel ? 3 : symbols ? 2 : 3 + (inputType == InputType::Url ? 1 : 0);
 +  const int tipCount =
 +#if FREEINK_DEVICE_PAPERDIY
-+      4;
++      cursorMode ? 2 : 4;
 +#else
 +      cursorMode ? 1
 +      : urlPanel ? 3
@@ -2330,23 +2540,30 @@ index 4ee0e3c3..51225da5 100644
    const int tipsHeight = (tipCount + 1) * tipsLh;
    // Reserve cursor instructions even for an empty field; passwords need a second row.
    const int tipsTop = underlineBottom + (cursorMode ? (isPassword ? 2 : 1) * tipsLh : 0);
-@@ -1029,6 +1077,15 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+@@ -1029,6 +1127,22 @@ void KeyboardEntryActivity::render(RenderLock&&) {
      int y = tipsTop + (kbRect.y - tipsTop - tipsHeight) / 2;
      drawTip(tr(STR_KB_TIPS), y);
      y += tipsLh;
 +#if FREEINK_DEVICE_PAPERDIY
-+    drawTip(tr(STR_KB_PAPERDIY_MOVE), y);
-+    y += tipsLh;
-+    drawTip(tr(STR_KB_PAPERDIY_CONFIRM), y);
-+    y += tipsLh;
-+    drawTip(tr(STR_KB_PAPERDIY_ALTERNATE), y);
-+    y += tipsLh;
-+    drawTip(tr(STR_KB_PAPERDIY_CLEAR), y);
++    if (cursorMode) {
++      drawTip(tr(STR_KB_PAPERDIY_CURSOR_MOVE), y);
++      y += tipsLh;
++      drawTip(tr(STR_KB_PAPERDIY_CURSOR_RETURN), y);
++    } else {
++      drawTip(tr(STR_KB_PAPERDIY_MOVE), y);
++      y += tipsLh;
++      drawTip(tr(STR_KB_PAPERDIY_CONFIRM), y);
++      y += tipsLh;
++      drawTip(tr(STR_KB_PAPERDIY_ALTERNATE), y);
++      y += tipsLh;
++      const auto* key = selectedKey();
++      drawTip(tr(key && key->value == fui::QWERTY_KEY_ENTER ? STR_KB_PAPERDIY_CURSOR_EDIT : STR_KB_PAPERDIY_CLEAR), y);
++    }
 +#else
      if (!cursorMode) {
        drawTip(tr(STR_KB_HINT_EDIT_ENTRY), y);
        y += tipsLh;
-@@ -1064,6 +1121,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+@@ -1064,6 +1178,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
          drawTip(tr(STR_KB_HINT_CLEAR_TEXT), y);
        }
      }
@@ -2354,16 +2571,16 @@ index 4ee0e3c3..51225da5 100644
    }
  
    // The FreeInkUI keyboard draws the keys and registers their hit rects into
-@@ -1116,10 +1174,17 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+@@ -1116,10 +1231,18 @@ void KeyboardEntryActivity::render(RenderLock&&) {
    interactions.publish();
    interactionsReady = true;
  
--  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT),
 +#if FREEINK_DEVICE_PAPERDIY
-+                                            tr(STR_DIR_RIGHT), tr(STR_DIR_DOWN));
++  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(cursorMode ? STR_KB_PAPERDIY_KEYBOARD : STR_SELECT),
++                                            tr(cursorMode ? STR_DIR_LEFT : STR_DIR_RIGHT),
++                                            tr(cursorMode ? STR_DIR_RIGHT : STR_DIR_DOWN));
 +#else
-+                                            tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
 +#endif
    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
  
@@ -2374,7 +2591,7 @@ index 4ee0e3c3..51225da5 100644
    renderer.displayBuffer();
  }
 diff --git a/src/activities/util/KeyboardEntryActivity.h b/src/activities/util/KeyboardEntryActivity.h
-index b09baf95..cdb2f648 100644
+index b09baf95..a0796a1d 100644
 --- a/src/activities/util/KeyboardEntryActivity.h
 +++ b/src/activities/util/KeyboardEntryActivity.h
 @@ -8,6 +8,7 @@
@@ -2385,17 +2602,19 @@ index b09baf95..cdb2f648 100644
  #include "util/ButtonNavigator.h"
  
  enum class InputType { Text, Password, Url };
-@@ -67,6 +68,9 @@ class KeyboardEntryActivity : public Activity {
+@@ -67,6 +68,11 @@ class KeyboardEntryActivity : public Activity {
    // the bottom action row is just the last row).
    int selRow = 0;
    int selCol = 0;
 +#if FREEINK_DEVICE_PAPERDIY
 +  PaperDiyKeyboardNavigation paperDiyNavigation;
++  // Owns cursor-mode gestures, including the release that entered the mode.
++  bool handlePaperDiyCursorInput();
 +#endif
  
    bool confirmHeld = false;
    bool confirmLongHandled = false;
-@@ -125,6 +129,9 @@ class KeyboardEntryActivity : public Activity {
+@@ -125,6 +131,9 @@ class KeyboardEntryActivity : public Activity {
    void clampSelection();
    void moveSelectionRow(int delta);
    void moveSelectionCol(int delta);
@@ -2405,6 +2624,21 @@ index b09baf95..cdb2f648 100644
    bool syncSelectionToValue(int16_t value);
    // Handles one key activation (by stable key id). Returns true when the
    // screen needs a repaint; OK/cancel finish the activity instead.
+@@ -145,6 +154,14 @@ class KeyboardEntryActivity : public Activity {
+   static constexpr uint16_t TOUCH_LONG_PRESS_MS = 350;
+   static constexpr uint16_t TOUCH_DEL_LONG_PRESS_MS = 900;
+ 
++  // PaperDIY keeps the current Text password callers; do not expose an
++  // unreachable reveal control if a future caller uses Password mode.
++#if FREEINK_DEVICE_PAPERDIY
++  static constexpr bool PASSWORD_TOGGLE_ENABLED = false;
++#else
++  static constexpr bool PASSWORD_TOGGLE_ENABLED = true;
++#endif
++
+   // App-specific key id: toggles the URL snippet panel (URL fields only).
+   static constexpr int16_t URL_PANEL_KEY = -3;
+ };
 diff --git a/src/components/OptionPopup.h b/src/components/OptionPopup.h
 index cd8e9ca0..5bda4ddb 100644
 --- a/src/components/OptionPopup.h
@@ -2740,7 +2974,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..425418a4 100644
+index b0b49733..c921b6e7 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -2752,13 +2986,14 @@ index b0b49733..425418a4 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,12 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,13 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
 +add_test(NAME PaperDiyBoardTag COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_board_tag.py)
 +add_test(NAME PaperDiyRefreshRouting COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_routing.py)
 +add_test(NAME PaperDiyKeyboardButtons COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_buttons.py)
++  add_test(NAME PaperDiyKeyboardEditing COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_editing.py)
 +add_test(NAME PaperDiyMenuNavigation COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_menu_navigation.py)
 +add_test(NAME PaperDiyDisplayDriver COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_driver.py)
 +add_test(NAME PaperDiyFileSettings COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_file_settings.py)
@@ -2799,7 +3034,7 @@ index c8de42d8..15aff39f 100644
  
  
 diff --git a/test/inx_navigation/test_unified_keyboard.py b/test/inx_navigation/test_unified_keyboard.py
-index 11496463..2208157c 100644
+index 11496463..c50ebdcd 100644
 --- a/test/inx_navigation/test_unified_keyboard.py
 +++ b/test/inx_navigation/test_unified_keyboard.py
 @@ -18,7 +18,7 @@ def method(name):
@@ -2819,7 +3054,7 @@ index 11496463..2208157c 100644
  #include <cstdarg>
  #include <cstdint>
  #include <cstdio>
-@@ -145,6 +146,9 @@ struct KeyboardEntryActivity {
+@@ -145,11 +146,19 @@ struct KeyboardEntryActivity {
    bool interactionsReady=false;
    bool confirmHeld=false, confirmLongHandled=false, hintVisible=false, passwordVisible=false, togglePos=false;
    int selRow=0, selCol=0, delPressCount=0;
@@ -2829,7 +3064,17 @@ index 11496463..2208157c 100644
    size_t cursorPos=0, maxLength=0; unsigned long hintShowTime=0;
    std::string text;
    MappedInputManager mappedInput;
-@@ -212,6 +216,26 @@ int main() {
+   fui::InteractionBuffer<56> interactions;
+   static constexpr int URL_PANEL_KEY=-3, LONG_PRESS_MS=500, DEL_LONG_PRESS_MS=1500;
++#if FREEINK_DEVICE_PAPERDIY
++  static constexpr bool PASSWORD_TOGGLE_ENABLED = false;
++#else
++  static constexpr bool PASSWORD_TOGGLE_ENABLED = true;
++#endif
+   void requestUpdate() {}
+   void onComplete(std::string) {}
+   @DECLARATIONS@
+@@ -212,6 +221,26 @@ int main() {
            kb.moveSelectionCol(1); assert(kb.selCol==0);
            kb.moveSelectionRow(-1); assert(kb.selRow==layout.rowCount-1);
            kb.moveSelectionRow(1); assert(kb.selRow==0);
@@ -2856,7 +3101,7 @@ index 11496463..2208157c 100644
            kb.draw();
            std::printf("SCENE %d %d %llu %llu\n",scene,theme,(unsigned long long)keysHash,(unsigned long long)traceHash);
          }
-@@ -267,12 +291,13 @@ replacements = {'TRACE': trace_target, 'METRICS': metrics_code(), 'LANGUAGES': l
+@@ -267,12 +296,13 @@ replacements = {'TRACE': trace_target, 'METRICS': metrics_code(), 'LANGUAGES': l
                  'CONFIRM': confirm, 'RENDER': render, 'METHODS': '\n'.join(methods)}
  for name, code in replacements.items():
      harness = harness.replace('@' + name + '@', code)
@@ -2872,7 +3117,7 @@ index 11496463..2208157c 100644
      subprocess.run(command, check=True)
      output = subprocess.check_output([str(binary)], text=True)
      return {tuple(map(int,row[:2])):tuple(map(int,row[2:])) for line in output.splitlines() if line.startswith('SCENE ') for row in [line.split()[1:]]}
-@@ -281,6 +306,9 @@ with tempfile.TemporaryDirectory(prefix='unified-keyboard-', dir=os.environ.get(
+@@ -281,6 +311,9 @@ with tempfile.TemporaryDirectory(prefix='unified-keyboard-', dir=os.environ.get(
      tmp=Path(tmp)
      regular=run_harness(harness,tmp,'regular')
      high=run_harness(harness,tmp,'readpico',True)
@@ -2959,7 +3204,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,412 @@
+@@ -0,0 +1,443 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -3372,6 +3617,37 @@ new file mode 100644
 +font/inset cases must retain safe ellipsis. A negative control against the
 +previous equal-width method fails on the complete-label assertion. Existing
 +four-direction content geometry and full-row list tests remain in force.
++
++## Keyboard editing and deferred password toggle, 2026-10-24
++
++The user requested K1/K3/K4 fixes and explicitly deferred/disabled K2's password
++show/hide feature. On PaperDIY, selecting OK and continuing to hold B enters
++cursor editing instead of submitting. An ordinary B hold/release on OK still
++submits once. In cursor mode tap A/B moves one UTF-8 code point left/right,
++clamped at the text boundaries; a fresh held A or B returns to the keyboard at
++that position without cancelling or submitting. Normal keyboard A still cancels.
++The entering Confirm hold and release are consumed before cursor input; return
++also consumes its release. Existing row/column layouts and SDK timing stay fixed.
++The on-OK tip and cursor tips/footer use translated two-button instructions.
++
++Password toggle drawing, hit region/reserved width, held-Right selection, touch
++and Confirm activation are disabled for PaperDIY. Current Wi-Fi/OPDS callers
++remain Text, preserving visible entry for checking; this is not a change to
++credential storage or masking those existing fields. Other boards retain their
++toggle. The shared Password formatter now reveals a whole prior code point,
++retaining the established byte-offset mask representation for render/hit-tests.
++It does not change the stored string. Alternate insertion now releases letter
++Shift like ordinary/touch insertion; symbol-page Shift remains selected.
++
++No new member state, heap allocation, task, framebuffer, persistence or refresh
++call is introduced. The cursor handler reuses cursorMode/confirmLongHandled.
++Existing returned display-string allocation and input insertion are unchanged.
++The new host regression compiles actual production methods and the real SDK
++tables for both PaperDIY and non-PaperDIY, with dummy data only. It covers hold
++ownership/release, UTF-8 boundaries, return/insert/delete/cancel, byte limits,
++masking and Shift state, alongside retained navigation/geometry checks. These
++checks do not establish hardware acceptance; the user self-flashes. Multilingual
++hardware testing remains deferred by the user; the 30-update policy is unchanged.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -4749,7 +5025,7 @@ diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboar
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_keyboard_buttons.py
-@@ -0,0 +1,326 @@
+@@ -0,0 +1,334 @@
 +"""Drive the production keyboard button handling with PaperDIY two-key frames.
 +
 +Frames follow the SDK DigitalTwoButton classifier (see
@@ -4791,14 +5067,15 @@ new file mode 100644
 +hints = between(hints_after, "  renderer.displayBuffer();")[len(hints_after):]
 +tips = between("  // Reserve the Clear Text row", "  // The FreeInkUI keyboard draws")
 +tip_keys = ["STR_KB_TIPS", "STR_KB_PAPERDIY_MOVE", "STR_KB_PAPERDIY_CONFIRM",
-+            "STR_KB_PAPERDIY_ALTERNATE", "STR_KB_PAPERDIY_CLEAR"]
++            "STR_KB_PAPERDIY_ALTERNATE", "STR_KB_PAPERDIY_CLEAR", "STR_KB_PAPERDIY_CURSOR_EDIT",
++            "STR_KB_PAPERDIY_CURSOR_MOVE", "STR_KB_PAPERDIY_CURSOR_RETURN"]
 +tip_tables = []
 +for language in ("english", "chinese"):
 +    translations = (ROOT / f"lib/I18n/translations/{language}.yaml").read_text(encoding="utf-8")
 +    values = [json.loads(re.search(r"^" + key + r": (.*)$", translations, re.M).group(1)) for key in tip_keys]
 +    tip_tables.append("{" + ",".join(json.dumps(value, ensure_ascii=False) for value in values) + "}")
 +tip_declarations = "enum StrId {" + ",".join(tip_keys) + "};\n"
-+tip_declarations += "const char* tipStrings[2][5]={" + ",".join(tip_tables) + "};\n"
++tip_declarations += "const char* tipStrings[2][8]={" + ",".join(tip_tables) + "};\n"
 +tip_declarations += "int tipLanguage=0; const char* tr(StrId key) {return tipStrings[tipLanguage][key];}\n"
 +confirm_back = between("  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm))",
 +                       "  if (hintVisible && !cursorMode")
@@ -4856,6 +5133,7 @@ new file mode 100644
 +  int cancels = 0, alts = 0;
 +  MappedInputManager mappedInput;
 +  static constexpr unsigned long LONG_PRESS_MS = 500, DEL_LONG_PRESS_MS = 1500;
++  static constexpr bool PASSWORD_TOGGLE_ENABLED = !FREEINK_DEVICE_PAPERDIY;
 +  const fui::KeyboardLayout* layoutOverride = nullptr;
 +  const fui::KeyboardLayout& currentLayout() const {
 +    if (layoutOverride) return *layoutOverride;
@@ -5050,6 +5328,12 @@ new file mode 100644
 +    tipLanguage=lang; kb.tips.clear(); kb.drawTips();
 +    assert(kb.tips.size()==5);
 +    for(int i=0;i<5;++i) assert(kb.tips[i]==tipStrings[lang][i]);
++    kb.selRow=4; kb.selCol=kb.currentLayout().rows[4].count-1;
++    kb.tips.clear(); kb.drawTips();
++    assert(kb.tips.size()==5 && kb.tips.back()==tipStrings[lang][5]);
++    kb.cursorMode=true; kb.tips.clear(); kb.drawTips();
++    assert(kb.tips.size()==3 && kb.tips[1]==tipStrings[lang][6] && kb.tips[2]==tipStrings[lang][7]);
++    kb.cursorMode=false; kb.selRow=3; kb.selCol=8;
 +  }
 +#endif
 +  kb.drawHints();
@@ -5076,6 +5360,279 @@ new file mode 100644
 +                       check=True)
 +        subprocess.run([str(binary)], check=True)
 +print("PaperDIY A cycles within the row, B follows all photo columns without skipping rows, holds keep Back/Confirm, duplicate side hints removed; other boards unchanged")
+diff --git a/test/test_paperdiy_keyboard_editing.py b/test/test_paperdiy_keyboard_editing.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_keyboard_editing.py
+@@ -0,0 +1,268 @@
++"""Exercise real keyboard editing, output and masking with dummy input and SDK tables."""
++from pathlib import Path
++import json
++import os
++import re
++import subprocess
++import sys
++import tempfile
++
++repo = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(repo / 'scripts/tests'))
++from test_reading_ui_regressions import method
++
++source = (repo / 'src/activities/util/KeyboardEntryActivity.cpp').read_text(encoding='utf-8')
++header = (repo / 'src/activities/util/KeyboardLayoutSet.h').read_text(encoding='utf-8')
++layout_cpp = (repo / 'src/activities/util/KeyboardLayoutSet.cpp').read_text(encoding='utf-8')
++languages = list(dict.fromkeys(re.findall(r'Language::(\w+)', header)))
++strip_includes = lambda s: '\n'.join(line for line in s.splitlines() if not line.startswith('#include') and not line.startswith('#pragma'))
++code = r'''
++#include <components/keyboard/keyboard.h>
++#include "components/PaperDiyKeyboardNavigation.h"
++#include <algorithm>
++#include <cassert>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++namespace fui=freeink::ui;
++'''
++code += 'enum class Language {' + ','.join(languages + ['ZH_CN']) + '};\n'
++code += 'struct {uint16_t keyboardLayouts=0;} SETTINGS;\n'
++code += 'struct {Language language=Language::EN;Language getLanguage()const{return language;}} I18N;\n'
++code += strip_includes(header) + '\n' + strip_includes(layout_cpp) + '\n'
++start = source.index('constexpr uint8_t URL_KEY_WIDTH')
++code += source[start:source.index('\n}  // namespace', start)]
++code += r'''
++enum class InputType {Text,Password,Url};
++unsigned long millis(){return 1000;}
++struct Input {
++  enum class Button {Confirm,Back,Up,Down};
++  bool pressed=false,released=false,held=false,back=false;unsigned long time=0;
++  bool up=false,down=false;
++  bool wasPressed(Button b)const{return b==Button::Confirm && pressed;}
++  bool wasReleased(Button b)const{return b==Button::Confirm?released:b==Button::Back?back:b==Button::Up?up:down;}
++  bool isPressed(Button b)const{return b==Button::Confirm && held;}
++  unsigned long getHeldTime()const{return time;}
++};
++using MappedInputManager=Input;
++struct KeyboardEntryActivity {
++  std::string text,completed;size_t cursorPos=0,maxLength=0;
++  InputType inputType=InputType::Text;
++  fui::KeyboardLayoutId layoutId=fui::KeyboardLayoutId::QwertyEn;
++  bool showLangKey=false,shifted=false,symbols=false,urlPanel=false;
++  bool cursorMode=false,passwordVisible=false,togglePos=false;
++  bool confirmHeld=false,confirmLongHandled=false,hintVisible=false;
++  bool upHeld=false,upLongHandled=false,downHeld=false,downLongHandled=false;
++  int selRow=0,selCol=0,delPressCount=0,completes=0,cancels=0;
++  unsigned long hintShowTime=0;Input mappedInput;PaperDiyKeyboardNavigation paperDiyNavigation;
++  static constexpr int16_t URL_PANEL_KEY=-3;
++  static constexpr bool PASSWORD_TOGGLE_ENABLED=!FREEINK_DEVICE_PAPERDIY;
++#if FREEINK_DEVICE_PAPERDIY
++  bool handlePaperDiyCursorInput();
++#endif
++  static constexpr unsigned long LONG_PRESS_MS=500,DEL_LONG_PRESS_MS=1500;
++  const fui::KeyboardLayout& currentLayout()const;
++  const fui::KeyboardKey* selectedKey()const;
++  void clampSelection();void moveSelectionRow(int);void moveSelectionAlongRow();void moveSelectionDownColumn();
++  static size_t utf8Prev(const std::string&,size_t);static size_t utf8Next(const std::string&,size_t);
++  void insertUtf8(const char*);bool backspaceUtf8();
++  bool activateValue(int16_t,bool);bool clearAllOrAltOnSelected();std::string displayTextForCurrentState()const;
++  void onComplete(std::string s){++completes;completed=std::move(s);}
++  void onCancel(){++cancels;}void requestUpdate(){}
++  void confirmFrame();
++  bool select(int16_t value){
++    const auto& layer=currentLayout();
++    for(int row=0;row<layer.rowCount;++row)for(int col=0;col<layer.rows[row].count;++col){
++      if(layer.rows[row].keys[col].value==value){selRow=row;selCol=col;return true;}
++    }
++    return false;
++  }
++};
++'''
++for signature in ('const fui::KeyboardLayout& KeyboardEntryActivity::currentLayout(',
++                  'const fui::KeyboardKey* KeyboardEntryActivity::selectedKey(',
++                  'void KeyboardEntryActivity::clampSelection(',
++                  'void KeyboardEntryActivity::moveSelectionRow(',
++                  'void KeyboardEntryActivity::moveSelectionAlongRow(',
++                  'void KeyboardEntryActivity::moveSelectionDownColumn(',
++                  'size_t KeyboardEntryActivity::utf8Prev(', 'size_t KeyboardEntryActivity::utf8Next(',
++                  'void KeyboardEntryActivity::insertUtf8(', 'bool KeyboardEntryActivity::backspaceUtf8(',
++                  'bool KeyboardEntryActivity::activateValue(', 'bool KeyboardEntryActivity::clearAllOrAltOnSelected(',
++                  'std::string KeyboardEntryActivity::displayTextForCurrentState('):
++    code += method(source, signature)
++begin = source.index('  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm))')
++end = source.index('  if (hintVisible && !cursorMode', begin)
++code += '\n#if FREEINK_DEVICE_PAPERDIY\n' + method(source, 'bool KeyboardEntryActivity::handlePaperDiyCursorInput(') + '\n#endif\n'
++code += '\nvoid KeyboardEntryActivity::confirmFrame(){\n#if FREEINK_DEVICE_PAPERDIY\n  if (handlePaperDiyCursorInput()) return;\n#endif\n' + source[begin:end] + '\n}\n'
++code += r'''
++int main(){
++  KeyboardEntryActivity k;
++  assert(k.select('a'));k.mappedInput={true,false,true,false,1};k.confirmFrame();
++  k.mappedInput={false,false,true,false,501};k.confirmFrame();k.confirmFrame();
++  k.mappedInput={false,true,false,false,501};k.confirmFrame();assert(k.text=="A");
++  k.text.clear();k.cursorPos=0;assert(k.select('1'));
++  k.mappedInput={true,false,true,false,1};k.confirmFrame();
++  k.mappedInput={false,false,true,false,501};k.confirmFrame();
++  k.mappedInput={false,true,false,false,501};k.confirmFrame();assert(k.text=="!");
++  assert(k.select(fui::QWERTY_KEY_BACKSPACE));k.text="aé中";k.cursorPos=k.text.size();
++  k.mappedInput={true,false,true,false,1};k.confirmFrame();
++  k.mappedInput={false,true,false,false,200};k.confirmFrame();assert(k.text=="aé");
++  k.mappedInput={true,false,true,false,1};k.confirmFrame();
++  k.mappedInput={false,false,true,false,1501};k.confirmFrame();k.confirmFrame();
++  k.mappedInput={false,true,false,false,1501};k.confirmFrame();assert(k.text.empty() && k.cursorPos==0);
++  puts("PASS auxiliary_case_symbol_backspace_clear_single_action");
++
++  KeyboardEntryActivity u;u.inputType=InputType::Url;
++  assert(u.activateValue(-3,false));assert(u.urlPanel);
++  assert(u.activateValue(2001,false));assert(u.text=="https://");
++  assert(u.activateValue(2002,false));assert(u.text=="https://www.");
++  assert(u.activateValue(fui::QWERTY_KEY_MODE,false));assert(!u.urlPanel && !u.symbols);
++  for(char c:std::string("example"))assert(u.activateValue(c,false));
++  u.activateValue(-3,false);u.activateValue(2003,false);u.activateValue(2008,false);u.activateValue(2007,false);
++  assert(u.text=="https://www.example.com:8080/opds");
++  u.activateValue(fui::QWERTY_KEY_MODE,false);u.activateValue(fui::QWERTY_KEY_MODE,false);
++  assert(u.symbols);u.activateValue(fui::QWERTY_KEY_MODE,false);assert(!u.symbols);
++  u.maxLength=u.text.size()+1;u.activateValue(-3,false);const auto before=u.text;
++  u.activateValue(2001,false);assert(u.text==before); // Snippet rejected as a whole at the byte limit.
++  puts("PASS URL_real_snippets_abc_symbols_and_byte_limit");
++
++  int outputs=0,alternates=0;
++  SETTINGS.keyboardLayouts=0x3ff;
++  for(const auto& info:keyboard_layouts::ALL)for(bool symbols:{false,true})for(bool shifted:{false,true}){
++    KeyboardEntryActivity sample;sample.layoutId=info.id;sample.symbols=symbols;sample.shifted=shifted;sample.showLangKey=true;
++    const auto& layer=sample.currentLayout();
++    for(int row=0;row<layer.rowCount;++row)for(int col=0;col<layer.rows[row].count;++col){
++      const auto& key=layer.rows[row].keys[col];if(!key.output)continue;
++      auto normal=sample;normal.selRow=row;normal.selCol=col;
++      assert(normal.activateValue(key.value,false));assert(normal.text==key.output);++outputs;
++      const char* alt=fui::keyboardAltOutputFor(layer,key.value);
++      if(alt){auto extra=sample;extra.selRow=row;extra.selCol=col;
++        assert(extra.clearAllOrAltOnSelected());assert(extra.text==alt);++alternates;}
++    }
++  }
++  for(uint16_t mask:{uint16_t(0),uint16_t(0x3ff),uint16_t(1u<<4),uint16_t(0xffff)}){
++    SETTINGS.keyboardLayouts=mask;
++    for(const auto& info:keyboard_layouts::ALL){I18N.language=info.language;
++      auto current=keyboard_layouts::startingLayout();const auto first=current;uint16_t seen=0;
++      for(int n=0;n<keyboard_layouts::COUNT;++n){
++        int index=0;while(index<keyboard_layouts::COUNT && keyboard_layouts::ALL[index].id!=current)++index;
++        assert(index<keyboard_layouts::COUNT);
++        const auto bit=keyboard_layouts::bitAt(index);assert(!(seen&bit));seen|=bit;
++        current=keyboard_layouts::next(current);if(current==first)break;
++      }
++      assert((keyboard_layouts::enabled()&keyboard_layouts::LATIN_BITS)!=0);
++      assert(current==first && seen==keyboard_layouts::enabled());
++    }
++  }
++  I18N.language=Language::ZH_CN;SETTINGS.keyboardLayouts=0;
++  assert(keyboard_layouts::enabled()==keyboard_layouts::bitAt(0));
++  printf("PASS ten_layouts_real_output=%d real_alternate=%d and_language_masks\n",outputs,alternates);
++
++  KeyboardEntryActivity edit;edit.text="a中b";edit.cursorPos=4;
++  assert(edit.backspaceUtf8() && edit.text=="ab" && edit.cursorPos==1);
++  edit.insertUtf8("é");assert(edit.text=="aéb" && edit.cursorPos==3);
++  edit.maxLength=edit.text.size();edit.insertUtf8("я");assert(edit.text=="aéb");
++  assert(edit.utf8Prev(edit.text,3)==1 && edit.utf8Next(edit.text,1)==3);
++  puts("PASS UTF8_middle_insert_delete_helpers_only_not_hardware_cursor_entry");
++
++  KeyboardEntryActivity commit;commit.text="dummy";commit.cursorPos=5;assert(commit.select(fui::QWERTY_KEY_ENTER));
++  commit.mappedInput={true,false,true,false,1};commit.confirmFrame();
++  commit.mappedInput={false,true,false,false,200};commit.confirmFrame();
++  commit.confirmFrame();assert(commit.completes==1 && commit.completed=="dummy");
++  KeyboardEntryActivity cancel;cancel.mappedInput.back=true;cancel.confirmFrame();assert(cancel.cancels==1 && cancel.completes==0);
++  puts("PASS submit_once_cancel_without_submit_owner_callbacks_only");
++
++  KeyboardEntryActivity password;password.inputType=InputType::Password;password.text="xé";password.cursorPos=3;
++  const auto display=password.displayTextForCurrentState();
++  assert(display=="*é" && display.size()==password.text.size());
++  password.passwordVisible=true;assert(password.displayTextForCurrentState()=="xé");
++  password.passwordVisible=false;password.cursorMode=true;assert(password.displayTextForCurrentState()=="***");
++
++  KeyboardEntryActivity touch,hold;touch.activateValue(fui::QWERTY_KEY_SHIFT,false);hold.activateValue(fui::QWERTY_KEY_SHIFT,false);
++  assert(touch.select('A') && hold.select('A'));touch.activateValue('A',true);hold.clearAllOrAltOnSelected();
++  assert(touch.text==hold.text);
++
++  assert(!touch.shifted && !hold.shifted);
++  hold.activateValue('b',false);assert(hold.text=="ab");
++  KeyboardEntryActivity sym;sym.symbols=true;sym.shifted=true;
++  const auto& page=sym.currentLayout();
++  for(int r=0;r<page.rowCount;++r)for(int c=0;c<page.rows[r].count;++c){
++    const auto& key=page.rows[r].keys[c];if(!fui::keyboardAltOutputFor(page,key.value))continue;
++    sym.selRow=r;sym.selCol=c;sym.clearAllOrAltOnSelected();assert(sym.shifted && sym.symbols);
++  }
++  puts("PASS Shift_releases_after_letter_alternate_preserves_symbol_page");
++
++  // Preserve display byte offsets, reveal a complete UTF-8 code point, never
++  // alter stored text. Includes start/end/middle positions and empty input.
++  for(const std::string& text:{std::string(),std::string("aé中я😀z")}){
++    KeyboardEntryActivity p;p.inputType=InputType::Password;p.text=text;
++    for(size_t pos=0;;pos=p.utf8Next(text,pos)){
++      p.cursorPos=pos;p.cursorMode=false;
++      std::string expected(text.size(),'*');const size_t prev=p.utf8Prev(text,pos);
++      expected.replace(prev,pos-prev,text,prev,pos-prev);
++      assert(p.displayTextForCurrentState()==expected && p.text==text);
++      p.cursorMode=true;assert(p.displayTextForCurrentState()==std::string(text.size(),'*'));
++      p.passwordVisible=true;assert(p.displayTextForCurrentState()==text);p.passwordVisible=false;
++      if(pos==text.size())break;
++    }
++  }
++  puts("PASS UTF8_password_mask_reveals_complete_character_preserves_offsets_and_storage");
++#if FREEINK_DEVICE_PAPERDIY
++  // Actual production input owner and continued-Confirm path. The entering
++  // release cannot immediately exit editing or submit the selected OK.
++  for(const auto type:{InputType::Text,InputType::Url,InputType::Password}){
++    KeyboardEntryActivity edit;edit.inputType=type;edit.text="aé中я😀z";edit.cursorPos=edit.text.size();
++    assert(edit.select(fui::QWERTY_KEY_ENTER));
++    edit.mappedInput={true,false,true,false,1};edit.confirmFrame();
++    edit.mappedInput={false,false,true,false,501};edit.confirmFrame();
++    assert(edit.cursorMode && edit.confirmLongHandled && edit.completes==0);
++    for(int n=0;n<5;++n)edit.confirmFrame();
++    edit.mappedInput={false,true,false,false,700};edit.confirmFrame();
++    assert(edit.cursorMode && !edit.confirmHeld && !edit.confirmLongHandled && edit.completes==0);
++    const size_t end=edit.text.size();
++    edit.mappedInput={};edit.mappedInput.down=true;edit.confirmFrame();assert(edit.cursorPos==end);
++    edit.mappedInput={};edit.mappedInput.up=true;edit.confirmFrame();assert(edit.cursorPos==end-1);
++    edit.confirmFrame();assert(edit.cursorPos==8); // Move over the complete four-byte emoji.
++    edit.mappedInput={};edit.mappedInput.down=true;edit.confirmFrame();assert(edit.cursorPos==12);
++    edit.mappedInput={};edit.mappedInput.up=true;
++    for(int n=0;n<10;++n){edit.confirmFrame();}
++    assert(edit.cursorPos==0);
++    edit.mappedInput={};edit.mappedInput.down=true;edit.confirmFrame();assert(edit.cursorPos==1);
++    edit.mappedInput={true,false,true,false,1};edit.confirmFrame();
++    edit.mappedInput={false,false,true,false,2000};edit.confirmFrame();assert(edit.cursorMode);
++    edit.mappedInput={false,true,false,false,2000};edit.confirmFrame();
++    assert(!edit.cursorMode && edit.completes==0 && !edit.passwordVisible);
++    assert(edit.select('b'));edit.mappedInput={true,false,true,false,1};edit.confirmFrame();
++    edit.mappedInput={false,true,false,false,100};edit.confirmFrame();assert(edit.text=="abé中я😀z");
++    assert(edit.select(fui::QWERTY_KEY_BACKSPACE));edit.mappedInput={true,false,true,false,1};edit.confirmFrame();
++    edit.mappedInput={false,true,false,false,100};edit.confirmFrame();assert(edit.text=="aé中я😀z");
++    // A returns from editing, then a fresh A cancels the entire entry.
++    edit.cursorMode=true;edit.mappedInput={};edit.mappedInput.back=true;edit.confirmFrame();
++    assert(!edit.cursorMode && edit.cancels==0);edit.confirmFrame();assert(edit.cancels==1);
++  }
++  puts("PASS cursor_entry_release_barrier_UTF8_left_right_boundaries_return_insert_cancel");
++#else
++  KeyboardEntryActivity original;assert(original.select(fui::QWERTY_KEY_ENTER));
++  assert(!original.clearAllOrAltOnSelected() && !original.cursorMode);
++  puts("PASS other_boards_no_new_OK_hold_cursor_entry");
++#endif
++
++}
++'''
++
++ui = repo / 'freeink-sdk/libs/ui/FreeInkUI'
++with tempfile.TemporaryDirectory(prefix='keyboard-editing-', dir=os.environ.get('TMPDIR')) as temp:
++    temp = Path(temp)
++    cpp = temp / 'check.cpp'
++    cpp.write_text(code, encoding='utf-8')
++    sdk_object = temp / 'FreeInkUI.o'
++    subprocess.run(['c++', '-std=c++20', '-w', '-I' + str(ui / 'include'), '-c',
++                    str(ui / 'src/FreeInkUI.cpp'), '-o', str(sdk_object)], check=True)
++    for diy in (1, 0):
++        binary = temp / f'check{diy}'
++        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', '-Werror', f'-DFREEINK_DEVICE_PAPERDIY={diy}',
++                        '-I' + str(ui / 'include'), '-I' + str(repo / 'src'),
++                        str(cpp), str(sdk_object), '-o', str(binary)], check=True)
++        subprocess.run([str(binary)], check=True)
 diff --git a/test/test_paperdiy_menu_navigation.py b/test/test_paperdiy_menu_navigation.py
 new file mode 100644
 --- /dev/null
