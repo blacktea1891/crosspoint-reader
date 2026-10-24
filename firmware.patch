@@ -719,7 +719,7 @@ index 8acbec08..d7a40234 100644
        // Recent's Back is owned by the shared home Standby handler.
        if (currentTab == MainTab::Recent) return false;
 diff --git a/src/activities/UiListActivity.cpp b/src/activities/UiListActivity.cpp
-index f25550ec..1091c503 100644
+index f25550ec..85afc636 100644
 --- a/src/activities/UiListActivity.cpp
 +++ b/src/activities/UiListActivity.cpp
 @@ -253,6 +253,24 @@ bool UiListActivity::handleListSwipe(const MappedInputManager::SwipeDir swipe, c
@@ -755,7 +755,21 @@ index f25550ec..1091c503 100644
  }
  
  void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, const int selectionOffset) {
-@@ -325,7 +344,12 @@ void UiListActivity::drawChrome() {
+@@ -278,7 +297,13 @@ void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, c
+     props.toggleWidth = 28;
+     props.toggleHeight = 28;
+   }
++  // On two-key screens a clipped font/setting name looks like damaged text.
++  // Keep complete rows; ListNav follows the selection onto the next viewport.
++#if FREEINK_DEVICE_PAPERDIY
++  props.partialTrailingRow = false;
++#else
+   props.partialTrailingRow = true;
++#endif
+   auto& n = activeNav();
+   const int prevTop = n.top;
+   const bool trusted = n.trusts(listCount());
+@@ -325,7 +350,12 @@ void UiListActivity::drawChrome() {
  }
  
  void UiListActivity::drawFooter() {
@@ -788,7 +802,7 @@ index bf54a0fb..265f43b8 100644
    // buttons, gestures). Runs before the base button handling.
    virtual bool handleCustomInput() { return false; }
 diff --git a/src/activities/UiTabListActivity.cpp b/src/activities/UiTabListActivity.cpp
-index 0e899226..139207dd 100644
+index 0e899226..6d155e4b 100644
 --- a/src/activities/UiTabListActivity.cpp
 +++ b/src/activities/UiTabListActivity.cpp
 @@ -63,6 +63,15 @@ void UiTabListActivity::moveRingTo(const int ringIndex) {
@@ -807,7 +821,7 @@ index 0e899226..139207dd 100644
    if (mappedInput.wasPressed(MappedInputManager::Button::NavNext) ||
        mappedInput.wasPressed(MappedInputManager::Button::NavPrevious)) {
      navigationStartedOnTabs = ringPos() == 0;
-@@ -88,6 +97,7 @@ void UiTabListActivity::navigateButtons() {
+@@ -88,9 +97,13 @@ void UiTabListActivity::navigateButtons() {
      }
      stepTab(-1);
    });
@@ -815,6 +829,12 @@ index 0e899226..139207dd 100644
  }
  
  void UiTabListActivity::syncTabListViewport(UiScreen& screen, fui::ListProps& props) {
++#if FREEINK_DEVICE_PAPERDIY
++  props.partialTrailingRow = false;
++#endif
+   if (UITheme::getInstance().hasMainTabs()) {
+     const int count = listCount();
+     auto& n = activeNav();
 diff --git a/src/activities/apps/AppsMenuActivity.cpp b/src/activities/apps/AppsMenuActivity.cpp
 index d91bf0c5..de71895a 100644
 --- a/src/activities/apps/AppsMenuActivity.cpp
@@ -2254,7 +2274,7 @@ index cd8e9ca0..5bda4ddb 100644
                           input.wasPressed(MappedInputManager::Button::NavNext),
                           input.wasReleased(MappedInputManager::Button::Confirm),
 diff --git a/src/components/UITheme.cpp b/src/components/UITheme.cpp
-index 82b18d67..4a0b9180 100644
+index 82b18d67..e6ec49fc 100644
 --- a/src/components/UITheme.cpp
 +++ b/src/components/UITheme.cpp
 @@ -143,6 +143,10 @@ const ThemeMetrics& UITheme::getMetrics() const {
@@ -2268,8 +2288,37 @@ index 82b18d67..4a0b9180 100644
      if (!showButtonHints) {
        adjustedMetrics.buttonHintsHeight = 0;
      }
+@@ -185,13 +189,18 @@ Rect UITheme::getContentArea(const GfxRenderer& renderer) {
+ 
+ // Content area excluding the button hints.
+ Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButtonHints, bool hasSideButtonHints) {
+-  auto orientation = renderer.getOrientation();
++  (void)hasSideButtonHints;
+   Rect safeArea = getContentArea(renderer);
+-#if !FREEINK_DEVICE_READPICO
++#if !FREEINK_DEVICE_READPICO && !FREEINK_DEVICE_PAPERDIY
+   if (currentType == CrossPointSettings::UI_THEME::INX)
+     safeArea = Rect{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
+ #endif
+   const ThemeMetrics metrics = getMetrics();
++#if FREEINK_DEVICE_PAPERDIY
++  // Text hints share the page's logical bottom in every reading orientation.
++  if (hasFrontButtonHints) safeArea.height = std::max(0, safeArea.height - metrics.buttonHintsHeight);
++#else
++  const auto orientation = renderer.getOrientation();
+   switch (orientation) {
+     case GfxRenderer::Orientation::Portrait:
+       if (hasFrontButtonHints) {
+@@ -216,6 +225,7 @@ Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButton
+       }
+       break;
+   }
++#endif
+   return safeArea;
+ }
+ 
 diff --git a/src/components/themes/BaseTheme.cpp b/src/components/themes/BaseTheme.cpp
-index c52ca879..a3f5d207 100644
+index c52ca879..30ff3153 100644
 --- a/src/components/themes/BaseTheme.cpp
 +++ b/src/components/themes/BaseTheme.cpp
 @@ -6,9 +6,12 @@
@@ -2320,16 +2369,16 @@ index c52ca879..a3f5d207 100644
 +void BaseTheme::drawPaperDiyButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
 +                                        const char* btn4) const {
 +  if (!buttonHintsVisible()) return;
-+  const auto original = renderer.getOrientation();
-+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
-+  const int width = renderer.getScreenWidth();
++  // Text instructions follow the page, rather than a fixed physical key edge.
++  const Rect area = UITheme::getContentArea(renderer);
++  const int width = area.width;
 +  const auto& metrics = UITheme::getInstance().getMetrics();
-+  const int height = std::min(metrics.buttonHintsHeight, renderer.getScreenHeight());
-+  const int top = renderer.getScreenHeight() - height;
++  const int height = std::min(metrics.buttonHintsHeight, area.height);
++  const int top = area.y + area.height - height;
 +  const bool grayscale = renderer.getRenderMode() != GfxRenderer::BW && !renderer.grayPlanesAreAbsolute();
 +  {
-+    const GfxRenderer::ClipScope clip(renderer, 0, top, width, height);
-+    renderer.fillRect(0, top, width, height, grayscale);
++    const GfxRenderer::ClipScope clip(renderer, area.x, top, width, height);
++    renderer.fillRect(area.x, top, width, height, grayscale);
 +    if (!grayscale) {
 +      const char* labels[] = {btn1, btn2, btn3, btn4};
 +      const auto labelForRole = [&](const uint8_t hardware) { return hardware < 4 ? labels[hardware] : ""; };
@@ -2339,19 +2388,19 @@ index c52ca879..a3f5d207 100644
 +      const int cellWidth = std::max(0, (width - 2 * padding - columnGap) / 2);
 +      const int cellHeight = std::max(0, (height - rowGap - 8) / 2);
 +      const int y = top + 4;
-+      const int right = padding + cellWidth + columnGap;
++      const int left = area.x + padding;
++      const int right = left + cellWidth + columnGap;
 +      const int font = uiScaleSpec().smallFontId;
-+      drawPaperDiyHintCell(renderer, font, Rect{padding, y, cellWidth, cellHeight}, StrId::STR_PAPERDIY_TAP_A,
++      drawPaperDiyHintCell(renderer, font, Rect{left, y, cellWidth, cellHeight}, StrId::STR_PAPERDIY_TAP_A,
 +                           labelForRole(SETTINGS.frontButtonLeft));
 +      drawPaperDiyHintCell(renderer, font, Rect{right, y, cellWidth, cellHeight}, StrId::STR_PAPERDIY_TAP_B,
 +                           labelForRole(SETTINGS.frontButtonRight));
-+      drawPaperDiyHintCell(renderer, font, Rect{padding, y + cellHeight + rowGap, cellWidth, cellHeight},
++      drawPaperDiyHintCell(renderer, font, Rect{left, y + cellHeight + rowGap, cellWidth, cellHeight},
 +                           StrId::STR_PAPERDIY_HOLD_A, labelForRole(SETTINGS.frontButtonBack));
 +      drawPaperDiyHintCell(renderer, font, Rect{right, y + cellHeight + rowGap, cellWidth, cellHeight},
 +                           StrId::STR_PAPERDIY_HOLD_B, labelForRole(SETTINGS.frontButtonConfirm));
 +    }
 +  }
-+  renderer.setOrientation(original);
 +}
 +#endif
 +
@@ -2510,7 +2559,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..39dea003 100644
+index b0b49733..9a1f68fc 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -2522,7 +2571,7 @@ index b0b49733..39dea003 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,10 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,11 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -2533,6 +2582,7 @@ index b0b49733..39dea003 100644
 +add_test(NAME PaperDiyDisplayDriver COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_driver.py)
 +add_test(NAME PaperDiyFileSettings COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_file_settings.py)
 +add_test(NAME PaperDiyFooterHints COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_hints.py)
++add_test(NAME PaperDiyFooterGeometry COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_geometry.py)
 diff --git a/test/inx_navigation/test_theme_menus.py b/test/inx_navigation/test_theme_menus.py
 index c8de42d8..15aff39f 100644
 --- a/test/inx_navigation/test_theme_menus.py
@@ -2727,7 +2777,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,351 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -3053,6 +3103,32 @@ new file mode 100644
 +keyboard and theme-menu checks cover preserved input and the renamed setting.
 +Only PaperDIY firmware is built; checks do not establish device readability,
 +row spacing, night/landscape quality or hardware acceptance. User self-flashes.
++
++## Footer orientation and complete-row follow-up, 2026-10-24
++
++Hardware feedback found two remaining display issues: an inverted reader menu
++had an upside-down footer on the opposite edge, and a font list exposed half
++of its last row. PaperDIY text instructions now draw in the current page
++orientation and inside its viewable insets. getScreenSafeArea reserves their
++height at that same logical bottom for all four orientations; INX retains the
++PaperDIY viewable insets too. Other boards retain the physical-key-edge policy.
++
++PaperDIY's ordinary and tabbed list owners disable partialTrailingRow. The
++existing SDK viewport measurement and selection-follow mechanism pages to full
++rows, so a final font remains reachable rather than being hidden permanently.
++This changes the partial-row preview policy across shared PaperDIY lists, not
++font assets, preview rendering, key gestures or saved settings. Other boards'
++preview policy is retained.
++
++Regression coverage compiles the production footer and safe-area methods for
++four orientations, visible/hidden hints, Classic/INX and viewable insets, plus
++retained non-PaperDIY/ReadPico edge policies. Production list owners run against
++the actual SDK renderer and ListNav for 35 entries forwards and backwards in
++plain/tabbed and INX/non-INX modes: PaperDIY paints complete rows, all entries
++remain reachable, and the other-board control still paints a clipped preview.
++No SDK logic, heap allocation, activity state, framebuffer, task, input update
++or refresh call is added. Hardware orientation and long-list acceptance are
++still required; the agent does not flash the user's device.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -3847,11 +3923,231 @@ new file mode 100644
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/test/test_paperdiy_footer_geometry.py b/test/test_paperdiy_footer_geometry.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_footer_geometry.py
+@@ -0,0 +1,215 @@
++"""Exercise oriented footer/content geometry and complete-row list paging."""
++from pathlib import Path
++import sys
++import tempfile
++import unittest
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT / "scripts/tests"))
++from test_reading_ui_regressions import method, run_cpp
++sys.path.insert(0, str(ROOT / "test/inx_navigation"))
++from test_theme_menus import run
++
++
++def body(path, name):
++    return method((ROOT / path).read_text(encoding="utf-8"), name)
++
++
++class FooterGeometryTest(unittest.TestCase):
++    def test_four_orientations_share_footer_and_content_bounds(self):
++        code = r'''
++#include <algorithm>
++#include <array>
++#include <cassert>
++#include <cstdint>
++#include <vector>
++struct Rect {int x,y,width,height;};
++enum class StrId {STR_PAPERDIY_TAP_A,STR_PAPERDIY_TAP_B,STR_PAPERDIY_HOLD_A,STR_PAPERDIY_HOLD_B};
++[[maybe_unused]] struct {uint8_t frontButtonBack=0,frontButtonConfirm=1,frontButtonLeft=2,frontButtonRight=3;} SETTINGS;
++struct GfxRenderer {
++  enum class Orientation {Portrait,LandscapeClockwise,PortraitInverted,LandscapeCounterClockwise};
++  enum {BW,Gray};
++  Orientation orientation=Orientation::Portrait;
++  bool landscape()const{return orientation==Orientation::LandscapeClockwise || orientation==Orientation::LandscapeCounterClockwise;}
++  int getScreenWidth()const{return landscape()?960:540;}
++  int getScreenHeight()const{return landscape()?540:960;}
++  Orientation getOrientation()const{return orientation;}
++  void setOrientation(Orientation v){orientation=v;}
++  void getOrientedViewableTRBL(int* t,int* r,int* b,int* l)const{*t=8;*r=12;*b=18;*l=6;}
++  int getRenderMode()const{return BW;}bool grayPlanesAreAbsolute()const{return false;}
++  struct Cell{Rect rect;Orientation orientation;};
++  mutable std::vector<Cell> cells;
++  std::array<int,4> clip={1,2,500,900};
++  Rect filled{};
++  struct ClipScope {
++    GfxRenderer& r;std::array<int,4> old;
++    ClipScope(GfxRenderer& v,int x,int y,int w,int h):r(v),old(v.clip){r.clip={x,y,w,h};}
++    ~ClipScope(){r.clip=old;}
++  };
++  void fillRect(int x,int y,int w,int h,bool){filled={x,y,w,h};}
++};
++struct ThemeMetrics{int buttonHintsHeight=88,contentSidePadding=32;};
++struct CrossPointSettings{enum UI_THEME{CLASSIC,INX};};
++struct UITheme {
++  CrossPointSettings::UI_THEME currentType=CrossPointSettings::CLASSIC;
++  bool visible=true;
++  ThemeMetrics metrics;
++  static UITheme& getInstance(){static UITheme u;return u;}
++  const ThemeMetrics& getMetrics(){metrics.buttonHintsHeight=visible?88:0;return metrics;}
++  static Rect getContentArea(const GfxRenderer&);
++  Rect getScreenSafeArea(const GfxRenderer&,bool,bool);
++};
++struct BaseTheme {
++  bool buttonHintsVisible()const{return UITheme::getInstance().visible;}
++  void drawPaperDiyButtonHints(GfxRenderer&,const char*,const char*,const char*,const char*)const;
++};
++struct Scale{int smallFontId=1;};Scale uiScaleSpec(){return {};}
++void drawPaperDiyHintCell(const GfxRenderer& r,int,Rect cell,StrId,const char*){r.cells.push_back({cell,r.orientation});}
++'''
++        code += body("src/components/UITheme.cpp", "Rect UITheme::getContentArea(")
++        code += body("src/components/UITheme.cpp", "Rect UITheme::getScreenSafeArea(")
++        code += '\n#if FREEINK_DEVICE_PAPERDIY\n'
++        code += body("src/components/themes/BaseTheme.cpp", "void BaseTheme::drawPaperDiyButtonHints(")
++        code += '\n#endif\n'
++        code += r'''
++int main(){
++  auto& ui=UITheme::getInstance();
++  for(auto theme:{CrossPointSettings::CLASSIC,CrossPointSettings::INX}) {
++    ui.currentType=theme;
++    for(auto o:{GfxRenderer::Orientation::Portrait,GfxRenderer::Orientation::LandscapeClockwise,
++                GfxRenderer::Orientation::PortraitInverted,GfxRenderer::Orientation::LandscapeCounterClockwise}) {
++      for(bool visible:{false,true})for(bool footer:{false,true}){
++        ui.visible=visible;GfxRenderer r;r.orientation=o;
++        Rect area=UITheme::getContentArea(r);const int hint=visible?88:0;
++        Rect expected=area;
++#if FREEINK_DEVICE_PAPERDIY
++        if(footer)expected.height-=hint;
++#else
++#if !FREEINK_DEVICE_READPICO
++        if(theme==CrossPointSettings::INX)expected={0,0,r.getScreenWidth(),r.getScreenHeight()};
++#endif
++        if(footer){
++          switch(o){
++            case GfxRenderer::Orientation::Portrait:expected.height-=hint;break;
++            case GfxRenderer::Orientation::PortraitInverted:expected.y+=hint;expected.height-=hint;break;
++            case GfxRenderer::Orientation::LandscapeClockwise:expected.x+=hint;expected.width-=hint;break;
++            case GfxRenderer::Orientation::LandscapeCounterClockwise:expected.width-=hint;break;
++          }
++        }
++#endif
++        const Rect safe=ui.getScreenSafeArea(r,footer,true);
++        assert(safe.x==expected.x && safe.y==expected.y && safe.width==expected.width && safe.height==expected.height);
++#if FREEINK_DEVICE_PAPERDIY
++        if(!footer)continue;
++        const auto originalClip=r.clip;
++        BaseTheme{}.drawPaperDiyButtonHints(r,"Back","Select","Up","Down");
++        assert(r.orientation==o && r.clip==originalClip);
++        if(!visible){assert(r.cells.empty());continue;}
++        assert(r.cells.size()==4 && r.filled.y==safe.y+safe.height);
++        assert(r.filled.x==area.x && r.filled.width==area.width && r.filled.y+r.filled.height==area.y+area.height);
++        for(const auto& cell:r.cells){
++          assert(cell.orientation==o);
++          assert(cell.rect.x>=area.x && cell.rect.x+cell.rect.width<=area.x+area.width);
++          assert(cell.rect.y>=safe.y+safe.height && cell.rect.y+cell.rect.height<=area.y+area.height);
++        }
++#endif
++      }
++    }
++  }
++}
++'''
++        for paperdiy, pico in ((1, 0), (0, 0), (0, 1)):
++            run_cpp(code, defines=(f"FREEINK_DEVICE_PAPERDIY={paperdiy}", f"FREEINK_DEVICE_READPICO={pico}"))
++
++    def test_whole_font_rows_remain_reachable_in_plain_and_tab_lists(self):
++        code = r'''
++#include <FreeInkApp.h>
++#include <algorithm>
++#include <cassert>
++#include <cstring>
++#include <string>
++#include <vector>
++namespace fui=freeink::ui;
++class Capture:public fui::DrawTarget {
++ public:
++  fui::Rect clip{0,0,320,150};
++  int partial=0;
++  std::vector<std::string> labels;
++  fui::Size measureText(fui::FontId,const char* s,fui::TextStyle)const override{return {static_cast<int16_t>(strlen(s)*10),24};}
++  int16_t lineHeight(fui::FontId)const override{return 24;}
++  void fill(fui::Rect,fui::Paint,uint8_t,uint8_t)override{}
++  void stroke(fui::Rect,fui::Paint,uint8_t,uint8_t,uint8_t)override{}
++  void line(fui::Point,fui::Point,uint8_t,fui::Paint)override{}
++  void triangle(fui::Point,fui::Point,fui::Point,fui::Paint)override{}
++  void text(fui::Rect r,const char* text,fui::TextStyle)override{
++    labels.emplace_back(text);
++    if(r.y<clip.y || r.bottom()>clip.bottom())++partial;
++  }
++  void bitmap(fui::Rect,fui::BitmapRef,fui::BitmapMode,fui::Paint,fui::Rotation)override{}
++  fui::Rect clipRect()const override{return clip;}
++  bool setClipRect(fui::Rect v)override{clip=v;return true;}
++};
++struct CrossPointSettings{static constexpr int INX=5;int uiTheme=0;}SETTINGS;
++struct Metrics{int listRowHeight=64;};
++struct UITheme{
++  static UITheme& getInstance(){static UITheme u;return u;}
++  bool hasMainTabs()const{return SETTINGS.uiTheme==CrossPointSettings::INX;}
++  const Metrics& getMetrics()const{static Metrics m;return m;}
++};
++using UiScreen=fui::Screen<64>;
++struct UiListActivity{
++  fui::ListNav nav;
++  struct{bool hasTouch()const{return false;}}mappedInput;
++  fui::ListNav& activeNav(){return nav;}
++  bool usesUpstreamStyle()const{return false;}
++  bool defersContentSelection()const{return false;}
++  bool showMainTabContentSelection()const{return true;}
++  int listCount()const{return 35;}
++  void syncListViewport(UiScreen&,fui::ListProps&,int selectionOffset=0);
++};
++struct UiTabListActivity:UiListActivity{void syncTabListViewport(UiScreen&,fui::ListProps&);};
++'''
++        code += body("src/activities/UiListActivity.cpp", "void UiListActivity::syncListViewport(")
++        code += body("src/activities/UiTabListActivity.cpp", "void UiTabListActivity::syncTabListViewport(")
++        code += r'''
++int main(){
++  std::string names[35];fui::ListItem items[35]{};
++  for(int i=0;i<35;++i){names[i]="font"+std::to_string(i);items[i].label=names[i].c_str();items[i].actionValue=i;}
++  for(bool inx:{false,true})for(bool tabbed:{false,true}){
++    SETTINGS.uiTheme=inx?CrossPointSettings::INX:0;
++    UiTabListActivity page;int offset=tabbed?1:0;
++    for(int step=0;step<70;++step){
++      int selection=step<35?step:69-step;page.nav.requestSelection(selection+offset);
++      bool complete=false;
++      for(int attempt=0;attempt<3;++attempt){
++        Capture draw;fui::DeviceContext device;device.width=320;device.height=150;device.hasTouch=false;
++        fui::InputSnapshot input;fui::InteractionBuffer<64> interactions;
++        fui::Frame<64> frame(draw,device,input,interactions);
++        auto theme=fui::themeTokensForLineHeight(24);UiScreen screen(frame,theme);
++        fui::ListProps props;props.items=items;props.count=35;props.rowHeight=64;props.action=1;
++        props.partialTrailingRow=true;props.labelText=theme.bodyText;
++        if(tabbed)page.syncTabListViewport(screen,props);else page.syncListViewport(screen,props);
++        assert(props.partialTrailingRow==!FREEINK_DEVICE_PAPERDIY);
++        screen.list(props);
++#if FREEINK_DEVICE_PAPERDIY
++        assert(draw.partial==0);
++#else
++        if(step==0)assert(draw.partial>0);  // Retained other-board preview reproduces clipped text.
++#endif
++        complete=std::find(draw.labels.begin(),draw.labels.end(),names[selection])!=draw.labels.end();
++        if(complete)break;
++        page.nav.consumeRebuildNeeded();
++      }
++      assert(complete);  // Last font remains reachable; no row is silently skipped.
++    }
++  }
++}
++'''
++        with tempfile.TemporaryDirectory(prefix="footer-list-") as directory:
++            for paperdiy in (False, True):
++                code_for_board = ('#define FREEINK_DEVICE_PAPERDIY 0\n' if not paperdiy else '') + code
++                run(code_for_board, Path(directory), sdk=True, paperdiy=paperdiy)
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/test/test_paperdiy_footer_hints.py b/test/test_paperdiy_footer_hints.py
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_footer_hints.py
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,200 @@
 +"""Compile production footer drawing, label mapping and reserved-height policy."""
 +from pathlib import Path
 +import json
@@ -3920,6 +4216,7 @@ new file mode 100644
 +struct UITheme {
 +  ThemeMetrics metrics;
 +  static UITheme& getInstance(){static UITheme t;return t;}
++  static Rect getContentArea(const GfxRenderer& r){return {0,0,r.getScreenWidth(),r.getScreenHeight()};}
 +  const ThemeMetrics& getMetrics(){return metrics;}
 +};
 +struct {int smallFontId=1;} scale;
