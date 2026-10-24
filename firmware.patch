@@ -2248,7 +2248,7 @@ index 6c529a60..ba76ef0a 100644
    void adjustValue(int delta);
    // Absolute value (clamped), from slider drag/tap positions.
 diff --git a/src/activities/util/KeyboardEntryActivity.cpp b/src/activities/util/KeyboardEntryActivity.cpp
-index 4ee0e3c3..062a8ede 100644
+index 4ee0e3c3..bd1a23b5 100644
 --- a/src/activities/util/KeyboardEntryActivity.cpp
 +++ b/src/activities/util/KeyboardEntryActivity.cpp
 @@ -151,6 +151,9 @@ void KeyboardEntryActivity::onEnter() {
@@ -2540,7 +2540,7 @@ index 4ee0e3c3..062a8ede 100644
    const int tipsHeight = (tipCount + 1) * tipsLh;
    // Reserve cursor instructions even for an empty field; passwords need a second row.
    const int tipsTop = underlineBottom + (cursorMode ? (isPassword ? 2 : 1) * tipsLh : 0);
-@@ -1029,6 +1127,22 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+@@ -1029,6 +1127,23 @@ void KeyboardEntryActivity::render(RenderLock&&) {
      int y = tipsTop + (kbRect.y - tipsTop - tipsHeight) / 2;
      drawTip(tr(STR_KB_TIPS), y);
      y += tipsLh;
@@ -2557,13 +2557,14 @@ index 4ee0e3c3..062a8ede 100644
 +      drawTip(tr(STR_KB_PAPERDIY_ALTERNATE), y);
 +      y += tipsLh;
 +      const auto* key = selectedKey();
-+      drawTip(tr(key && key->value == fui::QWERTY_KEY_ENTER ? STR_KB_PAPERDIY_CURSOR_EDIT : STR_KB_PAPERDIY_CLEAR), y);
++      drawTip(key && key->value == fui::QWERTY_KEY_ENTER ? tr(STR_KB_PAPERDIY_CURSOR_EDIT) : tr(STR_KB_PAPERDIY_CLEAR),
++              y);
 +    }
 +#else
      if (!cursorMode) {
        drawTip(tr(STR_KB_HINT_EDIT_ENTRY), y);
        y += tipsLh;
-@@ -1064,6 +1178,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+@@ -1064,6 +1179,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
          drawTip(tr(STR_KB_HINT_CLEAR_TEXT), y);
        }
      }
@@ -2571,14 +2572,14 @@ index 4ee0e3c3..062a8ede 100644
    }
  
    // The FreeInkUI keyboard draws the keys and registers their hit rects into
-@@ -1116,10 +1231,18 @@ void KeyboardEntryActivity::render(RenderLock&&) {
+@@ -1116,10 +1232,18 @@ void KeyboardEntryActivity::render(RenderLock&&) {
    interactions.publish();
    interactionsReady = true;
  
 +#if FREEINK_DEVICE_PAPERDIY
-+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(cursorMode ? STR_KB_PAPERDIY_KEYBOARD : STR_SELECT),
-+                                            tr(cursorMode ? STR_DIR_LEFT : STR_DIR_RIGHT),
-+                                            tr(cursorMode ? STR_DIR_RIGHT : STR_DIR_DOWN));
++  const auto labels = mappedInput.mapLabels(tr(STR_BACK), cursorMode ? tr(STR_KB_PAPERDIY_KEYBOARD) : tr(STR_SELECT),
++                                            cursorMode ? tr(STR_DIR_LEFT) : tr(STR_DIR_RIGHT),
++                                            cursorMode ? tr(STR_DIR_RIGHT) : tr(STR_DIR_DOWN));
 +#else
    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
 +#endif
@@ -5025,7 +5026,7 @@ diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboar
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_keyboard_buttons.py
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,351 @@
 +"""Drive the production keyboard button handling with PaperDIY two-key frames.
 +
 +Frames follow the SDK DigitalTwoButton classifier (see
@@ -5065,18 +5066,21 @@ new file mode 100644
 +                   "  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}")
 +hints_after = "  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);\n"
 +hints = between(hints_after, "  renderer.displayBuffer();")[len(hints_after):]
++hint_labels = between("#if FREEINK_DEVICE_PAPERDIY\n  const auto labels", hints_after)
 +tips = between("  // Reserve the Clear Text row", "  // The FreeInkUI keyboard draws")
 +tip_keys = ["STR_KB_TIPS", "STR_KB_PAPERDIY_MOVE", "STR_KB_PAPERDIY_CONFIRM",
 +            "STR_KB_PAPERDIY_ALTERNATE", "STR_KB_PAPERDIY_CLEAR", "STR_KB_PAPERDIY_CURSOR_EDIT",
-+            "STR_KB_PAPERDIY_CURSOR_MOVE", "STR_KB_PAPERDIY_CURSOR_RETURN"]
++            "STR_KB_PAPERDIY_CURSOR_MOVE", "STR_KB_PAPERDIY_CURSOR_RETURN",
++            "STR_BACK", "STR_SELECT", "STR_DIR_LEFT", "STR_DIR_RIGHT", "STR_DIR_DOWN", "STR_KB_PAPERDIY_KEYBOARD"]
 +tip_tables = []
 +for language in ("english", "chinese"):
 +    translations = (ROOT / f"lib/I18n/translations/{language}.yaml").read_text(encoding="utf-8")
 +    values = [json.loads(re.search(r"^" + key + r": (.*)$", translations, re.M).group(1)) for key in tip_keys]
 +    tip_tables.append("{" + ",".join(json.dumps(value, ensure_ascii=False) for value in values) + "}")
-+tip_declarations = "enum StrId {" + ",".join(tip_keys) + "};\n"
-+tip_declarations += "const char* tipStrings[2][8]={" + ",".join(tip_tables) + "};\n"
-+tip_declarations += "int tipLanguage=0; const char* tr(StrId key) {return tipStrings[tipLanguage][key];}\n"
++tip_declarations = "enum class StrId {" + ",".join(tip_keys) + "};\n"
++tip_declarations += f"const char* tipStrings[2][{len(tip_keys)}]={{" + ",".join(tip_tables) + "};\n"
++tip_declarations += "int tipLanguage=0; const char* lookup(StrId key) {return tipStrings[tipLanguage][static_cast<int>(key)];}\n"
++tip_declarations += "#define tr(id) lookup(StrId::id)\n"
 +confirm_back = between("  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm))",
 +                       "  if (hintVisible && !cursorMode")
 +
@@ -5106,6 +5110,10 @@ new file mode 100644
 +  bool isPressed(Button b) const { return held & bit(b); }
 +  unsigned long getHeldTime() const { return heldMs; }
 +  bool hasTouch() const { return false; }
++  struct Labels {const char *btn1,*btn2,*btn3,*btn4;};
++  Labels mapLabels(const char* back,const char* confirm,const char* left,const char* right) const {
++    return {back,confirm,left,right};
++  }
 +};
 +using B = MappedInputManager::Button;
 +// GfxRenderer::drawTextRotated90CW maps glyph right to screen up (screenY = base - glyphX),
@@ -5116,6 +5124,10 @@ new file mode 100644
 +}
 +struct Gui {
 +  std::string top, bottom;
++  std::string holdA,holdB,tapA,tapB;
++  void drawButtonHints(int,const char* a,const char* b,const char* c,const char* d) {
++    holdA=a;holdB=b;tapA=c;tapB=d;
++  }
 +  void drawSideButtonHints(int, const char* t, const char* b) { top = t; bottom = b; }
 +} GUI;
 +const int renderer = 0;
@@ -5169,6 +5181,8 @@ new file mode 100644
 +#endif
 +  }
 +  void drawHints() {
++    @HINT_LABELS@
++    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 +    @HINTS@
 +  }
 +};
@@ -5339,13 +5353,17 @@ new file mode 100644
 +  kb.drawHints();
 +#if FREEINK_DEVICE_PAPERDIY
 +  assert(GUI.top.empty() && GUI.bottom.empty());  // Two-row footer owns the A/B hints.
++  assert(GUI.tapA==tr(STR_DIR_RIGHT) && GUI.tapB==tr(STR_DIR_DOWN));
++  kb.cursorMode=true; kb.drawHints();
++  assert(GUI.tapA==tr(STR_DIR_LEFT) && GUI.tapB==tr(STR_DIR_RIGHT));
++  assert(GUI.holdB==tr(STR_KB_PAPERDIY_KEYBOARD));
 +#else
 +  assert(GUI.top == ">" && GUI.bottom == "<");
 +#endif
 +  std::puts("ok");
 +}
 +'''
-+for name, code in {"TIP_DECLARATIONS": tip_declarations, "TIPS": tips, "DECLARATIONS": declarations, "VERTICAL": vertical, "HINTS": hints, "CONFIRM_BACK": confirm_back,
++for name, code in {"TIP_DECLARATIONS": tip_declarations, "TIPS": tips, "DECLARATIONS": declarations, "VERTICAL": vertical, "HINTS": hints, "HINT_LABELS": hint_labels, "CONFIRM_BACK": confirm_back,
 +                   "METHODS": "\n".join(methods)}.items():
 +    harness = harness.replace("@" + name + "@", code)
 +
