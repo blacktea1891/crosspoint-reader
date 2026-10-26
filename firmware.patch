@@ -3231,7 +3231,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,533 @@
+@@ -0,0 +1,560 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -3738,7 +3738,8 @@ new file mode 100644
 +
 +Ordinary combined gray commits use GL16 with a held diagonal: all unchanged
 +old/new gray pairs receive no drive; other transition entries and phase-time data
-+are retained from the upstream panel waveform. HALF/FULL gray commits retain
++were retained from the upstream panel waveform in accepted build 40355609213.
++The narrow phase-alignment candidate below changes one B/W pair. HALF/FULL gray commits retain
 +GC16 cleaning, so the reader's configured clean cycle is effective again. This
 +does not promise an optically flash-free transition: changed pixels still use a
 +physical multi-phase waveform. UI keeps its accepted 30-update clean budget.
@@ -3764,6 +3765,32 @@ new file mode 100644
 +and the existing Read Pico transaction/resource tests. Software success is not
 +hardware acceptance. After self-flashing, verify first/next/previous EPUB pages,
 +menu return, more than one cleaning interval, image pages, UI navigation and sleep.
++
++## Narrow B/W phase alignment, 2026-10-27 (hardware pending)
++
++Based on accepted build 40355609213, shift only GL16 0 -> 15 (pure black to
++white) from scans 15..29 to scans 0..14. This overlaps the erase of old black
++text with the unchanged 15 -> 0 write of new black text. Keep all 15 erase
++actions, the 30-scan table, held diagonals, every gray-related transition and
++the source time array. No additional static or heap buffer is introduced.
++
++This is restricted to the PaperDIY LCD_CAM TextTurn waveform. LCD_CAM scans
++with its configured pixel clock and line geometry and does not read
++RenderContext.frame_time; the source per-phase time values are not uniform.
++The shift must not be reused on a backend that applies those values as hold
++durations without a separate timing review. No claim of equal optical pulse
++response, lower power or reduced flicker is made before hardware testing.
++
++DU UI updates, full-coverage GC16 HALF/FULL, the 30-completed-UI-update budget,
++reading clean counters, real gray history, power, CKV, VCOM and other devices
++are unchanged. Do not introduce EDC LUTs or gray remapping in this candidate.
++
++Check all 7680 cells, preserved pulse count, reinitialization, and rejection of
++an isolated unaligned negative control. Keep the existing 63 gray transactions,
++90 UI-style updates and masked-HALF negative control. For self-flash acceptance,
++compare the same EPUB page pair/font against 40355609213: first/next/previous,
++menu return and cumulative residuals, then confirm the periodic UI clean and
++sleep/wake behavior remain intact. The user self-flashes; no device access.
 +
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
@@ -4336,8 +4363,8 @@ diff --git a/test/test_paperdiy_epdiy_waveform.py b/test/test_paperdiy_epdiy_wav
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_epdiy_waveform.py
-@@ -0,0 +1,42 @@
-+"""Compile the real ED047TC1 tables; verify held diagonal and unchanged other drive."""
+@@ -0,0 +1,70 @@
++"""Compile real tables; verify the narrow B/W phase shift and preserved gray drive."""
 +from pathlib import Path
 +import os
 +import subprocess
@@ -4367,9 +4394,23 @@ new file mode 100644
 +    for(int to=0;to<16;++to) for(int from=0;from<16;++from) {
 +      int offset=(phase*16+to)*4+from/4,shift=6-2*(from%4);
 +      int a=(held->luts[offset]>>shift)&3,b=(original->luts[offset]>>shift)&3;
-+      assert(a==(to==from?0:b));
++      assert(a==(to==from?0:(to==15 && from==0?(phase<15?2:0):b)));
 +    }
 +  }
++  int oldErase=0,newErase=0,changed=0;
++  for(int phase=0;phase<held->phases;++phase) {
++    int old=(original->luts[(phase*16+15)*4]>>6)&3;
++    int now=(held->luts[(phase*16+15)*4]>>6)&3;
++    oldErase+=(old==2); newErase+=(now==2); changed+=(old!=now);
++    assert((held->luts[phase*64+3]&3)==(phase<15?1:0));
++  }
++  assert(oldErase==15 && newErase==15 && changed==30);
++  // Initialization must rebuild the same table without cumulative shifts.
++  const unsigned char* bytes=held->luts;
++  unsigned char snapshot[1920];
++  for(int i=0;i<1920;++i) snapshot[i]=bytes[i];
++  paperdiy_waveform_init();
++  for(int i=0;i<1920;++i) assert(snapshot[i]==bytes[i]);
 +}
 +''')
 +    binary = work / 'check'
@@ -4378,7 +4419,21 @@ new file mode 100644
 +                    '-I' + str(LCD / 'src/paperdiy'), str(work / 'check.c'),
 +                    str(LCD / 'src/paperdiy/PaperDiyWaveform.c'), '-o', str(binary)], check=True)
 +    subprocess.run([str(binary)], check=True)
-+print('PASS real PaperDIY waveform: all 7680 transitions, held diagonal, unchanged phase times')
++    # The previous accepted table must fail the alignment assertion. Remove only
++    # this experiment from an isolated copy, never from the production file.
++    source = (LCD / 'src/paperdiy/PaperDiyWaveform.c').read_text(encoding='utf-8')
++    start = source.index('  // Narrow experiment on the pinned 30-phase table:')
++    end = source.index('  text_phases.phases = 30;', start)
++    negative = work / 'unaligned.c'
++    negative.write_text(source[:start] + source[end:], encoding='utf-8')
++    negative_binary = work / 'unaligned'
++    subprocess.run(['cc', '-std=c11', '-DFREEINK_DEVICE_PAPERDIY=1',
++                    '-I' + str(work), '-I' + str(LCD / 'src/epdiy/include'),
++                    '-I' + str(LCD / 'src/paperdiy'), str(work / 'check.c'), str(negative),
++                    '-o', str(negative_binary)], check=True)
++    result = subprocess.run([str(negative_binary)], capture_output=True, text=True)
++    assert result.returncode != 0 and 'a==' in result.stderr, result.stderr
++print('PASS real PaperDIY waveform: 7680 cells, one aligned B/W pair, all gray pairs preserved, idempotent init; unaligned negative control rejected')
 diff --git a/test/test_paperdiy_epub_aa.py b/test/test_paperdiy_epub_aa.py
 new file mode 100644
 --- /dev/null
