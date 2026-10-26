@@ -1656,6 +1656,24 @@ index 370d39c1..e5f9aaca 100644
    // Shared tail of row activation and the options menu's Open entry.
    void openBookByPath(const std::string& path);
    void promptRebuildIndex();
+diff --git a/src/activities/reader/EpubReaderActivity.cpp b/src/activities/reader/EpubReaderActivity.cpp
+index 7b2a9366..62f0379f 100644
+--- a/src/activities/reader/EpubReaderActivity.cpp
++++ b/src/activities/reader/EpubReaderActivity.cpp
+@@ -3366,7 +3366,12 @@ void EpubReaderActivity::closeOverlayToPage() {
+     discardOverlayPage();
+   }
+   if (renderer.grayscaleReplacesFrame()) pagesUntilFullRefresh = 1;
+-  if (!xteinkClassPanel() && overlayPageStored) {
++  bool canRestoreBwSnapshot = !xteinkClassPanel();
++#if FREEINK_DEVICE_PAPERDIY
++  // A B/W snapshot cannot restore the gray edges of the visible reader page.
++  if (SETTINGS.textAntiAliasing && !renderer.isInverted()) canRestoreBwSnapshot = false;
++#endif
++  if (canRestoreBwSnapshot && overlayPageStored) {
+     RenderLock lock;  // the render task shares the framebuffer
+     settleOverlayRefresh();
+     // No baseline resync: the glass shows the chrome, and erasing it needs
 diff --git a/src/activities/reader/EpubReaderPercentSelectionActivity.cpp b/src/activities/reader/EpubReaderPercentSelectionActivity.cpp
 index ead6b341..260b4ffc 100644
 --- a/src/activities/reader/EpubReaderPercentSelectionActivity.cpp
@@ -2975,7 +2993,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..c921b6e7 100644
+index b0b49733..bcb086fb 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -2987,7 +3005,7 @@ index b0b49733..c921b6e7 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,13 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,14 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -2997,6 +3015,7 @@ index b0b49733..c921b6e7 100644
 +  add_test(NAME PaperDiyKeyboardEditing COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_editing.py)
 +add_test(NAME PaperDiyMenuNavigation COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_menu_navigation.py)
 +add_test(NAME PaperDiyDisplayDriver COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_driver.py)
++add_test(NAME PaperDiyEpubAa COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_epub_aa.py)
 +add_test(NAME PaperDiyFileSettings COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_file_settings.py)
 +add_test(NAME PaperDiyFooterHints COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_hints.py)
 +add_test(NAME PaperDiyFooterGeometry COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_geometry.py)
@@ -3205,7 +3224,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,481 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -3649,6 +3668,44 @@ new file mode 100644
 +masking and Shift state, alongside retained navigation/geometry checks. These
 +checks do not establish hardware acceptance; the user self-flashes. Multilingual
 +hardware testing remains deferred by the user; the 30-update policy is unchanged.
++
++## EPUB AA consistency, 2026-10-26
++
++User reports: entering EPUB first shows B/W, then a second update within roughly
++one second smooths the text. Subsequent turns lose smooth edges; menu return
++does not recover them. Leaving and reopening on the same page restores them.
++TXT has not been tested. This supersedes the narrower menu-only hypothesis.
++
++The exact M5GFX dependency d8074bbac8b75d22149d128d71d55b6a34dbc808
++quantizes every gray pixel to 0/15 in Panel_EPD::_draw_pixels under epd_fast /
++epd_fastest; its fast LUT has no mid-tone drives. Our first HALF base selected
++epd_text, while ordinary FAST bases made the following AA push use epd_fast.
++The old host mock copied ideal gray pixels and missed this conversion.
++
++PaperDIY now advertises Combined OverlayMasks. Its grayscale-base call stages
++the B/W composition in the existing PSRAM canvas without pushing it; gray-plane
++completion pushes that combined frame once using the stock epd_text bank. No
++waveform table is changed. A three-byte pending/fallback/turn-off record lets
++cleanup commit the requested B/W fallback on scratch-allocation failure, or
++cancel with nullptr. A normal B/W frame, begin or sleep clears the staged flag.
++Post-AA cleanup does not repaint the panel. Non-PaperDIY LGFX routing stays as
++before. Gray images following a separate B/W base also use a gray-capable bank
++on PaperDIY; they are not claimed to be single-push text pages.
++
++Closing the EPUB toolbar on PaperDIY re-renders when text AA is on and the page
++is not inverted, rather than displaying its B/W snapshot. AA-off/night B/W
++snapshot behavior stays available. The common reader cadence helper and 30-UI-
++update cleanup budget are unchanged; this does not promise identical optical
++flash or latency, since a stock gray-capable waveform differs from B/W FAST.
++
++No additional frame, plane, task or production heap allocation is introduced.
++The strengthened driver test runs the unchanged pinned M5GFX pixel-conversion
++body, covering real gray preservation, repeated first/next/back/clean turns,
++one combined submission, fallback, cancellation and unchanged B/W UI routing.
++The EPUB test compiles production close/routing/cadence methods and the SDK
++descriptor, including AA-off/night/background/image and other-board cases.
++These are software contracts, not an optical waveform simulation or physical
++acceptance. The user self-flashes; do not access the device for this candidate.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -3799,6 +3856,100 @@ new file mode 100644
 +};
 +
 +static_assert(sizeof(PaperDiyKeyboardNavigation) == 4);
+diff --git a/test/fixtures/m5gfx_paperdiy_draw_pixels.h b/test/fixtures/m5gfx_paperdiy_draw_pixels.h
+new file mode 100644
+--- /dev/null
++++ b/test/fixtures/m5gfx_paperdiy_draw_pixels.h
+@@ -0,0 +1,89 @@
++/*----------------------------------------------------------------------------/
++  Lovyan GFX - Graphics library for embedded devices.
++
++Original Source:
++ https://github.com/lovyan03/LovyanGFX/
++
++Licence:
++ [FreeBSD](https://github.com/lovyan03/LovyanGFX/blob/master/license.txt)
++
++Author:
++ [lovyan03](https://twitter.com/lovyan03)
++
++Contributors:
++ [ciniml](https://github.com/ciniml)
++ [mongonta0716](https://github.com/mongonta0716)
++ [tobozo](https://github.com/tobozo)
++/----------------------------------------------------------------------------*/
++
++// Test fixture: unchanged _draw_pixels body from M5GFX d8074bbac8b75d22149d128d71d55b6a34dbc808
++// https://github.com/m5stack/M5GFX/blob/d8074bbac8b75d22149d128d71d55b6a34dbc808/src/lgfx/v1/platforms/esp32/Panel_EPD.cpp
++// clang-format off
++  void Panel_EPD::_draw_pixels(uint_fast16_t x, uint_fast16_t y, const grayscale_t* values, size_t len)
++  {
++    int ax = 1;
++    int ay = 0;
++    uint_fast8_t r = _internal_rotation;
++    if (r)
++    {
++      if (r & 1) { std::swap(x, y); std::swap(ax, ay); }
++      uint_fast8_t rb = 1 << r;
++      if (rb & 0b11000110) { x = _cfg.panel_width  - 1 - x; ax = -ax; } // case 1:2:6:7:
++      if (rb & 0b10011100) { y = _cfg.panel_height - 1 - y; ay = -ay; } // case 2:3:4:7:
++    }
++
++    const int w = _cfg.panel_width;
++    const bool fast = _epd_mode == epd_mode_t::epd_fast || _epd_mode == epd_mode_t::epd_fastest;
++
++    uint8_t* readbuf = (uint8_t*)alloca(len * sizeof(grayscale_t));
++    int16_t btbl[4];
++    int yy = (y&3)<<2; int xx = x&3;
++    for (int i = 0; i < 4; ++i) {
++      btbl[i] = Bayer[yy + xx];
++      xx = (xx + ax) & 0x03;
++      yy = (yy + (ay << 2)) & 0x0C;
++    }
++    if (fast) {
++      for (size_t i = 0; i < len; ++i) {
++        int sum = values[i].get();
++        int b = btbl[i & 3];
++        readbuf[i] = (sum + (b << 4)) < 248 ? 0 : 0xF;
++      }
++    } else {
++      for (size_t i = 0; i < len; ++i) {
++        int v = values[i].get();
++        int b = btbl[i & 3];
++        readbuf[i] = std::min(15, std::max(0, (v + b - 8) >> 4));
++      }
++    }
++    auto buf = _buf;
++
++    if (ax) {
++      buf += y * ((w + 1) >> 1);
++      uint_fast8_t shift = (x & 1) ? 0 : 4;
++      for (size_t i = 0; i < len; ++i) {
++        uint_fast8_t value = readbuf[i] << shift;
++        buf[x >> 1] = (buf[x >> 1] & (0xF0 >> shift)) | value;
++        x += ax;
++        shift = 4 - shift;
++      }
++    } else {
++      int add =             (ay * ((w + 1) >> 1));
++      int idx = (x  >> 1) + ( y * ((w + 1) >> 1));
++      if (x & 1) {
++        for (size_t i = 0; i < len; ++i) {
++          uint_fast8_t value = readbuf[i];
++          buf[idx] = (buf[idx] & 0xF0) | value;
++          idx += add;
++        }
++      } else {
++        for (size_t i = 0; i < len; ++i) {
++          uint_fast8_t value = readbuf[i];
++          buf[idx] = (buf[idx] & 0x0F) | (value << 4);
++          idx += add;
++        }
++      }
++    }
++  }
++
++
 diff --git a/test/test_paperdiy_board_tag.py b/test/test_paperdiy_board_tag.py
 new file mode 100644
 --- /dev/null
@@ -3847,8 +3998,8 @@ diff --git a/test/test_paperdiy_display_driver.py b/test/test_paperdiy_display_d
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_display_driver.py
-@@ -0,0 +1,202 @@
-+"""Verify the restored complete LGFX driver; UI cadence is tested at the HAL."""
+@@ -0,0 +1,274 @@
++"""Exercise LGFX requests through the pinned M5GFX pixel converter, not ideal gray copies."""
 +from pathlib import Path
 +import os
 +import subprocess
@@ -3876,8 +4027,17 @@ new file mode 100644
 +#include <cassert>
 +#include <cstdint>
 +#include <vector>
++#ifdef _WIN32
++#include <malloc.h>
++#ifndef alloca
++#define alloca _alloca
++#endif
++#else
++#include <alloca.h>
++#endif
 +namespace lgfx {
 +namespace epd_mode { enum epd_mode_t { epd_quality, epd_text, epd_fast, epd_fastest }; }
++using epd_mode_t=epd_mode::epd_mode_t;
 +namespace color_depth_t { enum type { grayscale_8bit }; }
 +struct Rect { int x,y,w,h; };
 +struct Record { Rect rect; epd_mode::epd_mode_t mode; };
@@ -3885,6 +4045,8 @@ new file mode 100644
 +inline std::vector<uint8_t> glass;
 +inline bool missingCanvas = false;
 +inline int sleeps = 0;
++static constexpr uint8_t Bayer[16] = {0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5};
++struct grayscale_t {uint8_t value=0; int get() const {return value;}};
 +// This boundary checks requests and ideal target pixels, not optical waveforms.
 +struct Bus_EPD {
 +  struct Config { int bus_speed=0, pin_data[8]{},pin_pwr=0,pin_sph=0,pin_spv=0,pin_oe=0,pin_le=0,pin_cl=0,pin_ckv=0,bus_width=0; };
@@ -3905,12 +4067,19 @@ new file mode 100644
 +    size_t lut_quality_step=0,lut_text_step=0,lut_fast_step=0,lut_fastest_step=0;
 +  } detail;
 +  struct Config { int memory_width=0,panel_width=0,memory_height=0,panel_height=0,offset_rotation=0,offset_x=0,offset_y=0; bool bus_shared=false; } value;
++  Config& _cfg=value;
++  uint8_t _internal_rotation=0;
++  epd_mode::epd_mode_t _epd_mode=epd_mode::epd_fast;
++  std::vector<uint8_t> pixels;
++  uint8_t* _buf=nullptr;
++  void _draw_pixels(uint_fast16_t x,uint_fast16_t y,const grayscale_t* values,size_t len);
 +  void setBus(Bus_EPD*) {}
 +  Detail config_detail() { return detail; }
 +  void config_detail(Detail c) { detail=c; }
 +  Config config() { return value; }
 +  void config(Config c) { value=c; }
 +};
++#include "m5gfx_paperdiy_draw_pixels.h"
 +class LGFX_Device {
 +public:
 +  Panel_EPD* panel=nullptr;
@@ -3919,11 +4088,12 @@ new file mode 100644
 +  Rect clip{},dirty{};
 +  std::vector<uint8_t> buffer;
 +  void setPanel(Panel_EPD* p) { panel=p; }
-+  bool init() { buffer.assign(width()*height(),255); glass=buffer; return true; }
++  bool init() { buffer.assign(width()*height(),255); glass=buffer;
++    panel->pixels.assign((width()*height()+1)/2,255);panel->_buf=panel->pixels.data();return true; }
 +  int width() const { return panel->value.panel_width; }
 +  int height() const { return panel->value.panel_height; }
 +  void setRotation(int r) { assert(r==0); }
-+  void setEpdMode(epd_mode::epd_mode_t m) { mode=m; }
++  void setEpdMode(epd_mode::epd_mode_t m) { mode=m; panel->_epd_mode=m; }
 +  void waitDisplay() {}
 +  void sleep() { ++sleeps; }
 +  uint32_t color888(int r,int,int) { return r; }
@@ -3941,7 +4111,15 @@ new file mode 100644
 +  void transfer(const uint8_t* source) {
 +    const Rect r=clipped?clip:Rect{0,0,width(),height()};
 +    assert(r.x>=0 && r.y>=0 && r.x+r.w<=width() && r.y+r.h<=height());
-+    for(int y=r.y;y<r.y+r.h;++y) for(int x=r.x;x<r.x+r.w;++x) buffer[y*width()+x]=source[y*width()+x];
++    std::vector<grayscale_t> row(r.w);
++    for(int y=r.y;y<r.y+r.h;++y) {
++      for(int x=0;x<r.w;++x) row[x].value=source[y*width()+r.x+x];
++      panel->_draw_pixels(r.x,y,row.data(),row.size());
++      for(int x=r.x;x<r.x+r.w;++x) {
++        const auto packed=panel->_buf[(y*width()+x)/2];
++        buffer[y*width()+x]=17*((x&1)?(packed&15):(packed>>4));
++      }
++    }
 +    mark(r);
 +    if(autoDisplay) display();
 +  }
@@ -4008,19 +4186,63 @@ new file mode 100644
 +    lgfx::updates.clear(); d.displayWithContext(bus,frame.data(),nullptr,RefreshMode::Fast,false,context);
 +    checkFrame(lgfx::epd_mode::epd_fast);
 +  }
-+  // AA base and overlay use the same bank; no experimental UI maintenance.
++  // Base + AA: PaperDIY must stage the base and use a gray-capable bank once.
 +  frame.fill(255);
++  lgfx::updates.clear();
 +  d.displayGrayscaleBaseWithContext(bus,frame.data(),RefreshMode::Fast,false,RefreshContext::TextOnlyAntiAliasing);
++#if FREEINK_DEVICE_PAPERDIY
++  assert(lgfx::updates.empty());
++  assert(d.combinesGrayscaleBase());
++#else
++  assert(lgfx::updates.size()==1 && !d.combinesGrayscaleBase());
++#endif
 +  std::array<uint8_t,W*H/8> plane{}; plane[100]=128;
 +  d.copyGrayscaleLsb(bus,plane.data()); d.copyGrayscaleMsb(bus,plane.data());
 +  lgfx::updates.clear(); d.displayGray(bus,nullptr,false,nullptr,false);
-+  assert(lgfx::updates.size()==1 && lgfx::updates[0].mode==lgfx::epd_mode::epd_fast && lgfx::glass[800]==0x55);
++  assert(lgfx::updates.size()==1);
++#if FREEINK_DEVICE_PAPERDIY
++  assert(lgfx::updates[0].mode==lgfx::epd_mode::epd_text && lgfx::glass[800]>0 && lgfx::glass[800]<255);
++#else
++  assert(lgfx::updates[0].mode==lgfx::epd_mode::epd_fast && (lgfx::glass[800]==0 || lgfx::glass[800]==255));
++#endif
 +  assert(!d.hasPendingMaintenance());
++  const auto glassAfterAA=lgfx::glass;
++  lgfx::updates.clear();
 +  d.cleanupGrayscaleBuffers(bus,frame.data());
++  assert(lgfx::updates.empty() && lgfx::glass==glassAfterAA);
++#if FREEINK_DEVICE_PAPERDIY
++  // Repeat first/next/back/current pages; every commit retains actual mid-tones.
++  for(auto mode:{RefreshMode::Half,RefreshMode::Fast,RefreshMode::Fast,RefreshMode::Full}) {
++    lgfx::updates.clear();
++    d.displayGrayscaleBaseWithContext(bus,frame.data(),mode,false,RefreshContext::TextOnlyAntiAliasing);
++    assert(lgfx::updates.empty());
++    d.copyGrayscaleLsb(bus,plane.data());d.copyGrayscaleMsb(bus,plane.data());
++    d.displayGray(bus,nullptr,false,nullptr,false);
++    assert(lgfx::updates.size()==1 && lgfx::glass[800]>0 && lgfx::glass[800]<255);
++    d.cleanupGrayscaleBuffers(bus,frame.data());assert(lgfx::updates.size()==1);
++  }
++  // Allocation-failure fallback flushes exactly the requested B/W mode once.
++  for(auto mode:{RefreshMode::Half,RefreshMode::Fast,RefreshMode::Full}) {
++    lgfx::updates.clear();
++    d.displayGrayscaleBase(bus,frame.data(),mode,true);
++    assert(lgfx::updates.empty());d.cleanupGrayscaleBuffers(bus,frame.data());
++    checkFrame(mode==RefreshMode::Fast?lgfx::epd_mode::epd_fast:lgfx::epd_mode::epd_text);
++    d.cleanupGrayscaleBuffers(bus,frame.data());assert(lgfx::updates.size()==1);
++  }
++  // Cancellation, a new UI frame and sleep never flush a stale staged page.
++  lgfx::updates.clear();d.displayGrayscaleBase(bus,frame.data(),RefreshMode::Fast,false);
++  d.cleanupGrayscaleBuffers(bus,nullptr);assert(lgfx::updates.empty());
++  d.cleanupGrayscaleBuffers(bus,frame.data());assert(lgfx::updates.empty());
++  d.displayGrayscaleBase(bus,frame.data(),RefreshMode::Half,false);
++  d.display(bus,frame.data(),nullptr,RefreshMode::Fast,false);checkFrame(lgfx::epd_mode::epd_fast);
++  d.cleanupGrayscaleBuffers(bus,frame.data());assert(lgfx::updates.size()==1);
++  lgfx::updates.clear();d.displayGrayscaleBase(bus,frame.data(),RefreshMode::Half,false);
++  d.deepSleep(bus);d.cleanupGrayscaleBuffers(bus,frame.data());assert(lgfx::updates.empty());
++#endif
 +  lgfx::updates.clear(); d.display(bus,frame.data(),nullptr,RefreshMode::Full,true);
 +  checkFrame(lgfx::epd_mode::epd_text); assert(lgfx::sleeps>0);
 +  d.deepSleep(bus); assert(!d.hasPendingMaintenance());
-+  std::puts("production LGFX original full-frame modes, grayscale and no UI maintenance passed");
++  std::puts("production LGFX + pinned M5GFX quantization: UI cadence, gray commits/fallback/cancel and other-board routing passed");
 +}
 +'''
 +
@@ -4036,6 +4258,7 @@ new file mode 100644
 +        "lgfx/v1/platforms/esp32/Bus_EPD.h": '#pragma once\n#include "M5GFX.h"\n',
 +        "lgfx/v1/platforms/esp32/Panel_EPD.hpp": '#pragma once\n#include "M5GFX.h"\n',
 +        "check.cpp": TEST,
++        "m5gfx_paperdiy_draw_pixels.h": (ROOT / "test/fixtures/m5gfx_paperdiy_draw_pixels.h").read_text(encoding="utf-8"),
 +    }
 +    for name, code in files.items():
 +        target = work / name
@@ -4049,7 +4272,142 @@ new file mode 100644
 +                        "-I" + str(work), "-I" + str(DISPLAY / "include"), "-I" + str(DISPLAY / "src"),
 +                        str(work / "check.cpp"), "-o", str(binary)], check=True)
 +        subprocess.run([str(binary)], check=True)
-+print("Original whole-frame LGFX modes, no idle UI cleanup, AA bank and non-DIY routing passed")
++print("PaperDIY combined text-AA retains real M5GFX mid-tones; B/W/UI policy and other boards preserved")
+diff --git a/test/test_paperdiy_epub_aa.py b/test/test_paperdiy_epub_aa.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_epub_aa.py
+@@ -0,0 +1,130 @@
++"""Production EPUB AA routing/menu close with the real SDK capability descriptor."""
++from pathlib import Path
++import os
++import re
++import subprocess
++import sys
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT / 'scripts/tests'))
++from test_reading_ui_regressions import method
++
++reader = Path(os.environ.get('PAPERDIY_AA_READER_SOURCE', ROOT / 'src/activities/reader/EpubReaderActivity.cpp')).read_text(encoding='utf-8')
++driver = (ROOT / 'freeink-sdk/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.h').read_text(encoding='utf-8')
++capability = re.search(r'  GrayscaleCapabilities grayscaleCapabilities\(.*?\n  }', driver, re.S).group().replace(' override', '')
++close = method(reader, 'void EpubReaderActivity::closeOverlayToPage(')
++combined = re.search(r'  const bool combinedGrayscaleBase =.*?;', reader, re.S).group()
++code = r'''
++#include <cassert>
++#include <cstdio>
++#include <initializer_list>
++#include <GrayscaleCapabilities.h>
++#include <RefreshContext.h>
++using namespace freeink;
++using DisplayRefreshContext=RefreshContext;
++struct HalDisplay {enum RefreshMode {FULL_REFRESH,HALF_REFRESH,FAST_REFRESH};};
++struct {bool textAntiAliasing=true,readingBackgroundEnabled=false;int getRefreshFrequency() const{return 30;}} SETTINGS;
++struct DriverPolicy {
++@CAPABILITY@
++};
++struct GfxRenderer {
++  bool inverted=false;
++  int restored=0;
++  mutable int bw=0,bases=0;
++  mutable HalDisplay::RefreshMode lastMode=HalDisplay::FAST_REFRESH;
++  mutable DisplayRefreshContext lastContext=DisplayRefreshContext::Normal;
++  bool isInverted() const{return inverted;}
++  bool grayscaleReplacesFrame() const{return false;}
++  bool supportsTextOnlyCombinedBase() const{return !inverted && DriverPolicy{}.grayscaleCapabilities().base==GrayscaleBase::Combined;}
++  bool supportsReaderTransitions() const{return false;}
++  bool canUseTextTransition() const{return false;}
++  void waitRefreshComplete() const{}
++  void restoreBwBuffer(bool resync){assert(!resync);++restored;}
++  void displayBuffer(HalDisplay::RefreshMode mode,DisplayRefreshContext ctx=DisplayRefreshContext::Normal) const{
++    ++bw;lastMode=mode;lastContext=ctx;
++  }
++  void displayBufferAsync(HalDisplay::RefreshMode mode,DisplayRefreshContext ctx) const{displayBuffer(mode,ctx);}
++  void displayGrayscaleBase(HalDisplay::RefreshMode mode,DisplayRefreshContext ctx) const{
++    ++bases;lastMode=mode;lastContext=ctx;
++  }
++};
++#include "activities/reader/ReaderRefresh.h"
++bool xteink=false;
++bool xteinkClassPanel(){return xteink;}
++struct RenderLock {RenderLock(){} ~RenderLock(){}};
++struct EpubReaderActivity {
++  GfxRenderer renderer;
++  struct {void resetHomeButtonInput(){}} mappedInput;
++  enum class Overlay {None,Toolbar};Overlay overlay=Overlay::Toolbar;
++  struct {void dismiss(){}} overlayPopup;
++  struct {void reset(){}} toolbarUi;
++  bool imageScalingDirty=false,overlayPageStored=true,pageHasImages=false;
++  int pagesUntilFullRefresh=2,redraw=0,settled=0,discarded=0;
++  void settleOverlayRefresh(){++settled;}
++  void discardOverlayPage(){++discarded;overlayPageStored=false;}
++  void requestUpdate(){++redraw;}
++  bool combinedBase() const{
++    const auto grayscale=DriverPolicy{}.grayscaleCapabilities();
++    const bool needsAnyGrayscale=!renderer.isInverted() && SETTINGS.textAntiAliasing;
++@COMBINED@
++    return combinedGrayscaleBase;
++  }
++  void closeOverlayToPage();
++};
++@CLOSE@
++int main(){
++  // The real capability feeds the real EPUB condition and shared cadence helper.
++  for(bool aa:{false,true})for(bool night:{false,true})for(bool images:{false,true}){
++    SETTINGS.textAntiAliasing=aa;EpubReaderActivity p;p.renderer.inverted=night;p.pageHasImages=images;
++#if FREEINK_DEVICE_PAPERDIY
++    assert(p.combinedBase()==(aa && !night && !images));
++#else
++    assert(!p.combinedBase());
++#endif
++    SETTINGS.readingBackgroundEnabled=true;assert(!p.combinedBase());SETTINGS.readingBackgroundEnabled=false;
++  }
++  SETTINGS.textAntiAliasing=true;
++  for(int initial:{0,1,2,30})for(bool manual:{false,true}){
++    GfxRenderer renderer;int counter=initial;
++    ReaderUtils::displayBaseWithRefreshCycle(renderer,counter,manual);
++#if FREEINK_DEVICE_PAPERDIY
++    assert(renderer.bases==1 && renderer.bw==0 && renderer.lastContext==RefreshContext::TextOnlyAntiAliasing);
++#else
++    assert(renderer.bases==0 && renderer.bw==1 && renderer.lastContext==RefreshContext::ContinuousReading);
++#endif
++    assert(counter==(initial<=1?30:initial-1));
++    assert(renderer.lastMode==(initial<=1?HalDisplay::HALF_REFRESH:HalDisplay::FAST_REFRESH));
++  }
++  for(bool aa:{false,true})for(bool night:{false,true})for(bool oldPanel:{false,true})for(bool snapshot:{false,true}){
++    SETTINGS.textAntiAliasing=aa;xteink=oldPanel;EpubReaderActivity p;
++    p.renderer.inverted=night;p.overlayPageStored=snapshot;p.closeOverlayToPage();
++    bool expectedRedraw=oldPanel || !snapshot;
++#if FREEINK_DEVICE_PAPERDIY
++    expectedRedraw=expectedRedraw || (aa && !night);
++#endif
++    assert(p.redraw==int(expectedRedraw) && p.renderer.bw==int(!expectedRedraw));
++    assert(p.renderer.restored==int(!expectedRedraw) && !p.overlayPageStored);
++    assert(p.overlay==EpubReaderActivity::Overlay::None && p.pagesUntilFullRefresh==2);
++  }
++  // An image-setting change invalidates even a valid B/W snapshot.
++  SETTINGS.textAntiAliasing=false;xteink=false;EpubReaderActivity changed;changed.imageScalingDirty=true;
++  changed.closeOverlayToPage();assert(changed.redraw==1 && changed.renderer.bw==0 && !changed.imageScalingDirty);
++  puts("PASS production EPUB combined-AA selection, unchanged reading cadence and gray menu return");
++}
++'''
++for name, value in {'CAPABILITY': capability, 'COMBINED': combined, 'CLOSE': close}.items():
++    code = code.replace('@' + name + '@', value)
++with tempfile.TemporaryDirectory(prefix='paperdiy-epub-aa-', dir=os.environ.get('TMPDIR')) as directory:
++    work = Path(directory)
++    (work / 'CrossPointSettings.h').write_text('#pragma once\n')
++    (work / 'GfxRenderer.h').write_text('#pragma once\n')
++    cpp = work / 'check.cpp'
++    cpp.write_text(code, encoding='utf-8')
++    for diy in (1, 0):
++        binary = work / f'check-{diy}'
++        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', '-Werror', f'-DFREEINK_DEVICE_PAPERDIY={diy}',
++                        '-I' + str(work), '-I' + str(ROOT / 'src'),
++                        '-I' + str(ROOT / 'freeink-sdk/libs/display/FreeInkDisplay/include'),
++                        str(cpp), '-o', str(binary)], check=True)
++        subprocess.run([str(binary)], check=True)
 diff --git a/test/test_paperdiy_file_settings.py b/test/test_paperdiy_file_settings.py
 new file mode 100644
 --- /dev/null
