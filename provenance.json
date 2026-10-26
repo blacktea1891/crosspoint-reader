@@ -7,7 +7,7 @@
   "source_commits_created": false,
   "flashing_authorized_for_this_candidate": false,
   "patches": {
-    "firmware.patch": "0346958085dd87000ebd4a4da087f102705b882068d8295a61691b50b4212431",
-    "sdk.patch": "3d240eb242caa8af5c62d094d67c686add32727913e16e9ab677e485f84b55e6"
+    "firmware.patch": "7005cf69886dc75aed4921c2749a11088d0e210eb27a7add6285a20b461506f2",
+    "sdk.patch": "4ececce0468bfa45f63f52e2a164dccf0551c067e615316c16d3c1cb251150ab"
   }
 }

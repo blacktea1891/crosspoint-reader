@@ -269,10 +269,10 @@ index 4d90e713..148e8c37 100644
    // immediately wake the device again), then arms the wake source and sleeps.
    freeink::PowerManager::deepSleepUntilPowerButton();
 diff --git a/platformio.ini b/platformio.ini
-index baacb3e2..e45c0fcb 100644
+index baacb3e2..6e330234 100644
 --- a/platformio.ini
 +++ b/platformio.ini
-@@ -1139,3 +1139,35 @@ build_flags =
+@@ -1139,3 +1139,41 @@ build_flags =
    -DCROSSPOINT_VERSION=\"${crosspoint.version}-lilygo\"
    -DENABLE_SERIAL_LOG
    -DLOG_LEVEL=2
@@ -290,13 +290,19 @@ index baacb3e2..e45c0fcb 100644
 +lib_deps =
 +  ${s3_ble_psram.lib_deps}
 +  BoardPaperDIY=symlink://freeink-sdk/libs/hardware/BoardPaperDIY
-+  https://github.com/m5stack/M5GFX.git#d8074bbac8b75d22149d128d71d55b6a34dbc808
++  EpdiyLcd=symlink://freeink-sdk/libs/display/EpdiyLcd
 +extra_scripts = ${s3_ble_psram.extra_scripts}
 +build_flags =
 +  ${base.build_flags}
 +  ${s3_ble_psram.build_flags}
 +  -flto=auto
 +  -DFREEINK_DEVICE_PAPERDIY=1
++  -DFREEINK_PAPERDIY_EPDIY=1
++  -DFREEINK_EPDIY_LCD_CONFIG=paperDiyEpdiyConfig
++  -I$PROJECT_DIR/freeink-sdk/libs/display/EpdiyLcd/src/epdiy/include
++  -I$PROJECT_DIR/freeink-sdk/libs/display/EpdiyLcd/src/epdiy/src
++  -I$PROJECT_DIR/freeink-sdk/libs/display/EpdiyLcd/src/e0470/include
++  -I$PROJECT_DIR/freeink-sdk/libs/display/EpdiyLcd/src/e0470/waveforms
 +  -DBOARD_HAS_PSRAM
 +  -DUSB_PRODUCT=\"CrossMux-PaperDIY\"
 +  -DUSB_MANUFACTURER=\"CrossMux\"
@@ -2993,7 +2999,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..bcb086fb 100644
+index b0b49733..c61195ea 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -3005,7 +3011,7 @@ index b0b49733..bcb086fb 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,14 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,15 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -3016,6 +3022,7 @@ index b0b49733..bcb086fb 100644
 +add_test(NAME PaperDiyMenuNavigation COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_menu_navigation.py)
 +add_test(NAME PaperDiyDisplayDriver COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_driver.py)
 +add_test(NAME PaperDiyEpubAa COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_epub_aa.py)
++add_test(NAME PaperDiyEpdiyWaveform COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_epdiy_waveform.py)
 +add_test(NAME PaperDiyFileSettings COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_file_settings.py)
 +add_test(NAME PaperDiyFooterHints COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_hints.py)
 +add_test(NAME PaperDiyFooterGeometry COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_geometry.py)
@@ -3224,7 +3231,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,481 @@
+@@ -0,0 +1,523 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -3706,6 +3713,48 @@ new file mode 100644
 +descriptor, including AA-off/night/background/image and other-board cases.
 +These are software contracts, not an optical waveform simulation or physical
 +acceptance. The user self-flashes; do not access the device for this candidate.
++# EPUB gray transition candidate (2026-10-26; hardware acceptance pending)
++
++The PaperDIY environment now selects `FREEINK_PAPERDIY_EPDIY=1` and the existing
++SDK LCD_CAM backend. The previous LGFX source stays available for rollback, but
++is not linked in this environment. Other device environments retain their backend.
++
++PaperDIY supplies its own 960x540, 8-bit wiring, power hooks and ED047TC1 waveform
++from epdiy `d84d26ebebd780c4c9d4218d76fbe2727ee42b47`, the version linked by the
++official M5Stack PaperS3 example. The Read Pico E0470 waveform/calibration is not
++used on PaperDIY. PYG2 and OE/boost/SPV follow the previously working M5GFX rail
++sequence; VCOM is never written. LCD_CAM uses the upstream ED047TC1 20 MHz bus
++and generic S3 line timing. Wiring and timing still require hardware validation.
++
++Ordinary combined gray commits use GL16 with a held diagonal: all unchanged
++old/new gray pairs receive no drive; other transition entries and phase-time data
++are retained from the upstream panel waveform. HALF/FULL gray commits retain
++GC16 cleaning, so the reader's configured clean cycle is effective again. This
++does not promise an optically flash-free transition: changed pixels still use a
++physical multi-phase waveform. UI keeps its accepted 30-update clean budget.
++
++The backend keeps a real previous gray frame and only advances it on successful
++draw. Cleanup does not replace it with the black/white proxy. Cancelled deferred
++pages do not draw; missing grayscale scratch falls back to one black/white frame.
++Draw failure makes the baseline unknown, requiring clean recovery. An 8-bit GPIO
++deinitialization bug was fixed so data[0..7], rather than unassigned data[8..15],
++are released; 16-bit Read Pico behavior is preserved.
++
++Memory is allocated once, checked and released at sleep: the existing highlevel
++front/back/difference buffers total 1,036,800 PSRAM bytes at 960x540; the base plus
++two overlay selectors add 194,400 PSRAM bytes. The 1920-byte held waveform is
++bounded static storage. Previous gray history cannot live in the shared 1 bpp
++buffer, and megabyte frame storage must not be put on the stack/internal heap.
++There is no per-turn allocation in the driver. These allocations are confined
++to the S3 PaperDIY target; shared C3 code does not acquire this memory cost.
++
++Validation includes the real waveform's 7680 cells, production EPUB capability
++selection for both backends, 63 gray transactions with periodic cleans and exact
++old/new baseline tracking, allocation/power/draw failures, cancellation, fallback,
++and the existing Read Pico transaction/resource tests. Software success is not
++hardware acceptance. After self-flashing, verify first/next/previous EPUB pages,
++menu return, more than one cleaning interval, image pages, UI navigation and sleep.
++
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -4273,11 +4322,58 @@ new file mode 100644
 +                        str(work / "check.cpp"), "-o", str(binary)], check=True)
 +        subprocess.run([str(binary)], check=True)
 +print("PaperDIY combined text-AA retains real M5GFX mid-tones; B/W/UI policy and other boards preserved")
+diff --git a/test/test_paperdiy_epdiy_waveform.py b/test/test_paperdiy_epdiy_waveform.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_epdiy_waveform.py
+@@ -0,0 +1,42 @@
++"""Compile the real ED047TC1 tables; verify held diagonal and unchanged other drive."""
++from pathlib import Path
++import os
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++LCD = ROOT / 'freeink-sdk/libs/display/EpdiyLcd'
++with tempfile.TemporaryDirectory(prefix='paperdiy-waveform-', dir=os.environ.get('TMPDIR')) as directory:
++    work = Path(directory)
++    # Only the display descriptor header is substituted. Waveforms are production C.
++    (work / 'epd_display.h').write_text('''#pragma once
++#include <stdint.h>
++#include "epd_waveform.h"
++typedef struct {int width,height;uint8_t bus_width;int bus_speed;const EpdWaveform* default_waveform;} EpdDisplay_t;
++''')
++    (work / 'check.c').write_text('''#include <assert.h>
++#include "PaperDiyWaveform.h"
++int main(void) {
++  paperdiy_waveform_init();
++  assert(PAPERDIY_DISPLAY.width==960 && PAPERDIY_DISPLAY.height==540 && PAPERDIY_DISPLAY.bus_width==8);
++  assert(PAPERDIY_DISPLAY.default_waveform==&epdiy_ED047TC1);
++  const EpdWaveformPhases* original=epdiy_ED047TC1.mode_data[2]->range_data[0];
++  const EpdWaveformPhases* held=PAPERDIY_TEXTTURN_WAVEFORM.mode_data[0]->range_data[0];
++  assert(epdiy_ED047TC1.mode_data[2]->type==5 && held->phases==original->phases);
++  for(int phase=0;phase<held->phases;++phase) {
++    assert(held->phase_times[phase]==original->phase_times[phase]);
++    for(int to=0;to<16;++to) for(int from=0;from<16;++from) {
++      int offset=(phase*16+to)*4+from/4,shift=6-2*(from%4);
++      int a=(held->luts[offset]>>shift)&3,b=(original->luts[offset]>>shift)&3;
++      assert(a==(to==from?0:b));
++    }
++  }
++}
++''')
++    binary = work / 'check'
++    subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-DFREEINK_DEVICE_PAPERDIY=1',
++                    '-I' + str(work), '-I' + str(LCD / 'src/epdiy/include'),
++                    '-I' + str(LCD / 'src/paperdiy'), str(work / 'check.c'),
++                    str(LCD / 'src/paperdiy/PaperDiyWaveform.c'), '-o', str(binary)], check=True)
++    subprocess.run([str(binary)], check=True)
++print('PASS real PaperDIY waveform: all 7680 transitions, held diagonal, unchanged phase times')
 diff --git a/test/test_paperdiy_epub_aa.py b/test/test_paperdiy_epub_aa.py
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_epub_aa.py
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,136 @@
 +"""Production EPUB AA routing/menu close with the real SDK capability descriptor."""
 +from pathlib import Path
 +import os
@@ -4293,6 +4389,11 @@ new file mode 100644
 +reader = Path(os.environ.get('PAPERDIY_AA_READER_SOURCE', ROOT / 'src/activities/reader/EpubReaderActivity.cpp')).read_text(encoding='utf-8')
 +driver = (ROOT / 'freeink-sdk/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.h').read_text(encoding='utf-8')
 +capability = re.search(r'  GrayscaleCapabilities grayscaleCapabilities\(.*?\n  }', driver, re.S).group().replace(' override', '')
++epdiy = (ROOT / 'freeink-sdk/libs/display/FreeInkDisplay/src/driver/EpdiyLcdDriver.cpp').read_text(encoding='utf-8')
++epdiy_capability = method(epdiy, 'EpdiyLcdDriver::grayscaleCapabilities(').replace(
++    'EpdiyLcdDriver::grayscaleCapabilities(GrayscaleMode mode)',
++    'GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode=GrayscaleMode::Overlay)')
++capability = '#if FREEINK_PAPERDIY_EPDIY\n' + epdiy_capability + '\n#else\n' + capability + '\n#endif'
 +close = method(reader, 'void EpubReaderActivity::closeOverlayToPage(')
 +combined = re.search(r'  const bool combinedGrayscaleBase =.*?;', reader, re.S).group()
 +code = r'''
@@ -4358,7 +4459,7 @@ new file mode 100644
 +  for(bool aa:{false,true})for(bool night:{false,true})for(bool images:{false,true}){
 +    SETTINGS.textAntiAliasing=aa;EpubReaderActivity p;p.renderer.inverted=night;p.pageHasImages=images;
 +#if FREEINK_DEVICE_PAPERDIY
-+    assert(p.combinedBase()==(aa && !night && !images));
++    assert(p.combinedBase()==(aa && !night && (FREEINK_PAPERDIY_EPDIY || !images)));
 +#else
 +    assert(!p.combinedBase());
 +#endif
@@ -4401,9 +4502,10 @@ new file mode 100644
 +    (work / 'GfxRenderer.h').write_text('#pragma once\n')
 +    cpp = work / 'check.cpp'
 +    cpp.write_text(code, encoding='utf-8')
-+    for diy in (1, 0):
-+        binary = work / f'check-{diy}'
++    for diy, epdiy in ((1, 0), (1, 1), (0, 0)):
++        binary = work / f'check-{diy}-{epdiy}'
 +        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', '-Werror', f'-DFREEINK_DEVICE_PAPERDIY={diy}',
++                        f'-DFREEINK_PAPERDIY_EPDIY={epdiy}',
 +                        '-I' + str(work), '-I' + str(ROOT / 'src'),
 +                        '-I' + str(ROOT / 'freeink-sdk/libs/display/FreeInkDisplay/include'),
 +                        str(cpp), '-o', str(binary)], check=True)
