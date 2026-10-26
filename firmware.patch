@@ -3231,7 +3231,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,523 @@
+@@ -0,0 +1,533 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -3714,6 +3714,16 @@ new file mode 100644
 +These are software contracts, not an optical waveform simulation or physical
 +acceptance. The user self-flashes; do not access the device for this candidate.
 +# EPUB gray transition candidate (2026-10-26; hardware acceptance pending)
++
++2026-10-27 correction after hardware feedback: ordinary page transitions were
++reported much improved, but boot/sleep transitions showed rectangular bands and
++the 30-update UI clean was not visible. HALF had selected GC16 while retaining
++the dirty-row/column mask. On PaperDIY, both HALF and FULL now force all rows and
++columns, even for an identical frame. FAST/GL16 turns keep their differential
++path. The transaction tests inspect actual scan masks and reject a negative
++control with only this HALF correction removed. This candidate remains pending
++hardware validation; unchanged mode counters alone are insufficient evidence of
++a physical whole-screen clean.
 +
 +The PaperDIY environment now selects `FREEINK_PAPERDIY_EPDIY=1` and the existing
 +SDK LCD_CAM backend. The previous LGFX source stays available for rollback, but

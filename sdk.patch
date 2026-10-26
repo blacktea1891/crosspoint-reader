@@ -1,5 +1,5 @@
 diff --git a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
-index 72f56ea..29852ef 100644
+index 72f56ea..3e115bc 100644
 --- a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 +++ b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 @@ -37,6 +37,9 @@ extern "C" {
@@ -93,16 +93,35 @@ index 72f56ea..29852ef 100644
  }
  
  // 1bpp 页 -> epdiy 4bpp。展开表把调用方的位约定翻成 epdiy 的灰度级；本玻璃实测
-@@ -340,7 +374,7 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
-   // actually skip a pixel.
-   const auto err = mode == EpdiyLcdRefresh::Full ? epd_hl_update_screen_full(&g_hl, drawModeFor(mode), temperature)
-                                                  : epd_hl_update_screen(&g_hl, drawModeFor(mode), temperature);
+@@ -333,14 +367,19 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+   const EpdWaveform* waveform = waveformFor(mode);
+   const bool swapWaveform = waveform != g_hl.waveform;
+   if (swapWaveform) epd_hl_waveform(&g_hl, waveform);
+-  // Full 档要走"所有行列都脏"的整帧路径；其余档位按差分推送——只有差分推送配合
+-  // 全保持的对角线，未变化的像素才真的不被驱动。
+-  // / Full takes the all-lines-and-columns-dirty path; every other profile is pushed
+-  // differentially, and it is only a differential push that lets the held diagonal
+-  // actually skip a pixel.
+-  const auto err = mode == EpdiyLcdRefresh::Full ? epd_hl_update_screen_full(&g_hl, drawModeFor(mode), temperature)
+-                                                 : epd_hl_update_screen(&g_hl, drawModeFor(mode), temperature);
 -  if (swapWaveform) epd_hl_waveform(&g_hl, &E0470_WAVEFORM);
++  // Full (and PaperDIY HALF) cleans all rows/columns. Ordinary turns stay
++  // differential, with a held diagonal so unchanged gray pixels are not driven.
++  bool wholeScreenClean = mode == EpdiyLcdRefresh::Full;
++#if FREEINK_DEVICE_PAPERDIY
++  // HALF is the UI's 30th clean and the sleep/startup image's clean. GC16 must
++  // drive all rows/columns, including unchanged white. A differential mask only
++  // drives their Cartesian intersections, producing visible rectangular bands
++  // and silently turning the periodic whole-screen clean into a local update.
++  wholeScreenClean = wholeScreenClean || mode == EpdiyLcdRefresh::Half;
++#endif
++  const auto err = wholeScreenClean ? epd_hl_update_screen_full(&g_hl, drawModeFor(mode), temperature)
++                                    : epd_hl_update_screen(&g_hl, drawModeFor(mode), temperature);
 +  if (swapWaveform) epd_hl_waveform(&g_hl, kWaveform);
  #if FREEINK_READPICO_DIAGNOSTICS
    int diffMs, drawMs, copyMs;
    epd_hl_last_timing(&diffMs, &drawMs, &copyMs);
-@@ -351,9 +385,9 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -351,9 +390,9 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    // serial port in this build, while the board libraries' esp_rom_vprintf does. Only
    // compiled in development builds.
    esp_rom_printf("[EPDF] frame #%u mode=%u result=%u convert=%uus max_convert=%uus diff=%dms scan=%dms copy=%dms\r\n",
@@ -115,7 +134,7 @@ index 72f56ea..29852ef 100644
  #endif
    g_baselineKnown = err == EPD_DRAW_SUCCESS;
    if (!g_baselineKnown) ESP_LOGE("EpdiyLcd", "Frame failed (%u); clean retry required", static_cast<unsigned>(err));
-@@ -373,7 +407,11 @@ uint8_t* epdiyLcdBeginGrayscale16() {
+@@ -373,7 +412,11 @@ uint8_t* epdiyLcdBeginGrayscale16() {
  bool epdiyLcdCommitGrayscale16(const uint8_t* bwProxy) {
    if (!g_nativeGrayActive || !epdiyLcdReady() || bwProxy == nullptr) return false;
    g_nativeGrayActive = false;
@@ -127,7 +146,7 @@ index 72f56ea..29852ef 100644
    epdiyLcdStashBase(bwProxy);
    return true;
  }
-@@ -423,10 +461,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
+@@ -423,10 +466,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
  #endif
    // The existing 2-bit coverage maps directly to four panel tones. A set base
    // bit is white (15); selector masks choose the two calibrated mid tones.
@@ -186,30 +205,55 @@ index d9ea33b..eb22882 100644
      calls = 0;
      fail_at = i;
 diff --git a/libs/display/EpdiyLcd/test/host/test_transactions.py b/libs/display/EpdiyLcd/test/host/test_transactions.py
-index 059bbfa..6b3cc1e 100644
+index 059bbfa..4795b00 100644
 --- a/libs/display/EpdiyLcd/test/host/test_transactions.py
 +++ b/libs/display/EpdiyLcd/test/host/test_transactions.py
-@@ -104,12 +104,17 @@ inline void xSemaphoreGiveRecursive(SemaphoreHandle_t m) { m->unlock(); }
+@@ -104,18 +104,40 @@ inline void xSemaphoreGiveRecursive(SemaphoreHandle_t m) { m->unlock(); }
          queue_check = root / "queue-check.o"
          subprocess.run(["cc", "-std=c11", *flags, "-c", str(HERE / "queue.c"),
                          "-o", str(queue_check)], check=True)
 -        for diagnostics in (0, 1):
 -            binary = root / f"display-test-{diagnostics}"
+-            subprocess.run(["c++", "-std=c++20", *flags, "-DFREEINK_EPDIY_LCD_CONFIG=testConfig",
 +        waveform = root / "paperdiy-waveform.o"
 +        subprocess.run(["cc", "-std=c11", "-DFREEINK_DEVICE_PAPERDIY=1", *flags, "-c",
 +                        str(LCD / "src/paperdiy/PaperDiyWaveform.c"), "-o", str(waveform)], check=True)
 +        for diagnostics, paperdiy in ((0, 0), (1, 0), (0, 1)):
 +            binary = root / f"display-test-{diagnostics}-{paperdiy}"
-             subprocess.run(["c++", "-std=c++20", *flags, "-DFREEINK_EPDIY_LCD_CONFIG=testConfig",
++            command = ["c++", "-std=c++20", *flags, "-DFREEINK_EPDIY_LCD_CONFIG=testConfig",
                          f"-DFREEINK_READPICO_DIAGNOSTICS={diagnostics}",
 +                        f"-DFREEINK_DEVICE_PAPERDIY={paperdiy}",
                              str(HERE / "transactions.cpp"), str(LCD / "src/EpdiyLcd.cpp"),
                              str(display / "src/driver/EpdiyLcdDriver.cpp"), str(highlevel), str(queue), str(queue_check),
+-                            "-Wl,--wrap=calloc", "-o", str(binary)], check=True)
 +                            *([str(waveform)] if paperdiy else []),
-                             "-Wl,--wrap=calloc", "-o", str(binary)], check=True)
++                            "-Wl,--wrap=calloc", "-o", str(binary)]
++            subprocess.run(command, check=True)
              subprocess.run([str(binary)], check=True)
              subprocess.run([str(binary), "boot-power-failure"], check=True)
-@@ -136,7 +141,7 @@ static inline int64_t esp_timer_get_time(void) { return 0; }
+             subprocess.run([str(binary), "highlevel"], check=True)
+             for allocation in range(1, 8):
+                 subprocess.run([str(binary), "oom", str(allocation)], check=True)
++            if paperdiy:
++                # Prove the coverage assertions catch the shipped regression;
++                # compile an isolated copy with only the HALF fix removed.
++                source = LCD / "src/EpdiyLcd.cpp"
++                marker = "wholeScreenClean = wholeScreenClean || mode == EpdiyLcdRefresh::Half;"
++                text = source.read_text(encoding="utf-8")
++                assert text.count(marker) == 1
++                negative_source = root / "EpdiyLcd-negative.cpp"
++                negative_source.write_text(text.replace(marker, "/* negative control: HALF remains masked */"), encoding="utf-8")
++                negative_binary = root / "half-masked-negative"
++                negative_command = [str(negative_source) if x == str(source) else
++                                    str(negative_binary) if x == str(binary) else x for x in command]
++                subprocess.run(negative_command, check=True)
++                result = subprocess.run([str(negative_binary)], capture_output=True, text=True)
++                assert result.returncode != 0 and "lastFullCoverage" in result.stderr, result.stderr
++                print("PaperDIY masked-HALF negative control rejected by full-coverage assertion")
+         (root / "Wire.h").write_text((HERE / "pmu_wire.h").read_text())
+         (root / "esp_timer.h").write_text("""#pragma once
+ #include <stdint.h>
+@@ -136,7 +158,7 @@ static inline int64_t esp_timer_get_time(void) { return 0; }
          run_resources(root, includes)
          from test_waveform_trim import run as run_waveform_trim
          run_waveform_trim()
@@ -219,7 +263,7 @@ index 059bbfa..6b3cc1e 100644
  
  if __name__ == "__main__":
 diff --git a/libs/display/EpdiyLcd/test/host/transactions.cpp b/libs/display/EpdiyLcd/test/host/transactions.cpp
-index f88a84b..c213f80 100644
+index f88a84b..75bd694 100644
 --- a/libs/display/EpdiyLcd/test/host/transactions.cpp
 +++ b/libs/display/EpdiyLcd/test/host/transactions.cpp
 @@ -9,6 +9,9 @@ extern "C" {
@@ -232,22 +276,31 @@ index f88a84b..c213f80 100644
  void check_queue(void);
  }
  
-@@ -19,6 +22,9 @@ bool failDraw = false;
+@@ -19,6 +22,10 @@ bool failDraw = false;
  int draws = 0, clears = 0;
  int lastMode = 0;
  uint8_t lastTo[32];
 +uint8_t lastFrom[32];
 +const EpdWaveform* lastWaveform = nullptr;
 +int lastFlags = 0;
++bool lastFullCoverage = false;
  const EpdBoardDefinition* board = nullptr;
  EpdiyHighlevelState* state = nullptr;
  bool powerOn() {
-@@ -95,10 +101,15 @@ EpdRect epd_difference_image_cropped(const uint8_t* to, const uint8_t* from, Epd
+@@ -91,14 +98,23 @@ EpdRect epd_difference_image_cropped(const uint8_t* to, const uint8_t* from, Epd
+     lines[y] = std::memcmp(to + y * 8, from + y * 8, 8) != 0;
+     changed |= lines[y];
+   }
+-  std::memset(columns, changed ? 0xFF : 0, 8);
++  for (int x = 0; x < 8; ++x) {
++    columns[x] = (to[x] != from[x] || to[x + 8] != from[x + 8]) ? 0xFF : 0;
++  }
    return changed ? area : EpdRect{0, 0, 0, 0};
  }
- enum EpdDrawError epd_draw_base(EpdRect, const uint8_t* diff, EpdRect, enum EpdDrawMode mode, int, const bool*,
+-enum EpdDrawError epd_draw_base(EpdRect, const uint8_t* diff, EpdRect, enum EpdDrawMode mode, int, const bool*,
 -                                const uint8_t*, const EpdWaveform*) {
-+                                const uint8_t*, const EpdWaveform* waveform) {
++enum EpdDrawError epd_draw_base(EpdRect, const uint8_t* diff, EpdRect, enum EpdDrawMode mode, int, const bool* lines,
++                                const uint8_t* columns, const EpdWaveform* waveform) {
    assert(powered);
    ++draws;
 -  for (int p = 0; p < 32; ++p) lastTo[p] = diff[p] >> 4;
@@ -257,10 +310,12 @@ index f88a84b..c213f80 100644
 +  }
 +  lastWaveform = waveform;
 +  lastFlags = mode;
++  lastFullCoverage = lines[0] && lines[1];
++  for (int x = 0; x < 8; ++x) lastFullCoverage = lastFullCoverage && columns[x] == 0xFF;
    lastMode = mode & 0x3F;
    return failDraw ? EPD_DRAW_EMPTY_LINE_QUEUE : EPD_DRAW_SUCCESS;
  }
-@@ -115,7 +126,11 @@ void checkGrayPacking(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
+@@ -115,7 +131,11 @@ void checkGrayPacking(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
        if (bits & 1) base[pixel / 8] |= mask;
        if (bits & 2) lsb[pixel / 8] |= mask;
        if (bits & 4) msb[pixel / 8] |= mask;
@@ -272,11 +327,36 @@ index f88a84b..c213f80 100644
      }
      driver.displayGrayscaleBaseWithContext(bus, base, freeink::RefreshMode::Full, false,
                                             freeink::RefreshContext::Normal);
-@@ -170,6 +185,59 @@ void checkHighlevel() {
+@@ -170,6 +190,85 @@ void checkHighlevel() {
    assert(std::memcmp(hl.front_fb, hl.back_fb, 16) == 0);
  }
  
 +#if FREEINK_DEVICE_PAPERDIY
++void checkPaperDiyBwCleans(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
++  uint8_t fb[4] = {0xFF, 0xFF, 0xFF, 0xFF};
++  driver.display(bus, fb, nullptr, freeink::RefreshMode::Full, true);
++  assert(driver.displayCommitted() && lastFullCoverage && lastMode == MODE_GC16);
++  // A sparse home menu/selection update must not restrict the cleaning mask.
++  fb[0] ^= 1;
++  int before = draws;
++  driver.display(bus, fb, nullptr, freeink::RefreshMode::Half, true);
++  assert(driver.displayCommitted() && draws == before + 1 && lastFullCoverage && lastMode == MODE_GC16);
++  // Even an identical sleep/startup/30th UI frame needs a physical clean.
++  before = draws;
++  driver.display(bus, fb, nullptr, freeink::RefreshMode::Half, true);
++  assert(driver.displayCommitted() && draws == before + 1 && lastFullCoverage && lastMode == MODE_GC16);
++  // Ordinary B/W moves retain sparse DU. Do not fix the clean by flashing every update.
++  for (int update = 1; update <= 90; ++update) {
++    fb[0] ^= 1;
++    const auto mode = update % 30 == 0 ? freeink::RefreshMode::Half : freeink::RefreshMode::Fast;
++    before = draws;
++    driver.display(bus, fb, nullptr, mode, true);
++    assert(driver.displayCommitted() && draws == before + 1);
++    assert(lastFullCoverage == (update % 30 == 0));
++    assert(lastMode == (update % 30 == 0 ? MODE_GC16 : MODE_DU));
++  }
++}
++
 +void checkPaperDiyTurns(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
 +  // Use the real waveform: 30 phases, all 256 transitions in every phase.
 +  paperdiy_waveform_init();
@@ -311,6 +391,7 @@ index f88a84b..c213f80 100644
 +    assert(driver.displayCommitted() && draws == before + 1);
 +    assert((lastFlags & PREVIOUSLY_WHITE) == 0);
 +    assert(lastMode == (mode == freeink::RefreshMode::Fast ? MODE_GL16 : MODE_GC16));
++    if (mode != freeink::RefreshMode::Fast) assert(lastFullCoverage);
 +    assert(lastWaveform == (mode == freeink::RefreshMode::Fast ? &PAPERDIY_TEXTTURN_WAVEFORM : &epdiy_ED047TC1));
 +    if (page) assert(std::memcmp(previous, lastFrom, 32) == 0);
 +    std::memcpy(previous, lastTo, 32);
@@ -332,7 +413,7 @@ index f88a84b..c213f80 100644
  int main(int argc, char** argv) {
    if (argc > 1 && std::strcmp(argv[1], "highlevel") == 0) {
      checkHighlevel();
-@@ -206,11 +274,18 @@ int main(int argc, char** argv) {
+@@ -206,11 +305,19 @@ int main(int argc, char** argv) {
      driver.copyGrayscaleLsb(bus, gray);
      driver.copyGrayscaleMsb(bus, gray);
      driver.displayGray(bus, gray, true, nullptr, false);
@@ -347,6 +428,7 @@ index f88a84b..c213f80 100644
    checkNativeGray(driver);
 +#if FREEINK_DEVICE_PAPERDIY
 +  checkPaperDiyTurns(driver, bus);
++  checkPaperDiyBwCleans(driver, bus);
 +#endif
    const int before = draws;
    assert(freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
