@@ -591,6 +591,80 @@ index 109cd50f..89efbf0c 100644
      def test_home_grid_repairs_empty_xtc_and_preserves_epub_markers(self):
          home = (ROOT / 'src/activities/home/HomeActivity.cpp').read_text()
          ui = (ROOT / 'src/components/UITheme.cpp').read_text()
+diff --git a/scripts/tests/test_vector_gray_fallback.py b/scripts/tests/test_vector_gray_fallback.py
+index dc71da59..d7ac3fbd 100644
+--- a/scripts/tests/test_vector_gray_fallback.py
++++ b/scripts/tests/test_vector_gray_fallback.py
+@@ -133,6 +133,9 @@ int main(){
+         eligibility = source[a:source.index(';', a)+1]
+         a = source.index('  if (use16LevelText) {', source.index('  const auto tDisplay'))
+         branch = method(source[a:], 'if (use16LevelText)')
++        refresh = (ROOT / 'src/activities/reader/ReaderRefresh.h').read_text()
++        native_cycle = method(refresh, 'inline HalDisplay::RefreshMode consumeRefreshMode(')
++        native_cycle += '\ntemplate <typename Renderer>\n' + method(refresh, 'inline bool commitGrayscale16WithRefreshCycle(')
+         run_cpp(r'''
+ #include <cassert>
+ #include <cstdint>
+@@ -141,23 +144,27 @@ template<typename... T> void log(T&&...){}
+ #define LOG_DBG(...) log(__VA_ARGS__)
+ #define LOG_ERR(...) log(__VA_ARGS__)
+ unsigned millis(){return 0;}
+-struct HalDisplay {enum Mode {FULL_REFRESH};};
++struct HalDisplay {enum RefreshMode {FULL_REFRESH,HALF_REFRESH,FAST_REFRESH};};
+ struct GfxRenderer {
+- enum Mode {BW}; bool start=true,commit=true,active=false,page=false,status=false;
+- int bwFrames=0,nativeFrames=0; unsigned levels=16;
++ enum Mode {BW}; bool start=true,commit=true,page=false,status=false;mutable bool active=false;
++ int bwFrames=0;mutable int nativeFrames=0; unsigned levels=16;
+  unsigned getGrayscaleLevels(){return levels;}
+  bool beginGrayscale16(){if(start){active=true;page=status=false;}return start;}
+- bool commitGrayscale16(){++nativeFrames;active=false;return commit;}
++ bool commitGrayscale16()const{++nativeFrames;active=false;return commit;}
++ bool commitGrayscale16(HalDisplay::RefreshMode)const{return commitGrayscale16();}
+  void cancelGrayscale16(){active=false;}
+  void setRenderMode(Mode){assert(!active);}
+  void clearScreen(){page=status=false;}
+- void displayBuffer(HalDisplay::Mode){assert(!active&&page&&status);++bwFrames;}
++ void displayBuffer(HalDisplay::RefreshMode){assert(!active&&page&&status);++bwFrames;}
+ };
+-struct {bool readingBackgroundEnabled=false;int fakeBold=0;} SETTINGS;
++struct {bool readingBackgroundEnabled=false;int fakeBold=0;int getRefreshFrequency()const{return 30;}} SETTINGS;
++namespace ReaderUtils {
++''' + native_cycle + r'''
++}
+ struct {bool four=true;bool readerFaceIsFourBit(){return four;}} sdFontSystem;
+ struct {bool switching=false;bool isSwitchPending(){return switching;}} activityManager;
+ struct Probe {
+- GfxRenderer renderer;bool needsTextGrayscale=true,pageHasImages=false;int pagesUntilFullRefresh=5;
++ GfxRenderer renderer;bool needsTextGrayscale=true,pageHasImages=false,manualRefreshPending=false;int pagesUntilFullRefresh=5;
+  bool eligible(){''' + eligibility + r''' return use16LevelText;}
+  bool render(){const bool use16LevelText=eligible();const unsigned t0=0;
+   const auto finish=[&]{return renderer.bwFrames>0 || (renderer.nativeFrames>0 && renderer.commit);};
+@@ -168,9 +175,9 @@ struct Probe {
+  }
+ };
+ int main(){
+- for(bool start:{false,true})for(bool commit:{false,true}){
+-  Probe p;p.renderer.start=start;p.renderer.commit=commit;assert(p.render());
+-  assert(!p.renderer.active&&p.pagesUntilFullRefresh==1);
++ for(bool start:{false,true})for(bool commit:{false,true})for(bool manual:{false,true}){
++  Probe p;p.renderer.start=start;p.renderer.commit=commit;p.manualRefreshPending=manual;assert(p.render());
++  assert(!p.renderer.active&&p.pagesUntilFullRefresh==(start&&commit?(manual?30:4):1));
+   assert(p.renderer.bwFrames==int(!start||!commit));
+   assert(p.renderer.nativeFrames==int(start));
+  }
+@@ -185,9 +192,9 @@ int main(){
+  p.needsTextGrayscale=true;p.renderer.levels=4;assert(!p.eligible());
+  p.renderer.levels=16;sdFontSystem.four=false;assert(!p.eligible());
+  sdFontSystem.four=true;activityManager.switching=true;p.render();
+- assert(!p.renderer.active&&p.renderer.bwFrames==0&&p.renderer.nativeFrames==0);
++ assert(!p.renderer.active&&p.renderer.bwFrames==0&&p.renderer.nativeFrames==0&&p.pagesUntilFullRefresh==5);
+ }
+-''')
++''', defines=('FREEINK_DEVICE_PAPERDIY=1',))
+ 
+ 
+ if __name__ == '__main__':
 diff --git a/scripts/tests/test_weread_shelf_input.py b/scripts/tests/test_weread_shelf_input.py
 index 141fc9cd..283c337e 100644
 --- a/scripts/tests/test_weread_shelf_input.py

@@ -281,7 +281,7 @@ index 059bbfa..4795b00 100644
  
  if __name__ == "__main__":
 diff --git a/libs/display/EpdiyLcd/test/host/transactions.cpp b/libs/display/EpdiyLcd/test/host/transactions.cpp
-index f88a84b..bf901e9 100644
+index f88a84b..e26b89d 100644
 --- a/libs/display/EpdiyLcd/test/host/transactions.cpp
 +++ b/libs/display/EpdiyLcd/test/host/transactions.cpp
 @@ -9,6 +9,9 @@ extern "C" {
@@ -345,7 +345,7 @@ index f88a84b..bf901e9 100644
      }
      driver.displayGrayscaleBaseWithContext(bus, base, freeink::RefreshMode::Full, false,
                                             freeink::RefreshContext::Normal);
-@@ -149,6 +169,30 @@ void checkNativeGray(freeink::EpdiyLcdDriver& driver) {
+@@ -149,6 +169,31 @@ void checkNativeGray(freeink::EpdiyLcdDriver& driver) {
    frame = driver.beginGrayscale16();
    memset(frame, 0, 16);
    assert(driver.commitGrayscale16(proxy) && lastMode == MODE_GC16);
@@ -353,7 +353,8 @@ index f88a84b..bf901e9 100644
 +    frame = driver.beginGrayscale16();
 +    assert(frame);
 +#if FREEINK_DEVICE_PAPERDIY
-+    memset(frame, 0x11, 16);  // HALF/FULL repeat the preceding frame and must still clean.
++    memset(frame, 0, 16);
++    frame[0] = 1;  // Sparse FAST first, then identical HALF/FULL must still clean every pixel.
 +#else
 +    memset(frame, mode == freeink::RefreshMode::Fast ? 0x11 : mode == freeink::RefreshMode::Half ? 0x22 : 0x33, 16);
 +#endif
@@ -376,7 +377,7 @@ index f88a84b..bf901e9 100644
    assert(allocation_calls == allocations);
  }
  
-@@ -170,6 +214,93 @@ void checkHighlevel() {
+@@ -170,6 +215,93 @@ void checkHighlevel() {
    assert(std::memcmp(hl.front_fb, hl.back_fb, 16) == 0);
  }
  
@@ -470,7 +471,7 @@ index f88a84b..bf901e9 100644
  int main(int argc, char** argv) {
    if (argc > 1 && std::strcmp(argv[1], "highlevel") == 0) {
      checkHighlevel();
-@@ -206,11 +337,19 @@ int main(int argc, char** argv) {
+@@ -206,11 +338,19 @@ int main(int argc, char** argv) {
      driver.copyGrayscaleLsb(bus, gray);
      driver.copyGrayscaleMsb(bus, gray);
      driver.displayGray(bus, gray, true, nullptr, false);
