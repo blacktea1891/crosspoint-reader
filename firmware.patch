@@ -28,7 +28,7 @@ index 5c2bd6bb..1d9409ee 100644
  - **无线功能**：浏览器传书与设置、Calibre 无线连接、OPDS 下载、WebDAV 和设备 OTA 更新。
  - **Apps 应用中心**：数独、五子棋、中国象棋、扫雷、2048、电子木鱼、Ugly Avatar 等轻量游戏与工具。[应用说明](./src/activities/apps/README.md)。
 diff --git a/lib/GfxRenderer/GfxRenderer.cpp b/lib/GfxRenderer/GfxRenderer.cpp
-index e08284b7..2d6f21d7 100644
+index e08284b7..26c6119d 100644
 --- a/lib/GfxRenderer/GfxRenderer.cpp
 +++ b/lib/GfxRenderer/GfxRenderer.cpp
 @@ -60,6 +60,11 @@ bool commitNativeGray(Display& display) {
@@ -58,11 +58,42 @@ index e08284b7..2d6f21d7 100644
  void GfxRenderer::cancelGrayscale16() const {
    if (grayscale16Buffer) cancelNativeGray(display);
    grayscale16Buffer = nullptr;
+@@ -2193,6 +2206,19 @@ void GfxRenderer::invertScreen() const {
+   }
+ }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++void GfxRenderer::prepareDisplayRecovery() {
++  cancelGrayscale16();
++  endStripTarget();
++  clearClipRect();
++  setRenderMode(BW);
++  absoluteGrayPlanes = false;
++  freeBwBufferChunks();
++  nextRefreshOverridePending = false;
++  display.requestDisplayRecovery();
++}
++#endif
++
+ void GfxRenderer::displayBuffer(HalDisplay::RefreshMode refreshMode, DisplayRefreshContext context) const {
+   auto elapsed = millis() - start_ms;
+   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
 diff --git a/lib/GfxRenderer/GfxRenderer.h b/lib/GfxRenderer/GfxRenderer.h
-index 8471d5ac..9612fa18 100644
+index 8471d5ac..360af56e 100644
 --- a/lib/GfxRenderer/GfxRenderer.h
 +++ b/lib/GfxRenderer/GfxRenderer.h
-@@ -534,6 +534,7 @@ class GfxRenderer {
+@@ -293,6 +293,10 @@ class GfxRenderer {
+   // void displayWindow(int x, int y, int width, int height) const;
+   void invertScreen() const;
+   void clearScreen(uint8_t color = 0xFF) const;
++#if FREEINK_DEVICE_PAPERDIY
++  // RenderLock must be held; never use while a render is still producing a plane.
++  void prepareDisplayRecovery();
++#endif
+   void getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const;
+ 
+   // Tiled grayscale strip target. While active, drawPixel() and clearScreen()
+@@ -534,6 +538,7 @@ class GfxRenderer {
    uint8_t getGrayscaleLevels() const;
    bool beginGrayscale16();
    bool commitGrayscale16() const;
@@ -170,7 +201,7 @@ index df35ac5d..84df7186 100644
  STR_KB_HINT_EXIT_URL_MODE: "Press ABC to exit URL mode"
  STR_KB_HINT_CLEAR_TEXT: "Hold DEL to clear all text"
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..8b234af6 100644
+index 2d854fe5..8f623f51 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
 @@ -1,6 +1,15 @@
@@ -189,11 +220,12 @@ index 2d854fe5..8b234af6 100644
  #if FREEINK_DEVICE_READPICO
  #include <BoardReadPico.h>
  #include <Logging.h>
-@@ -112,19 +121,34 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
+@@ -112,19 +121,36 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
  }  // namespace
  
  void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen, DisplayRefreshContext context) {
 +#if FREEINK_DEVICE_PAPERDIY
++  if (displayRecoveryPending) mode = HALF_REFRESH;
 +  const bool normalContext = context == DisplayRefreshContext::Normal;
 +  if (paperDiyRefreshBudget.needsClean(mode == FAST_REFRESH, normalContext)) {
 +    mode = HALF_REFRESH;
@@ -207,6 +239,7 @@ index 2d854fe5..8b234af6 100644
    einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen, convertRefreshContext(context));
 +#if FREEINK_DEVICE_PAPERDIY
 +  paperDiyRefreshBudget.completed(mode == FAST_REFRESH, normalContext, einkDisplay.displayCommitted());
++  completeDisplayRecovery();
 +#endif
  }
  
@@ -224,7 +257,7 @@ index 2d854fe5..8b234af6 100644
  }
  
  void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
-@@ -138,11 +162,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
+@@ -138,11 +164,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
  bool HalDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
  
  void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
@@ -240,19 +273,103 @@ index 2d854fe5..8b234af6 100644
  }
  
  void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
-@@ -225,6 +253,7 @@ uint16_t HalDisplay::getDisplayHeight() const { return einkDisplay.getDisplayHei
+@@ -160,6 +190,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
+ void HalDisplay::returnFrameBufferStorage() { einkDisplay.returnBuildStorage(); }
+ 
+ bool HalDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback, bool turnOffScreen) {
++#if FREEINK_DEVICE_PAPERDIY
++  if (displayRecoveryPending) fallback = HALF_REFRESH;
++#endif
+   if (gpio.deviceIsX3() && fallback == HALF_REFRESH) einkDisplay.requestResync();
+   return einkDisplay.displayGrayscaleBase(mode, static_cast<EInkDisplay::RefreshMode>(fallback), turnOffScreen);
+ }
+@@ -169,6 +202,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
+ }
+ 
+ void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen, DisplayRefreshContext context) {
++#if FREEINK_DEVICE_PAPERDIY
++  if (displayRecoveryPending) fallback = HALF_REFRESH;
++#endif
+   // X3: a HALF fallback means the caller wants a clean base (e.g. the sleep
+   // cover, a full-screen swap from arbitrary prior content). Without this, the
+   // X3 grayscale base takes its gentle differential happy path and the prior
+@@ -195,7 +231,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
+ 
+ void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.cleanupGrayscaleBuffers(bwBuffer); }
+ 
+-void HalDisplay::displayGrayBuffer(bool turnOffScreen) { einkDisplay.displayGrayBuffer(turnOffScreen); }
++void HalDisplay::displayGrayBuffer(bool turnOffScreen) {
++  einkDisplay.displayGrayBuffer(turnOffScreen);
++#if FREEINK_DEVICE_PAPERDIY
++  completeDisplayRecovery();
++#endif
++}
+ 
+ void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
+   einkDisplay.writeGrayscalePlaneStrip(lsbPlane ? EInkDisplay::GRAY_PLANE_LSB : EInkDisplay::GRAY_PLANE_MSB, rows,
+@@ -219,12 +260,46 @@ void HalDisplay::cancelGrayscale() {
+ 
+ bool HalDisplay::displayCommitted() const { return einkDisplay.displayCommitted(); }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++void HalDisplay::requestDisplayRecovery() {
++  // All calls originate on the render task under RenderLock. No panel work
++  // races an in-flight grayscale render or an idle framebuffer loan.
++  einkDisplay.abortPostRefresh();
++  einkDisplay.cancelGrayscale16();
++  einkDisplay.cleanupGrayscaleBuffers(nullptr);
++  einkDisplay.requestResync(1);
++  displayRecoveryPending = true;
++}
++
++void HalDisplay::completeDisplayRecovery() {
++  if (!displayRecoveryPending || !einkDisplay.displayCommitted()) return;
++  displayRecoveryPending = false;
++  paperDiyRefreshBudget.completed(false, true, true);
++  LOG_DBG("DISP", "PaperDIY recovery frame committed");
++}
++#endif
++
+ uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
+ 
+ uint16_t HalDisplay::getDisplayHeight() const { return einkDisplay.getDisplayHeight(); }
  uint8_t HalDisplay::getGrayscaleLevels() const { return einkDisplay.getGrayscaleLevels(); }
  uint8_t* HalDisplay::beginGrayscale16() { return einkDisplay.beginGrayscale16(); }
- bool HalDisplay::commitGrayscale16() { return einkDisplay.commitGrayscale16(); }
-+bool HalDisplay::commitGrayscale16(RefreshMode mode) { return einkDisplay.commitGrayscale16(convertRefreshMode(mode)); }
+-bool HalDisplay::commitGrayscale16() { return einkDisplay.commitGrayscale16(); }
++bool HalDisplay::commitGrayscale16() {
++#if FREEINK_DEVICE_PAPERDIY
++  if (displayRecoveryPending) return commitGrayscale16(HALF_REFRESH);
++#endif
++  return einkDisplay.commitGrayscale16();
++}
++bool HalDisplay::commitGrayscale16(RefreshMode mode) {
++#if FREEINK_DEVICE_PAPERDIY
++  if (displayRecoveryPending) mode = HALF_REFRESH;
++#endif
++  const bool committed = einkDisplay.commitGrayscale16(convertRefreshMode(mode));
++#if FREEINK_DEVICE_PAPERDIY
++  completeDisplayRecovery();
++#endif
++  return committed;
++}
  void HalDisplay::cancelGrayscale16() { einkDisplay.cancelGrayscale16(); }
  
  uint16_t HalDisplay::getDisplayWidthBytes() const { return einkDisplay.getDisplayWidthBytes(); }
 diff --git a/lib/hal/HalDisplay.h b/lib/hal/HalDisplay.h
-index 68001659..cc444cad 100644
+index 68001659..2e12ec82 100644
 --- a/lib/hal/HalDisplay.h
 +++ b/lib/hal/HalDisplay.h
-@@ -158,6 +158,7 @@ class HalDisplay {
+@@ -148,6 +148,9 @@ class HalDisplay {
+   bool canUseTextTransition() const;
+   void cancelGrayscale();
+   bool displayCommitted() const;
++#if FREEINK_DEVICE_PAPERDIY
++  void requestDisplayRecovery();
++#endif
+ 
+   // Runtime geometry passthrough — the authoritative source for every layout
+   // decision (GfxRenderer reads exactly these in its begin()). Prefer them over
+@@ -158,11 +161,16 @@ class HalDisplay {
    uint8_t getGrayscaleLevels() const;
    uint8_t* beginGrayscale16();
    bool commitGrayscale16();
@@ -260,6 +377,15 @@ index 68001659..cc444cad 100644
    void cancelGrayscale16();
    uint16_t getDisplayWidthBytes() const;
    uint32_t getBufferSize() const;
+ 
+  private:
++#if FREEINK_DEVICE_PAPERDIY
++  bool displayRecoveryPending = false;
++  void completeDisplayRecovery();
++#endif
+   EInkDisplay einkDisplay;
+ };
+ 
 diff --git a/lib/hal/HalGPIO.cpp b/lib/hal/HalGPIO.cpp
 index 4aeb2553..de687d8b 100644
 --- a/lib/hal/HalGPIO.cpp
@@ -437,14 +563,15 @@ index 89cbf2f6..fdcfe66c 100644
                          self.assertEqual(resolve(section, "board_build.arduino.memory_type"), "dio_opi")
                      else:
 diff --git a/scripts/tests/test_native_grayscale.py b/scripts/tests/test_native_grayscale.py
-index f99a63a4..11ad1374 100644
+index f99a63a4..15457a5f 100644
 --- a/scripts/tests/test_native_grayscale.py
 +++ b/scripts/tests/test_native_grayscale.py
-@@ -29,6 +29,7 @@ def main():
+@@ -29,6 +29,8 @@ def main():
            bool commitGrayscale16();
            void cancelGrayscale16();
            void begin();''')
 +        hal = hal.replace('bool commitGrayscale16();', 'bool commitGrayscale16();\n  bool commitGrayscale16(RefreshMode mode);')
++        hal = hal.replace('void cancelGrayscale16();', 'void cancelGrayscale16();\n  void requestDisplayRecovery() {}')
          (work / 'HalDisplay.h').write_text(hal)
          (work / 'Logging.h').write_text('#pragma once\n#define LOG_DBG(...) ((void)0)\n#define LOG_ERR(...) ((void)0)\n#define LOG_INF(...) ((void)0)\n')
          settings = """#pragma once
@@ -886,10 +1013,22 @@ index 789f24f8..46a55db5 100644
  
  bool Activity::showMainTabContentSelection() const {
 diff --git a/src/activities/Activity.h b/src/activities/Activity.h
-index 51d93f0a..ed5e3754 100644
+index 51d93f0a..90335670 100644
 --- a/src/activities/Activity.h
 +++ b/src/activities/Activity.h
-@@ -101,7 +101,7 @@ class Activity {
+@@ -61,6 +61,11 @@ class Activity {
+   virtual bool appliesNightMode() const { return false; }
+   // Returns true when the activity schedules its own forced refresh.
+   virtual bool handleForcedRefresh() { return false; }
++#if FREEINK_DEVICE_PAPERDIY
++  // Called on the render task with RenderLock held, before a recovery redraw.
++  // Discard page-local partial-paint state without leaving/re-entering the activity.
++  virtual void prepareDisplayRecovery() {}
++#endif
+   virtual bool isHomeActivity() const { return false; }
+   virtual bool handleHomeGesture() { return false; }
+   virtual MainTab mainTab() const { return MainTab::None; }
+@@ -101,7 +106,7 @@ class Activity {
  
   protected:
    MappedInputManager::Labels mainTabButtonLabels(const char* back, const char* confirm, bool canMove,
@@ -899,10 +1038,24 @@ index 51d93f0a..ed5e3754 100644
    bool mainTabsAtBottom() const;
    bool hasMainTabStatusBar() const;
 diff --git a/src/activities/ActivityManager.cpp b/src/activities/ActivityManager.cpp
-index 8acbec08..d7a40234 100644
+index 8acbec08..c8a71eb9 100644
 --- a/src/activities/ActivityManager.cpp
 +++ b/src/activities/ActivityManager.cpp
-@@ -384,14 +384,28 @@ bool ActivityManager::handleMainTabInput() {
+@@ -109,6 +109,13 @@ void ActivityManager::renderTaskLoop() {
+         const auto delayMs = currentActivity->idleRenderDelayMs();
+         idleGeneration = idleRenderGeneration.load(std::memory_order_relaxed);
+         display.setInverted(SETTINGS.screenInverted != 0);
++#if FREEINK_DEVICE_PAPERDIY
++        if (displayRecoveryPending.exchange(false)) {
++          LOG_DBG("ACT", "PaperDIY full recovery redraw");
++          renderer.prepareDisplayRecovery();
++          currentActivity->prepareDisplayRecovery();
++        }
++#endif
+         currentActivity->render(std::move(lock));
+         if (delayMs != 0) waitTicks = pdMS_TO_TICKS(delayMs);
+       } else if (!idleRenderCancelled(idleGeneration)) {
+@@ -384,14 +391,28 @@ bool ActivityManager::handleMainTabInput() {
    }
  
    if (mainTabEntryReleasePending) {
@@ -931,7 +1084,7 @@ index 8acbec08..d7a40234 100644
        if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
          goToMainTab(MainTabs::adjacent(currentTab, -1));
          return true;
-@@ -416,6 +430,14 @@ bool ActivityManager::handleMainTabInput() {
+@@ -416,6 +437,14 @@ bool ActivityManager::handleMainTabInput() {
          return true;
        }
  
@@ -946,7 +1099,7 @@ index 8acbec08..d7a40234 100644
        if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
          mainTabFocus = MainTabFocus::Content;
          mainTabEntryReleasePending = true;
-@@ -430,6 +452,7 @@ bool ActivityManager::handleMainTabInput() {
+@@ -430,6 +459,7 @@ bool ActivityManager::handleMainTabInput() {
          requestUpdate();
          return true;
        }
@@ -954,6 +1107,36 @@ index 8acbec08..d7a40234 100644
  
        // Recent's Back is owned by the shared home Standby handler.
        if (currentTab == MainTab::Recent) return false;
+@@ -701,7 +731,15 @@ bool ActivityManager::deferBluetoothStart() const {
+ 
+ bool ActivityManager::handleForcedRefresh() {
+   cancelIdleRender();
++#if FREEINK_DEVICE_PAPERDIY
++  // Do not push the potentially incomplete framebuffer from the input task.
++  // The render task owns cleanup, page reconstruction and the recovery submit.
++  displayRecoveryPending.store(true);
++  requestUpdate();
++  return true;
++#else
+   return currentActivity && currentActivity->handleForcedRefresh();
++#endif
+ }
+ 
+ bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
+diff --git a/src/activities/ActivityManager.h b/src/activities/ActivityManager.h
+index 643e6e05..ef24c661 100644
+--- a/src/activities/ActivityManager.h
++++ b/src/activities/ActivityManager.h
+@@ -80,6 +80,9 @@ class ActivityManager {
+   // Cross-task render request flag. requestUpdate() may set it from any task;
+   // loop() consumes and clears it with exchange(false).
+   std::atomic<bool> requestedUpdate{false};
++#if FREEINK_DEVICE_PAPERDIY
++  std::atomic<bool> displayRecoveryPending{false};
++#endif
+   std::atomic<uint32_t> idleRenderGeneration{0};
+ 
+  public:
 diff --git a/src/activities/UiListActivity.cpp b/src/activities/UiListActivity.cpp
 index f25550ec..85afc636 100644
 --- a/src/activities/UiListActivity.cpp
@@ -1529,7 +1712,7 @@ index e430f7d4..f01be60f 100644
    }
  
 diff --git a/src/activities/home/HomeActivity.h b/src/activities/home/HomeActivity.h
-index 55ad1fc6..31d94644 100644
+index 55ad1fc6..a7abf328 100644
 --- a/src/activities/home/HomeActivity.h
 +++ b/src/activities/home/HomeActivity.h
 @@ -59,6 +59,7 @@ class HomeActivity final : public Activity {
@@ -1540,6 +1723,19 @@ index 55ad1fc6..31d94644 100644
    bool storeCoverBuffer();    // Store frame buffer for cover image
    bool restoreCoverBuffer();  // Restore frame buffer from stored cover
    void freeCoverBuffer();     // Free the stored cover buffer
+@@ -76,5 +77,12 @@ class HomeActivity final : public Activity {
+   void onExit() override;
+   void loop() override;
+   void render(RenderLock&&) override;
++#if FREEINK_DEVICE_PAPERDIY
++  void prepareDisplayRecovery() override {
++    carouselUpdateScope.store(CarouselUpdateScope::Full);
++    coverRendered = false;
++    coverBufferStored = false;
++  }
++#endif
+   bool isHomeActivity() const override { return true; }
+ };
 diff --git a/src/activities/home/InxRecentActivity.cpp b/src/activities/home/InxRecentActivity.cpp
 index 161236e3..62606fda 100644
 --- a/src/activities/home/InxRecentActivity.cpp
@@ -1869,6 +2065,20 @@ index 7b2a9366..b44377ac 100644
      RenderLock lock;  // the render task shares the framebuffer
      settleOverlayRefresh();
      // No baseline resync: the glass shows the chrome, and erasing it needs
+diff --git a/src/activities/reader/EpubReaderMenuActivity.h b/src/activities/reader/EpubReaderMenuActivity.h
+index 7cdcecd4..d3273bdc 100644
+--- a/src/activities/reader/EpubReaderMenuActivity.h
++++ b/src/activities/reader/EpubReaderMenuActivity.h
+@@ -47,6 +47,9 @@ class EpubReaderMenuActivity final : public UiListActivity {
+                                   bool hasClippings = false);
+ 
+   void render(RenderLock&&) override;
++#if FREEINK_DEVICE_PAPERDIY
++  void prepareDisplayRecovery() override { optionPopup.dismiss(); }
++#endif
+   bool handleHomeGesture() override;
+ 
+  private:
 diff --git a/src/activities/reader/EpubReaderPercentSelectionActivity.cpp b/src/activities/reader/EpubReaderPercentSelectionActivity.cpp
 index ead6b341..260b4ffc 100644
 --- a/src/activities/reader/EpubReaderPercentSelectionActivity.cpp
@@ -1969,6 +2179,21 @@ index 92b46ea6..8d12ffe0 100644
  }
  
  void ReaderActivity::prepareForSleep() { flushReaderSession(); }
+diff --git a/src/activities/reader/ReaderActivity.h b/src/activities/reader/ReaderActivity.h
+index 7ce66e18..1f92532e 100644
+--- a/src/activities/reader/ReaderActivity.h
++++ b/src/activities/reader/ReaderActivity.h
+@@ -83,4 +83,10 @@ class ReaderActivity : public Activity {
+ 
+   bool isReaderActivity() const final { return true; }
+   bool handleForcedRefresh() final;
++#if FREEINK_DEVICE_PAPERDIY
++  void prepareDisplayRecovery() final {
++    pagesUntilFullRefresh = 1;
++    forcedRefreshPending = true;
++  }
++#endif
+ };
 diff --git a/src/activities/reader/ReaderRefresh.h b/src/activities/reader/ReaderRefresh.h
 index 82cbc3ee..36bde94b 100644
 --- a/src/activities/reader/ReaderRefresh.h
@@ -2342,6 +2567,20 @@ index 3dde1434..77883013 100644
    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
  }
  
+diff --git a/src/activities/settings/SettingsActivity.h b/src/activities/settings/SettingsActivity.h
+index 1f370f1f..02f60301 100644
+--- a/src/activities/settings/SettingsActivity.h
++++ b/src/activities/settings/SettingsActivity.h
+@@ -280,6 +280,9 @@ class SettingsActivity final : public UiTabListActivity {
+   void onEnter() override;
+   void onExit() override;
+   void render(RenderLock&&) override;
++#if FREEINK_DEVICE_PAPERDIY
++  void prepareDisplayRecovery() override { optionPopup.dismiss(); }
++#endif
+   MainTab mainTab() const override { return MainTab::Settings; }
+   bool mainTabBackReturnsToTabs() const override { return !usesAccordion() || expandedCategories == 0; }
+   void selectMainTabContentEdge(MainTabContentEdge edge) override;
 diff --git a/src/activities/settings/StatusBarSettingsActivity.cpp b/src/activities/settings/StatusBarSettingsActivity.cpp
 index fd006eb1..1d03ce73 100644
 --- a/src/activities/settings/StatusBarSettingsActivity.cpp
@@ -3217,7 +3456,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..c61195ea 100644
+index b0b49733..e7911d0b 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -3229,12 +3468,13 @@ index b0b49733..c61195ea 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,15 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,16 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
 +add_test(NAME PaperDiyBoardTag COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_board_tag.py)
 +add_test(NAME PaperDiyRefreshRouting COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_routing.py)
++add_test(NAME PaperDiyDisplayRecovery COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_recovery.py)
 +add_test(NAME PaperDiyKeyboardButtons COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_buttons.py)
 +  add_test(NAME PaperDiyKeyboardEditing COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_editing.py)
 +add_test(NAME PaperDiyMenuNavigation COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_menu_navigation.py)
@@ -3485,7 +3725,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,588 @@
+@@ -0,0 +1,632 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -4074,6 +4314,50 @@ new file mode 100644
 +the due-clean assertion must fail. Optical gray residual suppression and a
 +softer full-clean waveform remain separate hardware work, not claimed fixes.
 +
++## Incomplete-display recovery candidate, 2026-10-27
++
++The user reports intermittent pale/missing menu content: a manual clean sometimes
++restores only part of it, while reboot restores the display. The hardware trigger
++is not reproduced. Do not equate this with ordinary ghosting or claim a proven
++root cause from photographs.
++
++PaperDIY manual refresh now queues a recovery redraw on the existing render task,
++under RenderLock, instead of resubmitting the possibly incomplete live buffer from
++the input task. Reset stale clip/strip/gray/snapshot state; Home invalidates its
++partial-menu/cover paint state, reader marks its current page for forced cleaning.
++Settings and the classic reader menu dismiss an open option popup without applying
++its callback, allowing the full underlying page to be rebuilt. No onExit/onEnter,
++navigation, settings save, or app restart is invoked for this operation.
++
++An explicit positive-pass Epdiy resync on PaperDIY now marks the physical baseline
++unknown and powers the panel off. The next real frame powers on, clears, and uses
++the existing all-row/column GC16 path with a white baseline. Stage/cancel operations
++do not consume recovery; HAL keeps the clean request until a submitted frame succeeds.
++Zero-pass gray cancellation retains its old meaning. This does not reallocate or
++reinitialize LCD/DMA/RMT; a peripheral fault outside this path remains an open risk.
++
++On LCD draw failure, wait for DMA and both feed tasks to stop, reset BOTH row queues,
++and stop sending the remaining phases of the failed attempt. Previously a feeder
++could exit after its final commit without seeing the other's error, leaving rows
++queued for a later request. PaperDIY feeders no longer reset queues while the ISR
++may still consume them. The draw error is retained so highlevel cannot commit a
++false previous-frame baseline. Other targets retain their previous behavior.
++
++No new framebuffer, heap allocation, task, or per-turn clear. One atomic pending
++request in ActivityManager and one HAL pending flag are confined to PaperDIY;
++existing activity virtual tables gain a recovery hook on this target. Preserve
++waveforms, scan timing, VCOM, ordinary FAST updates, the 30-successful-UI-update
++budget, and the reader's independent page cadence. A manual recovery can visibly
++flash because it intentionally rebuilds an unknown physical baseline.
++
++Validation: fault-inject leftover rows and failures in phases 1/2/3 using the real
++LCD scheduling function and row queue, reject a negative control with cleanup
++removed, check the real dispatcher/renderer recovery ordering and page hooks, test
++failed native/overlay/BW recovery and retry, identical-target full coverage, and
++unchanged zero-pass cancellation/ordinary cadence. Hardware acceptance still needs
++an actual recurrence followed by the user's confirmed manual-refresh gesture;
++ordinary navigation and reader regression checks alone do not prove this fixed.
++
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -4641,6 +4925,256 @@ new file mode 100644
 +                        str(work / "check.cpp"), "-o", str(binary)], check=True)
 +        subprocess.run([str(binary)], check=True)
 +print("PaperDIY combined text-AA retains real M5GFX mid-tones; B/W/UI policy and other boards preserved")
+diff --git a/test/test_paperdiy_display_recovery.py b/test/test_paperdiy_display_recovery.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_display_recovery.py
+@@ -0,0 +1,245 @@
++"""Fault-inject real LCD phase scheduling and the production recovery dispatcher."""
++from pathlib import Path
++import os
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++LCD = ROOT / 'freeink-sdk/libs/display/EpdiyLcd/src/epdiy/src'
++
++
++def function(path, signature):
++    text = path.read_text(encoding='utf-8')
++    start = text.index(signature)
++    brace = text.index('{', start)
++    depth = 1
++    end = brace + 1
++    while depth:
++        depth += (text[end] == '{') - (text[end] == '}')
++        end += 1
++    return text[start:end]
++
++
++LCD_TEST = r'''
++#include <assert.h>
++#include <stdint.h>
++#include <string.h>
++#include "output_common/line_queue.h"
++#define NUM_RENDER_THREADS 2
++#define EPD_DRAW_SUCCESS 0
++#define EPD_DRAW_EMPTY_LINE_QUEUE 1
++#define portMAX_DELAY 0
++#define pdTRUE 1
++typedef struct {
++  int cycle_frames, current_frame, error;
++  int feed_tasks[2], feed_done_smphr[2], frame_done;
++  LineQueue_t line_queues[2];
++} RenderContext_t;
++static RenderContext_t* live;
++static int fail_phase, phases, takes, resets, notifications;
++static void* line_cb;
++static void* done_cb;
++typedef void (*frame_done_func_t)(RenderContext_t*);
++static void handle_lcd_frame_done(RenderContext_t* c) { (void)c; }
++static int xPortGetCoreID(void) { return 0; }
++static void epd_set_mode(int mode) { (void)mode; }
++static void epd_lcd_frame_done_cb(frame_done_func_t cb, void* p) { done_cb=(void*)cb; (void)p; }
++static void epd_lcd_line_source_cb(void* cb, void* p) { line_cb=cb; (void)p; }
++static void prepare_context_for_next_frame(RenderContext_t* c) {
++  (void)c; ++phases; takes=0; line_cb=(void*)1;
++}
++static void xTaskNotifyGive(int task) { (void)task; ++notifications; }
++static void xSemaphoreTake(int sem, int wait) {
++  (void)sem; (void)wait; ++takes;
++  if (takes==1 && phases==fail_phase) live->error=EPD_DRAW_EMPTY_LINE_QUEUE;
++  if (takes==3 && !live->error) {
++    // A completed DMA frame consumes every queued line.
++    uint8_t out[4];
++    for(int q=0;q<2;++q) while(lq_read(&live->line_queues[q],out)==0) {}
++  }
++}
++static void vTaskDelay(int n) { (void)n; }
++void real_lq_reset(LineQueue_t*);
++void lq_reset(LineQueue_t* q) {
++  // Queue reset while either producer/ISR is active is invalid.
++  assert(takes==3); ++resets; real_lq_reset(q);
++}
++@FUNCTION@
++int main(void) {
++  RenderContext_t c={0}; live=&c;
++  uint8_t rows[2][4][4]; uint8_t* ptrs[2][4];
++  for(int q=0;q<2;++q) {
++    for(int r=0;r<4;++r) ptrs[q][r]=rows[q][r];
++    c.line_queues[q].size=4; c.line_queues[q].element_size=4; c.line_queues[q].bufs=ptrs[q];
++  }
++  for(int fault=1;fault<=3;++fault) {
++    phases=notifications=resets=0; fail_phase=fault;
++    c.current_frame=0; c.cycle_frames=3; c.error=0;
++    // One feeder can finish before the other observes the error. Both queues
++    // contain stale data, as can happen on an underrun/callback scheduling race.
++    for(int q=0;q<2;++q) {
++      memset(lq_current(&c.line_queues[q]),0xA0+q,4); lq_commit(&c.line_queues[q]);
++    }
++    lcd_do_update(&c);
++    assert(c.error && phases==fault && c.current_frame==fault-1);
++    assert(notifications==fault*2 && resets==2 && !line_cb && !done_cb);
++    uint8_t out[4];
++    for(int q=0;q<2;++q) assert(lq_read(&c.line_queues[q],out)==-1);
++    // Next request starts with fresh rows, never a previous attempt's data.
++    c.error=0; c.current_frame=0; c.cycle_frames=3;
++    phases=notifications=resets=0; fail_phase=0;
++    for(int q=0;q<2;++q) {
++      memset(lq_current(&c.line_queues[q]),0x55+q,4); lq_commit(&c.line_queues[q]);
++      assert(lq_read(&c.line_queues[q],out)==0 && out[0]==0x55+q);
++    }
++    lcd_do_update(&c);
++    assert(!c.error && phases==3 && c.current_frame==3 && notifications==6 && resets==0);
++  }
++}
++'''
++
++
++UI_TEST = r'''
++#include <atomic>
++#include <cassert>
++#include <cstdint>
++#include <utility>
++#include <vector>
++static bool locked=false;
++static std::vector<int> events;
++struct Stop {};
++static int rounds=0;
++static unsigned ulTaskNotifyTake(int,int) { if(rounds++>0) throw Stop{}; return 1; }
++#define portMAX_DELAY 0
++#define pdTRUE 1
++#define pdMS_TO_TICKS(x) (x)
++#define taskENTER_CRITICAL(x) ((void)0)
++#define taskEXIT_CRITICAL(x) ((void)0)
++#define LOG_DBG(...) ((void)0)
++using TaskHandle_t=void*;
++static int eIncrement=0;
++static void xTaskNotify(TaskHandle_t,int,int) {}
++struct RenderLock { RenderLock() {assert(!locked);locked=true;} ~RenderLock(){locked=false;} };
++struct HalPowerManager { struct Lock {}; };
++struct {int screenInverted=0;} SETTINGS;
++struct {void setInverted(bool) {assert(locked);}} display;
++struct Hal {
++  void requestDisplayRecovery() { assert(locked); events.push_back(1); }
++};
++struct GfxRenderer {
++  enum {BW};
++  Hal display;
++  bool absoluteGrayPlanes=true,nextRefreshOverridePending=true;
++  bool native=true,strip=true,clip=true,chunks=true;
++  int mode=1;
++  void cancelGrayscale16(){native=false;}
++  void endStripTarget(){strip=false;}
++  void clearClipRect(){clip=false;}
++  void setRenderMode(int m){mode=m;}
++  void freeBwBufferChunks(){chunks=false;}
++  void prepareDisplayRecovery();
++};
++@GFX@
++struct Activity {
++  bool prepared=false;
++  unsigned idleRenderDelayMs(){return 0;}
++  void prepareDisplayRecovery(){assert(locked);prepared=true;events.push_back(2);}
++  void render(RenderLock&&){assert(locked);events.push_back(3);}
++  void renderIdle(unsigned){}
++  bool handleForcedRefresh(){assert(false);return false;}
++};
++struct ActivityManager {
++  enum class PendingAction {None,Push};
++  std::atomic<PendingAction> pendingAction{PendingAction::None};
++  std::atomic<bool> displayRecoveryPending{false};
++  std::atomic<unsigned> idleRenderGeneration{0};
++  GfxRenderer renderer;
++  Activity a; Activity* currentActivity=&a;
++  TaskHandle_t waitingTaskHandle=nullptr;
++  void cancelIdleRender(){++idleRenderGeneration;}
++  void requestUpdate(){events.push_back(0);}
++  bool idleRenderCancelled(unsigned){return true;}
++  bool handleForcedRefresh();
++  void renderTaskLoop();
++};
++@HANDLE@
++@LOOP@
++struct Popup {bool active=true;int callbacks=0;void dismiss(){active=false;}};
++struct Home {
++  enum class CarouselUpdateScope {None,MenuOnly,Full};
++  std::atomic<CarouselUpdateScope> carouselUpdateScope{CarouselUpdateScope::MenuOnly};
++  bool coverRendered=true,coverBufferStored=true;
++  @HOME@
++};
++struct Settings {Popup optionPopup; @SETTINGS@};
++struct Menu {Popup optionPopup; @MENU@};
++struct Reader {int pagesUntilFullRefresh=9;bool forcedRefreshPending=false; @READER@};
++int main() {
++  ActivityManager m;
++  assert(m.handleForcedRefresh());
++  assert(events==std::vector<int>{0} && m.displayRecoveryPending && !m.a.prepared);
++  m.pendingAction=ActivityManager::PendingAction::Push;
++  try {m.renderTaskLoop();} catch(Stop&){}
++  assert(m.displayRecoveryPending && events==std::vector<int>{0});
++  rounds=0; m.pendingAction=ActivityManager::PendingAction::None;
++  try {m.renderTaskLoop();} catch(Stop&){}
++  assert(!m.displayRecoveryPending && m.a.prepared && events==std::vector<int>({0,1,2,3}));
++  auto& r=m.renderer;
++  assert(!r.native && !r.strip && !r.clip && !r.chunks && r.mode==r.BW);
++  assert(!r.absoluteGrayPlanes && !r.nextRefreshOverridePending);
++  events.clear(); rounds=0;
++  try {m.renderTaskLoop();} catch(Stop&){}
++  assert(events==std::vector<int>{3}); // ordinary repaint never requests recovery
++  Home h; h.prepareDisplayRecovery();
++  assert(h.carouselUpdateScope==Home::CarouselUpdateScope::Full && !h.coverRendered && !h.coverBufferStored);
++  Settings s; s.prepareDisplayRecovery(); assert(!s.optionPopup.active && s.optionPopup.callbacks==0);
++  Menu p; p.prepareDisplayRecovery(); assert(!p.optionPopup.active && p.optionPopup.callbacks==0);
++  Reader reader; reader.prepareDisplayRecovery(); assert(reader.pagesUntilFullRefresh==1 && reader.forcedRefreshPending);
++}
++'''
++
++
++with tempfile.TemporaryDirectory(prefix='paperdiy-recovery-') as directory:
++    work = Path(directory)
++    (work/'esp_attr.h').write_text('#pragma once\n#define IRAM_ATTR\n')
++    (work/'sdkconfig.h').write_text('#pragma once\n#define CONFIG_IDF_TARGET_ESP32S3 1\n')
++    (work/'esp_heap_caps.h').write_text('''#pragma once
++#include <stdlib.h>
++#define MALLOC_CAP_INTERNAL 0
++static inline void* heap_caps_aligned_alloc(size_t a,size_t s,int c){(void)a;(void)c;return malloc(s);}
++static inline void heap_caps_free(void* p){free(p);}
++''')
++    cc, cxx = os.environ.get('CC','cc'), os.environ.get('CXX','c++')
++    flags = ['-I'+str(work), '-I'+str(LCD), '-DFREEINK_DEVICE_PAPERDIY=1']
++    queue = work/'queue.o'
++    subprocess.run([cc,'-std=c11',*flags,'-Dlq_reset=real_lq_reset','-c',str(LCD/'output_common/line_queue.c'),'-o',str(queue)],check=True)
++    body=function(LCD/'output_lcd/render_lcd.c','void lcd_do_update(')
++    source=work/'phase.c'
++    source.write_text(LCD_TEST.replace('@FUNCTION@',body))
++    exe=work/'phase'
++    subprocess.run([cc,'-std=c11',*flags,str(source),str(queue),'-o',str(exe)],check=True)
++    subprocess.run([str(exe)],check=True)
++    # Remove only the new post-join cleanup: injected stale rows must be detected.
++    begin=body.index('#if FREEINK_DEVICE_PAPERDIY')
++    end=body.index('#endif',begin)+len('#endif')
++    source.write_text(LCD_TEST.replace('@FUNCTION@',body[:begin]+body[end:]))
++    subprocess.run([cc,'-std=c11',*flags,str(source),str(queue),'-o',str(exe)],check=True)
++    rejected=subprocess.run([str(exe)],capture_output=True)
++    assert rejected.returncode!=0, 'Missing queue cleanup escaped negative control'
++    ui=UI_TEST
++    refs={
++        'GFX':('lib/GfxRenderer/GfxRenderer.cpp','void GfxRenderer::prepareDisplayRecovery('),
++        'HANDLE':('src/activities/ActivityManager.cpp','bool ActivityManager::handleForcedRefresh('),
++        'LOOP':('src/activities/ActivityManager.cpp','void ActivityManager::renderTaskLoop('),
++        'HOME':('src/activities/home/HomeActivity.h','void prepareDisplayRecovery('),
++        'SETTINGS':('src/activities/settings/SettingsActivity.h','void prepareDisplayRecovery('),
++        'MENU':('src/activities/reader/EpubReaderMenuActivity.h','void prepareDisplayRecovery('),
++        'READER':('src/activities/reader/ReaderActivity.h','void prepareDisplayRecovery('),
++    }
++    for key,(path,signature) in refs.items():
++        ui=ui.replace('@'+key+'@',function(ROOT/path,signature).replace(' override','').replace(' final',''))
++    source=work/'ui.cpp'; source.write_text(ui)
++    exe=work/'ui'
++    subprocess.run([cxx,'-std=c++20','-DFREEINK_DEVICE_PAPERDIY=1',str(source),'-o',str(exe)],check=True)
++    subprocess.run([str(exe)],check=True)
++print('PaperDIY stale-row fault/retry, negative control, serialized redraw and page recovery hooks passed')
 diff --git a/test/test_paperdiy_epdiy_waveform.py b/test/test_paperdiy_epdiy_waveform.py
 new file mode 100644
 --- /dev/null
@@ -7409,7 +7943,7 @@ diff --git a/test/test_paperdiy_refresh_routing.py b/test/test_paperdiy_refresh_
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_refresh_routing.py
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,181 @@
 +"""Compile the complete production HAL against a recording SDK boundary."""
 +from pathlib import Path
 +import subprocess
@@ -7436,6 +7970,8 @@ new file mode 100644
 +  struct Record { RefreshMode mode; bool off; RefreshContext context; bool async; };
 +  inline static std::vector<Record> records;
 +  inline static bool committed=true;
++  inline static int resyncs=0;
++  inline static RefreshMode grayMode=FAST_REFRESH, nativeMode=FAST_REFRESH;
 +  template<class... T> EInkDisplay(T...) {}
 +  void displayBuffer(RefreshMode mode, bool off, RefreshContext context) { records.push_back({mode,off,context,false}); }
 +  void displayBufferAsyncNoShadow(RefreshMode mode, RefreshContext context) { records.push_back({mode,false,context,true}); }
@@ -7444,19 +7980,22 @@ new file mode 100644
 +  bool hasPendingMaintenance() const { return false; }
 +  void runMaintenance() {}
 +  freeink::GrayscaleCapabilities grayscaleCapabilities(freeink::GrayscaleMode) const { return {}; }
-+  template<class... T> bool displayGrayscaleBase(T...) { return true; }
++  bool displayGrayscaleBase(freeink::GrayscaleMode, RefreshMode mode, bool) { grayMode=mode; return true; }
++  void displayGrayscaleBase(RefreshMode mode, bool, RefreshContext) { grayMode=mode; }
++  void requestResync(uint8_t passes=1) { resyncs+=passes; }
 +#define VOID_METHOD(name) template<class... T> void name(T...) const {}
 +  VOID_METHOD(abortPostRefresh) VOID_METHOD(begin) VOID_METHOD(cancelGrayscale16)
 +  VOID_METHOD(cleanupGrayscaleBuffers) VOID_METHOD(clearScreen) VOID_METHOD(copyGrayscaleBuffers)
 +  VOID_METHOD(copyGrayscaleLsbBuffers) VOID_METHOD(copyGrayscaleMsbBuffers) VOID_METHOD(deepSleep)
 +  VOID_METHOD(displayGrayBuffer) VOID_METHOD(drawImage) VOID_METHOD(drawImageTransparent)
-+  VOID_METHOD(preconditionGrayscale) VOID_METHOD(requestResync) VOID_METHOD(returnBuildStorage)
++  VOID_METHOD(preconditionGrayscale) VOID_METHOD(returnBuildStorage)
 +  VOID_METHOD(setDisplayX3) VOID_METHOD(setInverted) VOID_METHOD(setMurphyM4Batch)
 +  VOID_METHOD(skipInitialResync) VOID_METHOD(waitRefreshComplete) VOID_METHOD(writeGrayscalePlaneStrip)
 +#undef VOID_METHOD
 +#define BOOL_METHOD(name) bool name() const { return false; }
-+  BOOL_METHOD(canUseTextTransition) BOOL_METHOD(commitGrayscale16) BOOL_METHOD(isInverted)
-+  bool commitGrayscale16(RefreshMode) { return false; }
++  BOOL_METHOD(canUseTextTransition) BOOL_METHOD(isInverted)
++  bool commitGrayscale16() { nativeMode=FAST_REFRESH; return committed; }
++  bool commitGrayscale16(RefreshMode mode) { nativeMode=mode; return committed; }
 +  BOOL_METHOD(supportsAsyncRefresh) BOOL_METHOD(supportsContinuousImageReading)
 +  BOOL_METHOD(supportsReaderTransitions) BOOL_METHOD(supportsTextOnlyCombinedBase) BOOL_METHOD(toggleInverted)
 +#undef BOOL_METHOD
@@ -7522,6 +8061,41 @@ new file mode 100644
 +    display.displayBuffer(explicitMode); check(explicitMode);
 +    display.displayBuffer(fast); check(fast);
 +  }
++#if FREEINK_DEVICE_PAPERDIY
++  auto recover=[] {
++    const auto before=EInkDisplay::records.size();
++    const auto resyncs=EInkDisplay::resyncs;
++    display.requestDisplayRecovery();
++    assert(EInkDisplay::records.size()==before && EInkDisplay::resyncs==resyncs+1);
++  };
++  recover();
++  EInkDisplay::committed=false;
++  display.displayBuffer(fast); check(half);
++  display.displayBufferAsync(fast); check(half);
++  EInkDisplay::committed=true;
++  display.displayBuffer(fast); check(half);
++  for(int i=1;i<=30;++i) { display.displayBuffer(fast); check(i==30 ? half : fast); }
++  // Staging and a failed native submission must not consume recovery.
++  recover();
++  EInkDisplay::committed=false;
++  display.displayGrayscaleBase(fast,false,DisplayRefreshContext::TextOnlyAntiAliasing);
++  assert(EInkDisplay::grayMode==EInkDisplay::HALF_REFRESH);
++  assert(!display.commitGrayscale16(fast) && EInkDisplay::nativeMode==EInkDisplay::HALF_REFRESH);
++  display.cancelGrayscale16();
++  EInkDisplay::committed=true;
++  assert(display.commitGrayscale16() && EInkDisplay::nativeMode==EInkDisplay::HALF_REFRESH);
++  assert(display.commitGrayscale16(fast) && EInkDisplay::nativeMode==EInkDisplay::FAST_REFRESH);
++  recover();
++  EInkDisplay::committed=false;
++  assert(display.displayGrayscaleBase(HalDisplay::GrayscaleMode::Overlay,fast,false));
++  assert(EInkDisplay::grayMode==EInkDisplay::HALF_REFRESH);
++  display.displayGrayBuffer();
++  display.displayGrayscaleBase(fast,false,DisplayRefreshContext::TextOnlyAntiAliasing);
++  assert(EInkDisplay::grayMode==EInkDisplay::HALF_REFRESH);
++  EInkDisplay::committed=true;
++  display.displayGrayBuffer();
++  display.displayBuffer(fast); check(fast);
++#endif
 +}
 +'''
 +
