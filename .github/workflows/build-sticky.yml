@@ -138,6 +138,7 @@ jobs:
         run: |
           set -euo pipefail
           python freeink-sdk/libs/display/EpdiyLcd/test/host/test_transactions.py 2>&1 | tee epd-transactions.log
+          python freeink-sdk/libs/display/FreeInkDisplay/test/host/run_pro.py 2>&1 | tee display-facade.log
       - name: Run cppcheck
         if: always()
         run: |

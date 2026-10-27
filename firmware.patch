@@ -27,6 +27,49 @@ index 5c2bd6bb..1d9409ee 100644
  - **阅读与书库**：EPUB、TXT、XTC/XTCH 和图片，章节导航、书签、词典、自定义字体、阅读背景，以及 KOReader 进度同步。
  - **无线功能**：浏览器传书与设置、Calibre 无线连接、OPDS 下载、WebDAV 和设备 OTA 更新。
  - **Apps 应用中心**：数独、五子棋、中国象棋、扫雷、2048、电子木鱼、Ugly Avatar 等轻量游戏与工具。[应用说明](./src/activities/apps/README.md)。
+diff --git a/lib/GfxRenderer/GfxRenderer.cpp b/lib/GfxRenderer/GfxRenderer.cpp
+index e08284b7..2d6f21d7 100644
+--- a/lib/GfxRenderer/GfxRenderer.cpp
++++ b/lib/GfxRenderer/GfxRenderer.cpp
+@@ -60,6 +60,11 @@ bool commitNativeGray(Display& display) {
+   return false;
+ }
+ template <typename Display>
++bool commitNativeGray(Display& display, HalDisplay::RefreshMode mode) {
++  if constexpr (requires { display.commitGrayscale16(mode); }) return display.commitGrayscale16(mode);
++  return commitNativeGray(display);
++}
++template <typename Display>
+ void cancelNativeGray(Display& display) {
+   if constexpr (requires { display.cancelGrayscale16(); }) display.cancelGrayscale16();
+ }
+@@ -1809,6 +1814,14 @@ bool GfxRenderer::commitGrayscale16() const {
+   return committed;
+ }
+ 
++bool GfxRenderer::commitGrayscale16(HalDisplay::RefreshMode mode) const {
++  if (!grayscale16Buffer) return false;
++  const bool committed = commitNativeGray(display, mode);
++  if (!committed) cancelNativeGray(display);
++  grayscale16Buffer = nullptr;
++  return committed;
++}
++
+ void GfxRenderer::cancelGrayscale16() const {
+   if (grayscale16Buffer) cancelNativeGray(display);
+   grayscale16Buffer = nullptr;
+diff --git a/lib/GfxRenderer/GfxRenderer.h b/lib/GfxRenderer/GfxRenderer.h
+index 8471d5ac..9612fa18 100644
+--- a/lib/GfxRenderer/GfxRenderer.h
++++ b/lib/GfxRenderer/GfxRenderer.h
+@@ -534,6 +534,7 @@ class GfxRenderer {
+   uint8_t getGrayscaleLevels() const;
+   bool beginGrayscale16();
+   bool commitGrayscale16() const;
++  bool commitGrayscale16(HalDisplay::RefreshMode mode) const;
+   void cancelGrayscale16() const;
+   bool isGrayscale16Active() const { return grayscale16Buffer != nullptr; }
+   void drawGrayscale16Pixel(int x, int y, uint8_t gray) const;
 diff --git a/lib/I18n/translations/chinese.yaml b/lib/I18n/translations/chinese.yaml
 index a4b35fd7..c6cdb189 100644
 --- a/lib/I18n/translations/chinese.yaml
@@ -127,7 +170,7 @@ index df35ac5d..84df7186 100644
  STR_KB_HINT_EXIT_URL_MODE: "Press ABC to exit URL mode"
  STR_KB_HINT_CLEAR_TEXT: "Hold DEL to clear all text"
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..f3264b0c 100644
+index 2d854fe5..8b234af6 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
 @@ -1,6 +1,15 @@
@@ -197,6 +240,26 @@ index 2d854fe5..f3264b0c 100644
  }
  
  void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
+@@ -225,6 +253,7 @@ uint16_t HalDisplay::getDisplayHeight() const { return einkDisplay.getDisplayHei
+ uint8_t HalDisplay::getGrayscaleLevels() const { return einkDisplay.getGrayscaleLevels(); }
+ uint8_t* HalDisplay::beginGrayscale16() { return einkDisplay.beginGrayscale16(); }
+ bool HalDisplay::commitGrayscale16() { return einkDisplay.commitGrayscale16(); }
++bool HalDisplay::commitGrayscale16(RefreshMode mode) { return einkDisplay.commitGrayscale16(convertRefreshMode(mode)); }
+ void HalDisplay::cancelGrayscale16() { einkDisplay.cancelGrayscale16(); }
+ 
+ uint16_t HalDisplay::getDisplayWidthBytes() const { return einkDisplay.getDisplayWidthBytes(); }
+diff --git a/lib/hal/HalDisplay.h b/lib/hal/HalDisplay.h
+index 68001659..cc444cad 100644
+--- a/lib/hal/HalDisplay.h
++++ b/lib/hal/HalDisplay.h
+@@ -158,6 +158,7 @@ class HalDisplay {
+   uint8_t getGrayscaleLevels() const;
+   uint8_t* beginGrayscale16();
+   bool commitGrayscale16();
++  bool commitGrayscale16(RefreshMode mode);
+   void cancelGrayscale16();
+   uint16_t getDisplayWidthBytes() const;
+   uint32_t getBufferSize() const;
 diff --git a/lib/hal/HalGPIO.cpp b/lib/hal/HalGPIO.cpp
 index 4aeb2553..de687d8b 100644
 --- a/lib/hal/HalGPIO.cpp
@@ -314,6 +377,19 @@ index baacb3e2..6e330234 100644
 +  -DCROSSPOINT_VERSION=\"${crosspoint.version}-paperdiy\"
 +  -DENABLE_SERIAL_LOG
 +  -DLOG_LEVEL=2
+diff --git a/scripts/tests/native_reader_gray_contract.py b/scripts/tests/native_reader_gray_contract.py
+index 776287ef..607e4da8 100644
+--- a/scripts/tests/native_reader_gray_contract.py
++++ b/scripts/tests/native_reader_gray_contract.py
+@@ -32,7 +32,7 @@ inline bool epdiyLcdDraw(const uint8_t*,EpdiyLcdRefresh,bool){++readerHw::bw;ret
+ inline void epdiyLcdStashBase(const uint8_t*){++readerHw::bases;}
+ inline bool epdiyLcdDrawGray(const uint8_t* lsb,const uint8_t* msb,EpdiyLcdRefresh,bool){++readerHw::gray;readerHw::lsb=lsb[0];readerHw::msb=msb[0];return readerHw::ok;}
+ inline uint8_t* epdiyLcdBeginGrayscale16(){return nullptr;}
+-inline bool epdiyLcdCommitGrayscale16(const uint8_t*){return false;}
++inline bool epdiyLcdCommitGrayscale16(const uint8_t*,bool=false){return false;}
+ inline void epdiyLcdCancelGrayscale16(){}
+ ''')
+     reader=(root/'src/activities/reader/EpubReaderActivity.cpp').read_text()
 diff --git a/scripts/tests/test_app_visibility.py b/scripts/tests/test_app_visibility.py
 index 996230df..496e694e 100644
 --- a/scripts/tests/test_app_visibility.py
@@ -360,6 +436,18 @@ index 89cbf2f6..fdcfe66c 100644
                          self.assertFalse(resolve(section, "custom_sdkconfig"))
                          self.assertEqual(resolve(section, "board_build.arduino.memory_type"), "dio_opi")
                      else:
+diff --git a/scripts/tests/test_native_grayscale.py b/scripts/tests/test_native_grayscale.py
+index f99a63a4..11ad1374 100644
+--- a/scripts/tests/test_native_grayscale.py
++++ b/scripts/tests/test_native_grayscale.py
+@@ -29,6 +29,7 @@ def main():
+           bool commitGrayscale16();
+           void cancelGrayscale16();
+           void begin();''')
++        hal = hal.replace('bool commitGrayscale16();', 'bool commitGrayscale16();\n  bool commitGrayscale16(RefreshMode mode);')
+         (work / 'HalDisplay.h').write_text(hal)
+         (work / 'Logging.h').write_text('#pragma once\n#define LOG_DBG(...) ((void)0)\n#define LOG_ERR(...) ((void)0)\n#define LOG_INF(...) ((void)0)\n')
+         settings = """#pragma once
 diff --git a/scripts/tests/test_reading_ui_regressions.py b/scripts/tests/test_reading_ui_regressions.py
 index 109cd50f..89efbf0c 100644
 --- a/scripts/tests/test_reading_ui_regressions.py
@@ -1663,10 +1751,37 @@ index 370d39c1..e5f9aaca 100644
    void openBookByPath(const std::string& path);
    void promptRebuildIndex();
 diff --git a/src/activities/reader/EpubReaderActivity.cpp b/src/activities/reader/EpubReaderActivity.cpp
-index 7b2a9366..62f0379f 100644
+index 7b2a9366..b44377ac 100644
 --- a/src/activities/reader/EpubReaderActivity.cpp
 +++ b/src/activities/reader/EpubReaderActivity.cpp
-@@ -3366,7 +3366,12 @@ void EpubReaderActivity::closeOverlayToPage() {
+@@ -2746,12 +2746,8 @@ bool EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
+     LOG_DBG("ERS", "UC8279 image page: absolute quality waveform");
+     pagesUntilFullRefresh = 1;
+   } else if (use16LevelText) {
+-    // 16 级文字：下面那一趟 commitGrayscale16() 自己把整帧推给面板，所以这里**不**推底图。
+-    // 多推一次会变成两次面板驱动（更闪、更慢），而 16 级用的本身就是整屏波形，残影照清。
+-    // / 16-level text: the single commitGrayscale16() below drives the panel with the whole
+-    // frame, so the base is deliberately NOT pushed here. Pushing it would drive the panel
+-    // twice (more flash, more time), and the 16-level waveform is a full-screen one anyway,
+-    // so ghosting is still cleared.
++    // The native gray commit below carries the due/manual clean mode. Do not
++    // drive a separate B/W base: that would turn one page into two refreshes.
+   } else if (combinedGrayscaleBase) {
+     ReaderUtils::displayBaseWithRefreshCycle(renderer, pagesUntilFullRefresh, manualRefreshPending);
+   } else if (pageHasImages) {
+@@ -2791,10 +2787,9 @@ bool EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
+         renderer.cancelGrayscale16();
+         return false;
+       }
+-      if (renderer.commitGrayscale16()) {
++      if (ReaderUtils::commitGrayscale16WithRefreshCycle(renderer, pagesUntilFullRefresh, manualRefreshPending)) {
+         const auto tEnd = millis();
+         LOG_DBG("ERS", "Page render: 16-level text total=%lums", tEnd - t0);
+-        pagesUntilFullRefresh = 1;
+         return finish();
+       }
+       LOG_ERR("ERS", "16-level text commit failed; displaying B/W");
+@@ -3366,7 +3361,12 @@ void EpubReaderActivity::closeOverlayToPage() {
      discardOverlayPage();
    }
    if (renderer.grayscaleReplacesFrame()) pagesUntilFullRefresh = 1;
@@ -1780,6 +1895,35 @@ index 92b46ea6..8d12ffe0 100644
  }
  
  void ReaderActivity::prepareForSleep() { flushReaderSession(); }
+diff --git a/src/activities/reader/ReaderRefresh.h b/src/activities/reader/ReaderRefresh.h
+index 82cbc3ee..36bde94b 100644
+--- a/src/activities/reader/ReaderRefresh.h
++++ b/src/activities/reader/ReaderRefresh.h
+@@ -31,6 +31,24 @@ inline HalDisplay::RefreshMode consumeRefreshMode(int& pagesUntilFullRefresh, bo
+   return mode;
+ }
+ 
++// Native gray carries its clean request in the same physical submission.
++// A failed commit keeps the existing debt; a cancelled render never calls this.
++template <typename Renderer>
++inline bool commitGrayscale16WithRefreshCycle(const Renderer& renderer, int& pagesUntilFullRefresh,
++                                              bool manualRefresh) {
++#if FREEINK_DEVICE_PAPERDIY
++  int next = manualRefresh ? 0 : pagesUntilFullRefresh;
++  const auto mode = consumeRefreshMode(next);
++  if (!renderer.commitGrayscale16(mode)) return false;
++  pagesUntilFullRefresh = next;
++#else
++  (void)manualRefresh;
++  if (!renderer.commitGrayscale16()) return false;
++  pagesUntilFullRefresh = 1;
++#endif
++  return true;
++}
++
+ // One helper, blocking or deferred: the async form starts the refresh and
+ // returns so the caller can overlap CPU work with the panel's refresh time.
+ // Async callers must not touch the framebuffer until
 diff --git a/src/activities/settings/ButtonRemapActivity.cpp b/src/activities/settings/ButtonRemapActivity.cpp
 index 583efff0..50fbccf9 100644
 --- a/src/activities/settings/ButtonRemapActivity.cpp
@@ -3154,6 +3298,42 @@ index 11496463..c50ebdcd 100644
      for scenes in (regular,high):
          for (scene,theme), (keys,draw) in scenes.items():
              assert scenes[scene,0][0]==keys, ('key tables',scene,theme)
+diff --git a/test/native_grayscale/NativeGrayscaleTest.cpp b/test/native_grayscale/NativeGrayscaleTest.cpp
+index 346f0cc0..1ff68bb4 100644
+--- a/test/native_grayscale/NativeGrayscaleTest.cpp
++++ b/test/native_grayscale/NativeGrayscaleTest.cpp
+@@ -59,6 +59,7 @@ std::array<uint8_t, HalDisplay::DISPLAY_WIDTH * HalDisplay::DISPLAY_HEIGHT / 2>
+ uint8_t levels = 16;
+ bool loan = false, failRefresh = false, failAllocation = false;
+ int commits = 0, cancels = 0;
++HalDisplay::RefreshMode nativeCommitMode = HalDisplay::FAST_REFRESH;
+ std::vector<char> refreshEvents;
+ }  // namespace
+ void* operator new[](size_t size, const std::nothrow_t&) noexcept {
+@@ -92,7 +93,9 @@ uint8_t* HalDisplay::beginGrayscale16() {
+   native.fill(0xFF);
+   return native.data();
+ }
+-bool HalDisplay::commitGrayscale16() {
++bool HalDisplay::commitGrayscale16() { return commitGrayscale16(FAST_REFRESH); }
++bool HalDisplay::commitGrayscale16(RefreshMode mode) {
++  nativeCommitMode = mode;
+   loan = false;
+   ++commits;
+   refreshEvents.push_back('C');
+@@ -281,6 +284,12 @@ int main(int argc, char** argv) {
+   assert(renderer.getGrayscaleLevels() == 4 && !renderer.beginGrayscale16());
+   assert(qrParams(renderer) == "&w=32&h=128&mode=gray4");
+   levels = 16;
++  for (const auto mode : {HalDisplay::FAST_REFRESH, HalDisplay::HALF_REFRESH, HalDisplay::FULL_REFRESH}) {
++    assert(renderer.beginGrayscale16());
++    assert(renderer.commitGrayscale16(mode));
++    assert(nativeCommitMode == mode);
++    assert(!renderer.commitGrayscale16(mode));
++  }
+   assert(qrParams(renderer) == "&w=32&h=128&mode=gray16");
+   for (const auto orientation : {GfxRenderer::Portrait, GfxRenderer::PortraitInverted, GfxRenderer::LandscapeClockwise,
+                                  GfxRenderer::LandscapeCounterClockwise}) {
 diff --git a/test/settings_api/test_settings_api_keys.py b/test/settings_api/test_settings_api_keys.py
 index 47ced41a..64a1a7d7 100644
 --- a/test/settings_api/test_settings_api_keys.py
@@ -3231,7 +3411,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,560 @@
+@@ -0,0 +1,588 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -3791,6 +3971,34 @@ new file mode 100644
 +compare the same EPUB page pair/font against 40355609213: first/next/previous,
 +menu return and cumulative residuals, then confirm the periodic UI clean and
 +sleep/wake behavior remain intact. The user self-flashes; no device access.
++
++## Native sixteen-gray clean routing, 2026-10-27 (hardware pending)
++
++The phase-alignment candidate improved flicker substantially, but the user
++reports heavy residuals between cleans and an abrupt full clean. The user
++confirmed full cleaning removes the residuals. Preserve that distinction;
++neither a new waveform nor a shorter clean interval is part of this correction.
++
++Native sixteen-gray EPUB text previously skipped the shared clean-mode choice
++and always submitted TextTurn, then reset its counter to one. A mode-carrying
++commit now reaches HAL, the SDK facade and the Epdiy driver in a single panel
++submission: ordinary turns use existing GL16; due/manual cleans select the
++accepted full-coverage GC16. Update the next counter only after success; reader
++rollback retains the previous counter/manual request on failure or cancellation.
++
++Existing parameterless image/sleep/native callers retain their old behavior.
++Other drivers inherit the old native commit as the compatibility default; the
++mode-dependent Epdiy choice is gated to PaperDIY. No new heap allocation, frame
++buffer or per-driver mode state is needed. The extra virtual entry is code/vtable
++storage, not a new runtime frame allocation. Keep gray mapping, the aligned
++waveform, four-gray paths, the UI 30-update budget, power, CKV and VCOM unchanged.
++
++Verification covers 63 native reader commits, due/manual mode propagation,
++failed commit and retry, identical-frame full coverage, cancellation, renderer
++and SDK facade forwarding, legacy native callers and the existing Read Pico
++behavior. An isolated negative control drops only the native mode argument;
++the due-clean assertion must fail. Optical gray residual suppression and a
++softer full-clean waveform remain separate hardware work, not claimed fixes.
 +
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
@@ -4438,7 +4646,7 @@ diff --git a/test/test_paperdiy_epub_aa.py b/test/test_paperdiy_epub_aa.py
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_epub_aa.py
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,179 @@
 +"""Production EPUB AA routing/menu close with the real SDK capability descriptor."""
 +from pathlib import Path
 +import os
@@ -4478,6 +4686,8 @@ new file mode 100644
 +  bool inverted=false;
 +  int restored=0;
 +  mutable int bw=0,bases=0;
++  mutable int nativeCommits=0;
++  bool nativeSuccess=true;
 +  mutable HalDisplay::RefreshMode lastMode=HalDisplay::FAST_REFRESH;
 +  mutable DisplayRefreshContext lastContext=DisplayRefreshContext::Normal;
 +  bool isInverted() const{return inverted;}
@@ -4494,6 +4704,8 @@ new file mode 100644
 +  void displayGrayscaleBase(HalDisplay::RefreshMode mode,DisplayRefreshContext ctx) const{
 +    ++bases;lastMode=mode;lastContext=ctx;
 +  }
++  bool commitGrayscale16() const {++nativeCommits;return nativeSuccess;}
++  bool commitGrayscale16(HalDisplay::RefreshMode mode) const {lastMode=mode;return commitGrayscale16();}
 +};
 +#include "activities/reader/ReaderRefresh.h"
 +bool xteink=false;
@@ -4520,6 +4732,30 @@ new file mode 100644
 +};
 +@CLOSE@
 +int main(){
++  // Failure cannot consume a due/manual clean; retry carries the same mode.
++  for(int initial:{0,1,2,30})for(bool manual:{false,true}){
++    GfxRenderer renderer;int counter=initial;renderer.nativeSuccess=false;
++    assert(!ReaderUtils::commitGrayscale16WithRefreshCycle(renderer,counter,manual));
++    assert(counter==initial && renderer.bw==0 && renderer.bases==0);
++    renderer.nativeSuccess=true;
++    assert(ReaderUtils::commitGrayscale16WithRefreshCycle(renderer,counter,manual));
++#if FREEINK_DEVICE_PAPERDIY
++    assert(counter==((manual||initial<=1)?30:initial-1));
++    assert(renderer.lastMode==((manual||initial<=1)?HalDisplay::HALF_REFRESH:HalDisplay::FAST_REFRESH));
++#else
++    assert(counter==1 && renderer.lastMode==HalDisplay::FAST_REFRESH);
++#endif
++    assert(renderer.nativeCommits==2 && renderer.bw==0 && renderer.bases==0);
++  }
++#if FREEINK_DEVICE_PAPERDIY
++  GfxRenderer native;int nativeCounter=1,cleans=0;
++  for(int page=0;page<63;++page){
++    assert(ReaderUtils::commitGrayscale16WithRefreshCycle(native,nativeCounter,false));
++    bool due=page%30==0;cleans+=native.lastMode==HalDisplay::HALF_REFRESH;
++    assert(native.lastMode==(due?HalDisplay::HALF_REFRESH:HalDisplay::FAST_REFRESH));
++  }
++  assert(cleans==3 && native.nativeCommits==63 && native.bw==0 && native.bases==0);
++#endif
 +  // The real capability feeds the real EPUB condition and shared cadence helper.
 +  for(bool aa:{false,true})for(bool night:{false,true})for(bool images:{false,true}){
 +    SETTINGS.textAntiAliasing=aa;EpubReaderActivity p;p.renderer.inverted=night;p.pageHasImages=images;
@@ -4556,7 +4792,7 @@ new file mode 100644
 +  // An image-setting change invalidates even a valid B/W snapshot.
 +  SETTINGS.textAntiAliasing=false;xteink=false;EpubReaderActivity changed;changed.imageScalingDirty=true;
 +  changed.closeOverlayToPage();assert(changed.redraw==1 && changed.renderer.bw==0 && !changed.imageScalingDirty);
-+  puts("PASS production EPUB combined-AA selection, unchanged reading cadence and gray menu return");
++  puts("PASS production EPUB AA, native gray clean cadence/manual/failure retry, single commit and gray menu return");
 +}
 +'''
 +for name, value in {'CAPABILITY': capability, 'COMBINED': combined, 'CLOSE': close}.items():
@@ -4575,6 +4811,21 @@ new file mode 100644
 +                        '-I' + str(ROOT / 'freeink-sdk/libs/display/FreeInkDisplay/include'),
 +                        str(cpp), '-o', str(binary)], check=True)
 +        subprocess.run([str(binary)], check=True)
++    # Removing only the mode propagation must be detected by these checks.
++    refresh = (ROOT / 'src/activities/reader/ReaderRefresh.h').read_text(encoding='utf-8')
++    marker = 'renderer.commitGrayscale16(mode)'
++    assert refresh.count(marker) == 1
++    negative = work / 'activities/reader/ReaderRefresh.h'
++    negative.parent.mkdir(parents=True)
++    negative.write_text(refresh.replace(marker, 'renderer.commitGrayscale16()'), encoding='utf-8')
++    binary = work / 'native-clean-negative'
++    subprocess.run(['c++', '-std=c++20', '-DFREEINK_DEVICE_PAPERDIY=1', '-DFREEINK_PAPERDIY_EPDIY=1',
++                    '-I' + str(work), '-I' + str(ROOT / 'src'),
++                    '-I' + str(ROOT / 'freeink-sdk/libs/display/FreeInkDisplay/include'),
++                    str(cpp), '-o', str(binary)], check=True)
++    result = subprocess.run([str(binary)], capture_output=True, text=True)
++    assert result.returncode != 0 and 'lastMode' in result.stderr, result.stderr
++    print('PASS native-gray omitted-mode negative control rejected')
 diff --git a/test/test_paperdiy_file_settings.py b/test/test_paperdiy_file_settings.py
 new file mode 100644
 --- /dev/null
@@ -7084,7 +7335,7 @@ diff --git a/test/test_paperdiy_refresh_routing.py b/test/test_paperdiy_refresh_
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_refresh_routing.py
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,141 @@
 +"""Compile the complete production HAL against a recording SDK boundary."""
 +from pathlib import Path
 +import subprocess
@@ -7131,6 +7382,7 @@ new file mode 100644
 +#undef VOID_METHOD
 +#define BOOL_METHOD(name) bool name() const { return false; }
 +  BOOL_METHOD(canUseTextTransition) BOOL_METHOD(commitGrayscale16) BOOL_METHOD(isInverted)
++  bool commitGrayscale16(RefreshMode) { return false; }
 +  BOOL_METHOD(supportsAsyncRefresh) BOOL_METHOD(supportsContinuousImageReading)
 +  BOOL_METHOD(supportsReaderTransitions) BOOL_METHOD(supportsTextOnlyCombinedBase) BOOL_METHOD(toggleInverted)
 +#undef BOOL_METHOD
