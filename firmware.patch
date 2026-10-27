@@ -201,7 +201,7 @@ index df35ac5d..84df7186 100644
  STR_KB_HINT_EXIT_URL_MODE: "Press ABC to exit URL mode"
  STR_KB_HINT_CLEAR_TEXT: "Hold DEL to clear all text"
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..8f623f51 100644
+index 2d854fe5..ebd135ea 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
 @@ -1,6 +1,15 @@
@@ -220,17 +220,43 @@ index 2d854fe5..8f623f51 100644
  #if FREEINK_DEVICE_READPICO
  #include <BoardReadPico.h>
  #include <Logging.h>
-@@ -112,19 +121,36 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
+@@ -44,6 +53,10 @@ void HalDisplay::begin(bool seamless) {
+ #endif
+ 
+   einkDisplay.begin();
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
++  einkDisplay.setRefreshAuditObserver([](const char* line) { LOG_INF("PD-AUDIT", "%s", line); });
++  LOG_INF("PD-AUDIT", "diagnostic build: baseline 40461923788; STV17 CKV18; display fixes not applied");
++#endif
+ 
+ #if FREEINK_DEVICE_READPICO
+   // The facade publishes the driver's real geometry (EpdiyLcdDriver::geometry():
+@@ -112,19 +125,51 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
  }  // namespace
  
  void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen, DisplayRefreshContext context) {
 +#if FREEINK_DEVICE_PAPERDIY
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++  const auto requestedMode = mode;
++  const bool automaticClean =
++      !displayRecoveryPending &&
++      paperDiyRefreshBudget.needsClean(mode == FAST_REFRESH, context == DisplayRefreshContext::Normal);
++#endif
 +  if (displayRecoveryPending) mode = HALF_REFRESH;
 +  const bool normalContext = context == DisplayRefreshContext::Normal;
 +  if (paperDiyRefreshBudget.needsClean(mode == FAST_REFRESH, normalContext)) {
 +    mode = HALF_REFRESH;
 +    LOG_DBG("DISP", "PaperDIY UI clean: 30-update cadence");
 +  }
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++  if (mode != FAST_REFRESH) {
++    LOG_INF("PD-AUDIT", "submit source=%s requested=%u selected=%u context=%u",
++            displayRecoveryPending ? "manual-recovery"
++            : automaticClean       ? "ui30"
++                                   : "explicit",
++            static_cast<unsigned>(requestedMode), static_cast<unsigned>(mode), static_cast<unsigned>(context));
++  }
++#endif
 +#endif
    if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
      einkDisplay.requestResync(1);
@@ -257,7 +283,7 @@ index 2d854fe5..8f623f51 100644
  }
  
  void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
-@@ -138,11 +164,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
+@@ -138,11 +183,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
  bool HalDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
  
  void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
@@ -273,7 +299,7 @@ index 2d854fe5..8f623f51 100644
  }
  
  void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
-@@ -160,6 +190,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
+@@ -160,6 +209,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
  void HalDisplay::returnFrameBufferStorage() { einkDisplay.returnBuildStorage(); }
  
  bool HalDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback, bool turnOffScreen) {
@@ -283,7 +309,7 @@ index 2d854fe5..8f623f51 100644
    if (gpio.deviceIsX3() && fallback == HALF_REFRESH) einkDisplay.requestResync();
    return einkDisplay.displayGrayscaleBase(mode, static_cast<EInkDisplay::RefreshMode>(fallback), turnOffScreen);
  }
-@@ -169,6 +202,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
+@@ -169,6 +221,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
  }
  
  void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen, DisplayRefreshContext context) {
@@ -293,7 +319,7 @@ index 2d854fe5..8f623f51 100644
    // X3: a HALF fallback means the caller wants a clean base (e.g. the sleep
    // cover, a full-screen swap from arbitrary prior content). Without this, the
    // X3 grayscale base takes its gentle differential happy path and the prior
-@@ -195,7 +231,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
+@@ -195,7 +250,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
  
  void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.cleanupGrayscaleBuffers(bwBuffer); }
  
@@ -307,7 +333,7 @@ index 2d854fe5..8f623f51 100644
  
  void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
    einkDisplay.writeGrayscalePlaneStrip(lsbPlane ? EInkDisplay::GRAY_PLANE_LSB : EInkDisplay::GRAY_PLANE_MSB, rows,
-@@ -219,12 +260,46 @@ void HalDisplay::cancelGrayscale() {
+@@ -219,12 +279,46 @@ void HalDisplay::cancelGrayscale() {
  
  bool HalDisplay::displayCommitted() const { return einkDisplay.displayCommitted(); }
  
@@ -458,10 +484,10 @@ index 4d90e713..148e8c37 100644
    // immediately wake the device again), then arms the wake source and sleeps.
    freeink::PowerManager::deepSleepUntilPowerButton();
 diff --git a/platformio.ini b/platformio.ini
-index baacb3e2..6e330234 100644
+index baacb3e2..52456a40 100644
 --- a/platformio.ini
 +++ b/platformio.ini
-@@ -1139,3 +1139,41 @@ build_flags =
+@@ -1139,3 +1139,42 @@ build_flags =
    -DCROSSPOINT_VERSION=\"${crosspoint.version}-lilygo\"
    -DENABLE_SERIAL_LOG
    -DLOG_LEVEL=2
@@ -500,6 +526,7 @@ index baacb3e2..6e330234 100644
 +extends = paperdiy_hardware
 +build_flags =
 +  ${paperdiy_hardware.build_flags}
++  -DFREEINK_PAPERDIY_REFRESH_AUDIT=1
 +  -DCROSSPOINT_VERSION=\"${crosspoint.version}-paperdiy\"
 +  -DENABLE_SERIAL_LOG
 +  -DLOG_LEVEL=2
@@ -3456,7 +3483,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..e7911d0b 100644
+index b0b49733..a64e8885 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -3468,13 +3495,14 @@ index b0b49733..e7911d0b 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,16 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,17 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
 +add_test(NAME PaperDiyBoardTag COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_board_tag.py)
 +add_test(NAME PaperDiyRefreshRouting COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_routing.py)
 +add_test(NAME PaperDiyDisplayRecovery COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_recovery.py)
++add_test(NAME PaperDiyRefreshAudit COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_audit.py)
 +add_test(NAME PaperDiyKeyboardButtons COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_buttons.py)
 +  add_test(NAME PaperDiyKeyboardEditing COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_editing.py)
 +add_test(NAME PaperDiyMenuNavigation COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_menu_navigation.py)
@@ -3725,7 +3753,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,632 @@
+@@ -0,0 +1,679 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -4357,6 +4385,53 @@ new file mode 100644
 +unchanged zero-pass cancellation/ordinary cadence. Hardware acceptance still needs
 +an actual recurrence followed by the user's confirmed manual-refresh gesture;
 +ordinary navigation and reader regression checks alone do not prove this fixed.
++
++## Refresh-chain diagnostic candidate, 2026-10-27
++
++40461923788 failed hardware acceptance: A/B navigation can lead to a periodic clean
++after which the entire UI is extremely pale. Text remains faintly visible; manual
++recovery does not restore it, reboot does. Do not describe this as proven missing
++framebuffer text. The short live logging attempt did not capture that event.
++
++Correct pin mapping: PaperDiyEpdiyConfig maps STV=17 and CKV/RMT=18. The ordinary
++Arduino digitalWrite(17) in power hooks is rejected because the LCD driver used
++IDF gpio_config rather than Arduino GPIO ownership. Isolated copies reproduce
++this mismatch and confirm IDF gpio_set_level restores the intended STV writes.
++Another isolated probe shows late workers can each restart LCD after an existing
++underrun. Neither probe reproduces the optical fade. Trial fixes are NOT applied
++in this diagnostic candidate, to retain one observation baseline.
++
++FREEINK_PAPERDIY_REFRESH_AUDIT=1 enables numeric-only observation on PaperDIY.
++HAL labels clean submissions ui30/manual-recovery/explicit. Epdiy reports the
++sequence, requested/effective mode (Full=0, Half=1, Fast=2, TextTurn=3), prior
++baseline knowledge, initial power-ready result, raw-clear start/completion counts,
++draw start/completion counts, renderer completed/expected phases, return code,
++target FNV-1a before/after and black/intermediate-gray pixel counts. LCD start
++counts increment at the actual start entry; done counts increment only before a
++registered completion callback. They do not measure gate clocks or optical ink.
++0x80000000 is a diagnostic-only power-on-failed marker, not an EpdDrawError bit.
++
++Hashes/tone counts are collected before clean/unknown-baseline submissions only;
++successful ordinary fast/text moves do not hash or print. On an unanticipated
++fast failure, captured=0 means no pre-draw hash/tone count was collected. No image,
++text, credentials or SD output is recorded. Log formatting/callback runs AFTER
++panel work and optional power-off, never in the ISR or between waveform phases.
++FNV is an integrity diagnostic, not a security guarantee or optical measurement.
++
++No new task, heap allocation or framebuffer; counters/observer take bounded
++static storage and one audit object plus a 320-byte formatting buffer use the
++existing render stack. Hashing/logging still add runtime work and can affect
++reproduction timing, so absence of the fault on this build is not acceptance.
++Waveforms, scan timing, STV/CKV writes, retry/clear strategy and cadence are kept.
++Guard-removal source comparison against 40461923788 verifies this control-flow
++boundary; it does not prove timing equivalence while diagnostics are active.
++
++Host validation checks target mutation/scan mismatch reports and negative control,
++HAL mode selection with audit on/off and non-DIY, SDK observer forwarding and error
++retry, and the real LCD driver's start/VSYNC counter hooks with resource failures.
++This is a diagnostic image, not a claimed repair. Hardware evidence must bind an
++actual faded screen to its immediately preceding audit sequence before deciding
++which isolated fix or further electrical timing test is warranted.
 +
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
@@ -7939,11 +8014,98 @@ new file mode 100644
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/test/test_paperdiy_refresh_audit.py b/test/test_paperdiy_refresh_audit.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_refresh_audit.py
+@@ -0,0 +1,82 @@
++"""Check the production numeric audit, including changed targets and scan mismatches."""
++from pathlib import Path
++import os
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++source = (ROOT/'freeink-sdk/libs/display/EpdiyLcd/src/EpdiyLcd.cpp').read_text(encoding='utf-8')
++start=source.index('struct RefreshAudit {')
++brace=source.index('{',start)
++end,depth=brace+1,1
++while depth:
++    depth+=(source[end]=='{')-(source[end]=='}')
++    end+=1
++audit=source[start:end]+';'
++code=r'''
++#include <cassert>
++#include <cstdint>
++#include <cstddef>
++#include <cstdio>
++#include <string>
++#include <vector>
++enum class EpdiyLcdRefresh:uint8_t{Full,Half,Fast,TextTurn};
++static uint8_t target[16];
++static uint8_t* g_fb4=target;
++static bool g_baselineKnown=true;
++static uint32_t g_refreshAuditSequence=0,starts=0,done=0;
++static int expected=0,completed=0;
++static void (*g_refreshAuditObserver)(const char*)=nullptr;
++static std::vector<std::string> lines;
++static int epd_width(){return 16;}
++static int epd_height(){return 2;}
++static void epd_lcd_audit_counts(uint32_t* s,uint32_t* d){*s=starts;*d=done;}
++static void epd_audit_reset_progress(){expected=completed=0;}
++static void epd_audit_draw_progress(int* e,int* c){*e=expected;*c=completed;}
++static void observe(const char* s){lines.emplace_back(s);}
++@AUDIT@
++static std::string field(const std::string& s,const char* name){
++ auto p=s.find(name);assert(p!=std::string::npos);p+=std::string(name).size();
++ return s.substr(p,s.find(' ',p)-p);
++}
++int main(){
++ for(auto& b:target)b=0x0F;
++ g_refreshAuditObserver=observe;
++ RefreshAudit clean(EpdiyLcdRefresh::Half);clean.powerReady=true;
++ clean.beginDraw();starts+=30;done+=30;expected=completed=30;clean.endDraw();
++ clean.emit(0,EpdiyLcdRefresh::Half);
++ assert(lines.size()==1 && lines.back().find("scan=30/30 phase=30/30 err=00000000")!=std::string::npos);
++ assert(lines.back().find("ink=16 mid=0")!=std::string::npos);
++ assert(field(lines.back(),"target=")==field(lines.back(),"after="));
++ RefreshAudit fast(EpdiyLcdRefresh::Fast);fast.emit(0,EpdiyLcdRefresh::Fast);
++ assert(lines.size()==1); // ordinary successful moves do not hash/print
++ RefreshAudit changed(EpdiyLcdRefresh::Half);
++ target[0]=0x55;
++ changed.beginDraw();starts+=31;done+=30;expected=30;completed=29;changed.endDraw();
++ changed.emit(0x400,EpdiyLcdRefresh::Half);
++ assert(lines.back().find("scan=31/30 phase=29/30 err=00000400")!=std::string::npos);
++ assert(field(lines.back(),"target=")!=field(lines.back(),"after="));
++ g_baselineKnown=false;
++ RefreshAudit reset(EpdiyLcdRefresh::Fast);
++ reset.beginClear();starts+=78;done+=78;reset.endClear();
++ reset.beginDraw();starts+=30;done+=30;expected=completed=30;reset.endDraw();
++ reset.emit(0,EpdiyLcdRefresh::Full);
++ assert(lines.back().find("req=2 eff=0 known=0")!=std::string::npos);
++ assert(lines.back().find("clear=78/78 scan=30/30")!=std::string::npos);
++ g_refreshAuditObserver=nullptr;g_fb4=nullptr;
++ RefreshAudit disabled(EpdiyLcdRefresh::Half);disabled.emit(0,EpdiyLcdRefresh::Half);
++}
++'''.replace('@AUDIT@',audit)
++with tempfile.TemporaryDirectory(prefix='paperdiy-refresh-audit-') as folder:
++    work=Path(folder); cpp=work/'check.cpp'; exe=work/'check'
++    cpp.write_text(code,encoding='utf-8')
++    cxx=os.environ.get('CXX','c++')
++    subprocess.run([cxx,'-std=c++20',str(cpp),'-o',str(exe)],check=True)
++    subprocess.run([str(exe)],check=True)
++    marker='const uint32_t afterHash = targetHash(false);'
++    assert code.count(marker)==1
++    cpp.write_text(code.replace(marker,'const uint32_t afterHash = beforeHash;'),encoding='utf-8')
++    subprocess.run([cxx,'-std=c++20',str(cpp),'-o',str(exe)],check=True)
++    result=subprocess.run([str(exe)],capture_output=True)
++    assert result.returncode!=0,'Target mutation escaped the audit negative control'
++print('PaperDIY numeric frame audit, scan mismatch, target mutation negative control and disabled observer passed')
 diff --git a/test/test_paperdiy_refresh_routing.py b/test/test_paperdiy_refresh_routing.py
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_refresh_routing.py
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,183 @@
 +"""Compile the complete production HAL against a recording SDK boundary."""
 +from pathlib import Path
 +import subprocess
@@ -7983,6 +8145,7 @@ new file mode 100644
 +  bool displayGrayscaleBase(freeink::GrayscaleMode, RefreshMode mode, bool) { grayMode=mode; return true; }
 +  void displayGrayscaleBase(RefreshMode mode, bool, RefreshContext) { grayMode=mode; }
 +  void requestResync(uint8_t passes=1) { resyncs+=passes; }
++  void setRefreshAuditObserver(void (*)(const char*)) {}
 +#define VOID_METHOD(name) template<class... T> void name(T...) const {}
 +  VOID_METHOD(abortPostRefresh) VOID_METHOD(begin) VOID_METHOD(cancelGrayscale16)
 +  VOID_METHOD(cleanupGrayscaleBuffers) VOID_METHOD(clearScreen) VOID_METHOD(copyGrayscaleBuffers)
@@ -8102,7 +8265,7 @@ new file mode 100644
 +with tempfile.TemporaryDirectory(prefix='paperdiy-refresh-routing-') as directory:
 +    folder = Path(directory)
 +    (folder / 'Arduino.h').write_text('#pragma once\n#include <cstdint>\n')
-+    (folder / 'Logging.h').write_text('#pragma once\n#define LOG_DBG(...) ((void)0)\n')
++    (folder / 'Logging.h').write_text('#pragma once\ntemplate<class... T> inline void logStub(T...) {}\n#define LOG_DBG(...) ((void)0)\n#define LOG_INF(...) logStub(__VA_ARGS__)\n')
 +    (folder / 'BoardConfig.h').write_text('''#pragma once
 +namespace BoardConfig { enum class DisplayController { Test }; inline constexpr struct {
 +DisplayController displayController=DisplayController::Test;
@@ -8117,11 +8280,12 @@ new file mode 100644
 +    (folder / 'EInkDisplay.h').write_text(SDK)
 +    source = folder / 'check.cpp'
 +    source.write_text(TEST)
-+    for enabled in (0, 1):
-+        executable = folder / f'check-{enabled}'
++    for enabled, audit in ((0,0), (1,0), (1,1)):
++        executable = folder / f'check-{enabled}-{audit}'
 +        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', '-Werror',
 +                        '-I' + str(folder), '-I' + str(ROOT / 'lib/hal'),
 +                        f'-DFREEINK_DEVICE_PAPERDIY={enabled}',
++                        f'-DFREEINK_PAPERDIY_REFRESH_AUDIT={audit}',
 +                        str(source), str(ROOT / 'lib/hal/HalDisplay.cpp'), '-o', str(executable)], check=True)
 +        subprocess.run([str(executable)], check=True)
 +print('HAL 30-update shared UI cadence, failed-commit retry, manual reset, reader contexts and non-DIY routing passed')
