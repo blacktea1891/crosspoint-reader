@@ -201,7 +201,7 @@ index df35ac5d..84df7186 100644
  STR_KB_HINT_EXIT_URL_MODE: "Press ABC to exit URL mode"
  STR_KB_HINT_CLEAR_TEXT: "Hold DEL to clear all text"
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..ebd135ea 100644
+index 2d854fe5..c33f354b 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
 @@ -1,6 +1,15 @@
@@ -226,7 +226,7 @@ index 2d854fe5..ebd135ea 100644
    einkDisplay.begin();
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  einkDisplay.setRefreshAuditObserver([](const char* line) { LOG_INF("PD-AUDIT", "%s", line); });
-+  LOG_INF("PD-AUDIT", "diagnostic build: baseline 40461923788; STV17 CKV18; display fixes not applied");
++  LOG_INF("PD-AUDIT", "feed-start candidate: baseline 40531224379; readiness enabled; STV17 unchanged");
 +#endif
  
  #if FREEINK_DEVICE_READPICO
@@ -3483,7 +3483,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..a64e8885 100644
+index b0b49733..e2a9c1ed 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -3495,7 +3495,7 @@ index b0b49733..a64e8885 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,17 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,18 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -3503,6 +3503,7 @@ index b0b49733..a64e8885 100644
 +add_test(NAME PaperDiyRefreshRouting COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_routing.py)
 +add_test(NAME PaperDiyDisplayRecovery COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_recovery.py)
 +add_test(NAME PaperDiyRefreshAudit COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_audit.py)
++add_test(NAME PaperDiyFeedStart COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_feed_start.py)
 +add_test(NAME PaperDiyKeyboardButtons COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_buttons.py)
 +  add_test(NAME PaperDiyKeyboardEditing COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_editing.py)
 +add_test(NAME PaperDiyMenuNavigation COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_menu_navigation.py)
@@ -3753,7 +3754,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,679 @@
+@@ -0,0 +1,716 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -4429,9 +4430,46 @@ new file mode 100644
 +Host validation checks target mutation/scan mismatch reports and negative control,
 +HAL mode selection with audit on/off and non-DIY, SDK observer forwarding and error
 +retry, and the real LCD driver's start/VSYNC counter hooks with resource failures.
-+This is a diagnostic image, not a claimed repair. Hardware evidence must bind an
++That baseline was a diagnostic image, not a claimed repair. Hardware evidence must bind an
 +actual faded screen to its immediately preceding audit sequence before deciding
 +which isolated fix or further electrical timing test is warranted.
++
++### Feed-start candidate following diagnostic 40531224379 (2026-10-28)
++
++Live cross-page evidence captured EMPTY_LINE_QUEUE (0x400), one scan start/done
++and 0/5 successful phases, followed by unknown-baseline recovery (78 raw clear
++scans plus 30 redraw phases). The user observed repeated blackouts. This does
++not establish the cause of the separate persistent-fade report.
++
++PaperDIY now gates each phase on BOTH producers' committed-row watermarks,
++not the allocation ordinal. A producer that exhausts its assignments publishes
++an end marker. Each producer processes increasing global row indices, so when
++both watermarks cross N-1, every row in the required prefix has been committed.
++The gate never blocks a producer; it is retried after each commit and on exit.
++The prefix is at least the initial two four-row bounce fills (or the entire
++short frame), and at most either queue's usable capacity. Insufficient queue
++capacity aborts without starting a scan and wakes the coordinator exactly once.
++
++Reuse the existing owner array: reset to invalid before notifications, publish
++the actual owner with release ordering AFTER payload commit, acquire in the
++consumer. Unpublished rows cause a reported failure rather than consuming a
++later row through a stale owner. An atomic claim allows only one starter per
++phase; a late producer never restarts an errored scan. Prestart abort still joins
++both producers before queue reset. Existing post-scan join/reset ordering stays.
++
++Three atomic integers add 12 bytes of renderer context on ESP32-S3; no new heap,
++task, framebuffer or ISR wait. No waveform, clock, STV/CKV API, recovery clear
++sequence, UI30 cadence or reader page-count change. Other devices retain the
++original path. The prior diagnostic guard-removal comparison describes the
++historical baseline only; it no longer applies to this behavioral candidate.
++
++Host tests replay delayed rows, hold/cropped/short pages, prestart abort, bounded
++capacity, a genuinely full producer queue with two threads, mid-scan fault and
++next-frame reuse. They reject removing the readiness gate. Streamed consumption
++is deliberately paced by readiness in the host fixture: this tests ownership,
++order and liveness, not whether real DMA can overtake production. Device logs
++must continue to check error/start/phase counts during cross-page and reading
++tests. The candidate is not hardware accepted until those observations exist.
 +
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
@@ -5004,7 +5042,7 @@ diff --git a/test/test_paperdiy_display_recovery.py b/test/test_paperdiy_display
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_display_recovery.py
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,246 @@
 +"""Fault-inject real LCD phase scheduling and the production recovery dispatcher."""
 +from pathlib import Path
 +import os
@@ -5066,6 +5104,7 @@ new file mode 100644
 +  }
 +}
 +static void vTaskDelay(int n) { (void)n; }
++static void paperdiy_prepare_feed(RenderContext_t* c) { (void)c; }
 +void real_lq_reset(LineQueue_t*);
 +void lq_reset(LineQueue_t* q) {
 +  // Queue reset while either producer/ISR is active is invalid.
@@ -5227,7 +5266,7 @@ new file mode 100644
 +    subprocess.run([cc,'-std=c11',*flags,str(source),str(queue),'-o',str(exe)],check=True)
 +    subprocess.run([str(exe)],check=True)
 +    # Remove only the new post-join cleanup: injected stale rows must be detected.
-+    begin=body.index('#if FREEINK_DEVICE_PAPERDIY')
++    begin=body.rfind('#if FREEINK_DEVICE_PAPERDIY', 0, body.index('if (ctx->error != EPD_DRAW_SUCCESS)'))
 +    end=body.index('#endif',begin)+len('#endif')
 +    source.write_text(LCD_TEST.replace('@FUNCTION@',body[:begin]+body[end:]))
 +    subprocess.run([cc,'-std=c11',*flags,str(source),str(queue),'-o',str(exe)],check=True)
@@ -5509,6 +5548,209 @@ new file mode 100644
 +    result = subprocess.run([str(binary)], capture_output=True, text=True)
 +    assert result.returncode != 0 and 'lastMode' in result.stderr, result.stderr
 +    print('PASS native-gray omitted-mode negative control rejected')
+diff --git a/test/test_paperdiy_feed_start.py b/test/test_paperdiy_feed_start.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_feed_start.py
+@@ -0,0 +1,198 @@
++"""Replay real feeder/queue code with controlled task interleavings, not panel physics."""
++from pathlib import Path
++import os
++import subprocess
++import tempfile
++
++LCD = Path(__file__).resolve().parents[1] / 'freeink-sdk/libs/display/EpdiyLcd/src/epdiy/src'
++
++
++def function(text, signature):
++    start = text.index(signature)
++    end = text.index('{', start) + 1
++    depth = 1
++    while depth:
++        depth += (text[end] == '{') - (text[end] == '}')
++        end += 1
++    return text[start:end]
++
++
++PRE = r'''
++#include <atomic>
++#include <cassert>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <cstdlib>
++#include <thread>
++using namespace std;
++#define IRAM_ATTR
++#define EPD_DRAW_SUCCESS 0
++#define EPD_DRAW_EMPTY_LINE_QUEUE 0x400
++#define NUM_RENDER_THREADS 2
++#define pdFALSE 0
++#define ESP_LOGW(...) ((void)0)
++#define Cache_Start_DCache_Preload(...) ((void)0)
++using BaseType_t=int;
++struct EpdRect {int x,y,width,height;};
++struct LineQueue_t {int size=32;atomic_int current{0},last{0};uint8_t** bufs;size_t element_size=4;};
++struct RenderContext_t {
++ int error=0,display_width=16,display_height=24,lines_total=24,lines_consumed=0;
++ atomic_int lines_prepared{0};uint8_t *feed_line_buffers[2],*line_threads;
++ LineQueue_t line_queues[2];EpdRect area{0,0,16,24};
++ const bool* drawn_lines=nullptr;const uint8_t* data_ptr;
++ void (*lut_lookup_func)(uint32_t*,uint8_t*,void*,int);
++ void* conversion_lut=nullptr;uint8_t* line_mask;
++ atomic_int paperdiy_committed[2],paperdiy_scan_state;
++ int frame_done=0;
++};
++static int prefill=8,starts=0,wakes=0,pause_row=-1;
++static int crop_min=0,crop_max=24;static bool suspended=false,inject=false;
++static RenderContext_t* active;
++static atomic_bool dma_ready{false};
++static int s_prefill_lines=8;
++static int epd_lcd_prefill_lines(){return prefill;}
++static int int_min(int a,int b){return a<b?a:b;}
++static void xSemaphoreGive(int){++wakes;}
++using line_cb_func_t=bool(*)(RenderContext_t*,uint8_t*);
++static line_cb_func_t reader_cb;
++static void epd_lcd_line_source_cb(line_cb_func_t f,RenderContext_t* c){reader_cb=f;active=c;}
++static void epd_lcd_start_frame(){
++ ++starts;assert(starts==1);uint8_t dst[4];
++ for(int i=0;i<8;++i){
++  if(inject && i==3)active->line_threads[i]=255;
++  reader_cb(active,dst);
++  if(!inject && i<active->lines_total){
++   int expected=i>=crop_min && i<crop_max && (!active->drawn_lines || active->drawn_lines[i])?i+1:0;
++   assert(dst[0]==expected && !active->error);
++  }
++ }
++ dma_ready.store(true,memory_order_release);
++}
++static void epd_apply_line_mask_VE(uint8_t*,uint8_t*,int){}
++static void get_buffer_params(RenderContext_t* c,int* bytes,const uint8_t** ptr,int* y0,int* y1,int* ppb){
++ *bytes=16;*ptr=c->data_ptr+crop_min*16;*y0=crop_min;*y1=crop_max;*ppb=1;
++}
++void lcd_calculate_frame(RenderContext_t*,int);
++static void lookup(uint32_t* src,uint8_t* dst,void*,int){
++ int row=(reinterpret_cast<uint8_t*>(src)-active->data_ptr)/16;
++ if(row==pause_row && !suspended){suspended=true;lcd_calculate_frame(active,1);}
++ memset(dst,row+1,4);
++}
++'''
++
++STRESS = r'''
++int main(int argc,char** argv){
++ assert(argc==3);prefill=atoi(argv[1]);bool fail_mid=atoi(argv[2]);
++ RenderContext_t c;c.lines_total=c.display_height=c.area.height=96;crop_max=96;
++ alignas(4) uint8_t data[1536]{},fb[2][16]{},owners[96]{},mask[4]{};
++ uint8_t slots[2][32][4]{};uint8_t* ptrs[2][32];
++ for(int t=0;t<2;t++){for(int i=0;i<32;i++)ptrs[t][i]=slots[t][i];c.line_queues[t].bufs=ptrs[t];c.feed_line_buffers[t]=fb[t];}
++ c.data_ptr=data;c.line_threads=owners;c.line_mask=mask;c.lut_lookup_func=lookup;active=&c;
++ for(int round=0;round<2;++round){
++  c.error=0;c.lines_prepared=0;c.lines_consumed=0;starts=wakes=0;dma_ready=false;
++  paperdiy_prepare_feed(&c);
++  thread t0([&]{lcd_calculate_frame(&c,0);});
++  // Force a genuinely full producer queue before the other worker starts.
++  while(c.line_queues[0].current.load(memory_order_acquire)!=31)this_thread::yield();
++  assert(!dma_ready.load(memory_order_acquire));
++  thread t1([&]{lcd_calculate_frame(&c,1);});
++  while(!dma_ready.load(memory_order_acquire))this_thread::yield();
++  uint8_t dst[4];
++  while(c.lines_consumed<c.lines_total){
++   int row=c.lines_consumed;
++   if(fail_mid && round==0 && row==40){
++    // A DMA request before a future row is published must fail, not use a stale owner.
++    // Wait out the producer's only ownership store before corrupting the marker,
++    // so the injected error cannot race with it being published again.
++    while(__atomic_load_n(&owners[row],__ATOMIC_ACQUIRE)>=2)this_thread::yield();
++    __atomic_store_n(&owners[row],255,__ATOMIC_RELEASE);reader_cb(&c,dst);break;
++   }
++   int owner=__atomic_load_n(&owners[row],__ATOMIC_ACQUIRE);
++   if(owner>=2){this_thread::yield();continue;}
++   auto& q=c.line_queues[owner];
++   if(q.current.load(memory_order_acquire)==q.last.load(memory_order_acquire)){this_thread::yield();continue;}
++   reader_cb(&c,dst);assert(!paperdiy_feed_error(&c) && dst[0]==row+1);
++  }
++  t0.join();t1.join();assert(starts==1 && wakes==0);
++  if(fail_mid && round==0){assert(c.error==EPD_DRAW_EMPTY_LINE_QUEUE);lcd_calculate_frame(&c,1);assert(starts==1);}
++  else assert(!c.error);
++  for(auto& q:c.line_queues)lq_reset(&q);
++ }
++ puts("PaperDIY full-queue dual-producer start, streamed row order and mid-scan failure/retry passed");
++}
++'''
++MAIN = r'''
++int main(int argc,char** argv){
++ assert(argc==4);prefill=atoi(argv[1]);pause_row=atoi(argv[2]);int scenario=atoi(argv[3]);
++ RenderContext_t c;alignas(4) uint8_t data[384]{},fb[2][16]{},owners[24]{},mask[4]{};
++ uint8_t slots[2][32][4]{};uint8_t* ptrs[2][32];bool drawn[24];
++ for(int i=0;i<24;++i)drawn[i]=scenario!=1 && (scenario!=2 || i%3!=0);
++ for(int t=0;t<2;t++){for(int i=0;i<32;i++)ptrs[t][i]=slots[t][i];c.line_queues[t].bufs=ptrs[t];c.feed_line_buffers[t]=fb[t];}
++ c.data_ptr=data;c.line_threads=owners;c.line_mask=mask;c.lut_lookup_func=lookup;active=&c;
++ if(scenario==1 || scenario==2)c.drawn_lines=drawn;
++ if(scenario==3){crop_min=5;crop_max=12;}
++ if(scenario==4){c.lines_total=c.display_height=3;crop_max=3;c.area.height=3;}
++ if(scenario==7){for(auto& q:c.line_queues)q.size=8;}
++ for(int round=0;round<2;++round){
++  c.lines_prepared=0;c.lines_consumed=0;c.error=0;starts=0;wakes=0;suspended=false;inject=scenario==6 && round==0;
++  paperdiy_prepare_feed(&c);
++  if(scenario==5 && round==0)c.error=EPD_DRAW_EMPTY_LINE_QUEUE;
++  lcd_calculate_frame(&c,0);
++  if(!suspended)lcd_calculate_frame(&c,1);
++  if((scenario==5 && round==0) || scenario==7){assert(starts==0 && wakes==1 && c.error);}
++  else {
++   assert(starts==1 && wakes==0);
++   if(inject){assert(c.error==EPD_DRAW_EMPTY_LINE_QUEUE);}
++   else {
++    assert(!c.error);uint8_t dst[4];
++    while(c.lines_consumed<c.lines_total){int row=c.lines_consumed;reader_cb(&c,dst);
++     int expected=row>=crop_min && row<crop_max && (!c.drawn_lines || drawn[row])?row+1:0;
++     assert(!c.error && dst[0]==expected);
++    }
++   }
++  }
++  // A late arrival after an error must not restart or issue another wakeup.
++  if(c.error){int n=starts,w=wakes;lcd_calculate_frame(&c,1);assert(starts==n && wakes==w);}
++  // Match the coordinator: only reset after both producers returned.
++  for(auto& q:c.line_queues){lq_reset(&q);assert(q.current==0 && q.last==0);}
++ }
++ puts("PaperDIY feed readiness, single start, prestart abort and next-frame reuse passed");
++}
++'''
++
++text = (LCD / 'output_lcd/render_lcd.c').read_text(encoding='utf-8')
++queue = (LCD / 'output_common/line_queue.c').read_text(encoding='utf-8')
++body = '\n'.join(function(queue, sig) for sig in (
++    'uint8_t* IRAM_ATTR lq_current(', 'void IRAM_ATTR lq_commit(',
++    'int IRAM_ATTR lq_read(', 'void IRAM_ATTR lq_reset('))
++body += '\nbool ' + function(text, 'retrieve_line_isr(')
++helper = (LCD / 'output_lcd/paperdiy_feed_start.h').read_text(encoding='utf-8').replace('#pragma once', '')
++body += '\n' + helper + '\nvoid ' + function(text, 'lcd_calculate_frame(')
++cases = [(n, row, 0) for n in (8, 16, 127) for row in range(8)]
++cases += [(8, -1, s) for s in range(8)]
++with tempfile.TemporaryDirectory(prefix='paperdiy-feed-') as directory:
++    root = Path(directory)
++    cpp, exe = root / 'feed.cpp', root / 'feed-test.exe'
++    cpp.write_text(PRE + body + MAIN)
++    flags = [os.environ.get('CXX', 'c++'), '-std=c++20', '-O2', '-DFREEINK_DEVICE_PAPERDIY=1', str(cpp), '-o', str(exe)]
++    subprocess.run(flags, check=True)
++    for case in cases:
++        subprocess.run([str(exe), *map(str, case)], timeout=5, capture_output=True, check=True)
++    cpp.write_text(PRE + body + STRESS)
++    subprocess.run(flags, check=True)
++    for n in (8, 16, 127):
++        for failure in (0, 1):
++            subprocess.run([str(exe), str(n), str(failure)], timeout=10, capture_output=True, check=True)
++    # Other devices retain the original start path; ordinary full frame smoke check.
++    cpp.write_text(PRE + body + MAIN)
++    subprocess.run([v.replace('-DFREEINK_DEVICE_PAPERDIY=1', '-DFREEINK_DEVICE_PAPERDIY=0') for v in flags], check=True)
++    subprocess.run([str(exe), '8', '-1', '0'], timeout=5, capture_output=True, check=True)
++    # Negative control: bypass readiness. A delayed first row must fail again.
++    gate = 'if (atomic_load_explicit(&ctx->paperdiy_committed[i], memory_order_acquire) < needed - 1) return;'
++    assert gate in body
++    cpp.write_text(PRE + body.replace(gate, '(void)needed;') + MAIN)
++    subprocess.run(flags, check=True)
++    rejected = subprocess.run([str(exe), '8', '0', '0'], timeout=5, capture_output=True)
++    assert rejected.returncode != 0, 'Missing readiness escaped the negative control'
++print(f'PaperDIY feed-start: {len(cases)} controlled + 6 threaded scenarios, two frames each; other-target smoke; missing-readiness negative control rejected')
 diff --git a/test/test_paperdiy_file_settings.py b/test/test_paperdiy_file_settings.py
 new file mode 100644
 --- /dev/null

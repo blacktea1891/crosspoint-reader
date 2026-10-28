@@ -379,6 +379,29 @@ index 29ca722..4fbd8f5 100644
  
  /**
   * 每帧开扫前先算好的行数（LCD 输出路径）。这是帧间空档的主要来源，行队列只要跑在
+diff --git a/libs/display/EpdiyLcd/src/epdiy/src/output_common/render_context.h b/libs/display/EpdiyLcd/src/epdiy/src/output_common/render_context.h
+index d697b96..9b0ca61 100644
+--- a/libs/display/EpdiyLcd/src/epdiy/src/output_common/render_context.h
++++ b/libs/display/EpdiyLcd/src/epdiy/src/output_common/render_context.h
+@@ -25,6 +25,11 @@ typedef struct {
+ 
+     /// index of the next line of data to process
+     atomic_int lines_prepared;
++#if FREEINK_DEVICE_PAPERDIY
++    // Per-producer last committed row, plus one scan-start claim. No new buffers.
++    atomic_int paperdiy_committed[NUM_RENDER_THREADS];
++    atomic_int paperdiy_scan_state;
++#endif
+     volatile int lines_consumed;
+     int lines_total;
+ 
+@@ -104,4 +109,4 @@ void prepare_context_for_next_frame(RenderContext_t* ctx);
+  */
+ void __attribute__((noinline)) epd_populate_line_mask(
+     uint8_t* line_mask, const uint8_t* dirty_columns, int mask_len
+-);
+\ No newline at end of file
++);
 diff --git a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c
 index e30e1f8..2acfae9 100644
 --- a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c
@@ -427,10 +450,61 @@ index e30e1f8..2acfae9 100644
  
      // hsync: pulse width, back porch, active width, front porch
 diff --git a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/render_lcd.c b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/render_lcd.c
-index 48ceddf..8d88809 100644
+index 48ceddf..a5437af 100644
 --- a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/render_lcd.c
 +++ b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/render_lcd.c
-@@ -88,6 +88,15 @@ void lcd_do_update(RenderContext_t* ctx) {
+@@ -35,9 +35,17 @@ retrieve_line_isr(RenderContext_t* ctx, uint8_t* buf) {
+     if (ctx->lines_consumed >= ctx->lines_total) {
+         return false;
+     }
++#if FREEINK_DEVICE_PAPERDIY
++    int thread = __atomic_load_n(&ctx->line_threads[ctx->lines_consumed], __ATOMIC_ACQUIRE);
++#else
+     int thread = ctx->line_threads[ctx->lines_consumed];
++#endif
+     if (thread >= NUM_RENDER_THREADS) {
++#if FREEINK_DEVICE_PAPERDIY
++        __atomic_fetch_or(&ctx->error, EPD_DRAW_EMPTY_LINE_QUEUE, __ATOMIC_RELEASE);
++#else
+         ctx->error |= EPD_DRAW_EMPTY_LINE_QUEUE;
++#endif
+         memset(buf, 0x00, ctx->display_width / 4);
+         ctx->lines_consumed += 1;
+         return pdFALSE;
+@@ -48,7 +56,11 @@ retrieve_line_isr(RenderContext_t* ctx, uint8_t* buf) {
+     BaseType_t awoken = pdFALSE;
+ 
+     if (lq_read(lq, buf) != 0) {
++#if FREEINK_DEVICE_PAPERDIY
++        __atomic_fetch_or(&ctx->error, EPD_DRAW_EMPTY_LINE_QUEUE, __ATOMIC_RELEASE);
++#else
+         ctx->error |= EPD_DRAW_EMPTY_LINE_QUEUE;
++#endif
+         memset(buf, 0x00, ctx->display_width / 4);
+     }
+ 
+@@ -59,6 +71,10 @@ retrieve_line_isr(RenderContext_t* ctx, uint8_t* buf) {
+     return awoken;
+ }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++#include "paperdiy_feed_start.h"
++#endif
++
+ /// start the next frame in the current update cycle
+ static void IRAM_ATTR handle_lcd_frame_done(RenderContext_t* ctx) {
+     epd_lcd_frame_done_cb(NULL, NULL);
+@@ -76,6 +92,9 @@ void lcd_do_update(RenderContext_t* ctx) {
+     for (uint8_t k = 0; k < ctx->cycle_frames; k++) {
+         epd_lcd_frame_done_cb((frame_done_func_t)handle_lcd_frame_done, ctx);
+         prepare_context_for_next_frame(ctx);
++#if FREEINK_DEVICE_PAPERDIY
++        paperdiy_prepare_feed(ctx);
++#endif
+ 
+         // start both feeder tasks
+         xTaskNotifyGive(ctx->feed_tasks[!xPortGetCoreID()]);
+@@ -88,6 +107,15 @@ void lcd_do_update(RenderContext_t* ctx) {
              xSemaphoreTake(ctx->feed_done_smphr[i], portMAX_DELAY);
          }
  
@@ -446,26 +520,122 @@ index 48ceddf..8d88809 100644
          ctx->current_frame++;
  
          // make the watchdog happy.
-@@ -224,7 +233,9 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+@@ -186,6 +214,13 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+     LineQueue_t* lq = &ctx->line_queues[thread_id];
+     int l = 0;
+ 
++#if FREEINK_DEVICE_PAPERDIY
++    // A late producer must not restart an already failed in-flight scan.
++    if (paperdiy_feed_error(ctx)) {
++        paperdiy_try_start(ctx);
++        return;
++    }
++#else
+     // if there is an error, start the frame but don't feed data.
+     if (ctx->error) {
+         memset(ctx->line_threads, 0, ctx->lines_total);
+@@ -194,6 +229,7 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+         ESP_LOGW("epd_lcd", "draw frame draw initiated, but an error flag is set: %X", ctx->error);
+         return;
+     }
++#endif
+ 
+     // line must be able to hold 2-pixel-per-byte or 1-pixel-per-byte data
+     memset(input_line, 0x00, ctx->display_width);
+@@ -203,12 +239,23 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+     const uint8_t* ptr_start;
+     get_buffer_params(ctx, &bytes_per_line, &ptr_start, &min_y, &max_y, &_ppB);
+ 
+-    assert(area.width == ctx->display_width && area.x == 0 && !ctx->error);
++    assert(area.width == ctx->display_width && area.x == 0);
++#if FREEINK_DEVICE_PAPERDIY
++    if (paperdiy_feed_error(ctx)) {
++        paperdiy_try_start(ctx);
++        return;
++    }
++#else
++    assert(!ctx->error);
++#endif
+ 
+     // index of the line that triggers the frame output when processed
++#if !FREEINK_DEVICE_PAPERDIY
+     int trigger_line = int_min(s_prefill_lines, max_y - min_y);
++#endif
+ 
+     while (l = atomic_fetch_add(&ctx->lines_prepared, 1), l < ctx->lines_total) {
++#if !FREEINK_DEVICE_PAPERDIY
+         ctx->line_threads[l] = thread_id;
+ 
+         // queue is sufficiently filled to fill both bounce buffers, frame
+@@ -217,21 +264,34 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+             epd_lcd_line_source_cb((line_cb_func_t)&retrieve_line_isr, ctx);
+             epd_lcd_start_frame();
+         }
++#endif
+ 
+         if (l < min_y || l >= max_y
+             || (ctx->drawn_lines != NULL && !ctx->drawn_lines[l - area.y])) {
+             uint8_t* buf = NULL;
              while (buf == NULL) {
                  // break in case of errors
++#if FREEINK_DEVICE_PAPERDIY
++                if (paperdiy_feed_error(ctx)) {
++                    paperdiy_try_start(ctx);
++                    return;
++                }
++#else
                  if (ctx->error & EPD_DRAW_EMPTY_LINE_QUEUE) {
 +#if !FREEINK_DEVICE_PAPERDIY
                      lq_reset(lq);
 +#endif
                      return;
                  };
++#endif
  
-@@ -246,7 +257,9 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+                 buf = lq_current(lq);
+             }
+             memset(buf, 0x00, lq->element_size);
+             lq_commit(lq);
++#if FREEINK_DEVICE_PAPERDIY
++            paperdiy_publish_line(ctx, thread_id, l);
++#endif
+             continue;
+         }
+ 
+@@ -245,10 +305,19 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+         uint8_t* buf = NULL;
          while (buf == NULL) {
              // break in case of errors
++#if FREEINK_DEVICE_PAPERDIY
++                if (paperdiy_feed_error(ctx)) {
++                    paperdiy_try_start(ctx);
++                    return;
++                }
++#else
                  if (ctx->error & EPD_DRAW_EMPTY_LINE_QUEUE) {
 +#if !FREEINK_DEVICE_PAPERDIY
                      lq_reset(lq);
 +#endif
                      return;
                  };
++#endif
  
+             buf = lq_current(lq);
+         }
+@@ -259,7 +328,13 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+         epd_apply_line_mask_VE(buf, ctx->line_mask, ctx->display_width / 4);
+ 
+         lq_commit(lq);
++#if FREEINK_DEVICE_PAPERDIY
++        paperdiy_publish_line(ctx, thread_id, l);
++#endif
+     }
++#if FREEINK_DEVICE_PAPERDIY
++    paperdiy_finish_feed(ctx, thread_id);
++#endif
+ }
+ 
+ #endif
 diff --git a/libs/display/EpdiyLcd/src/epdiy/src/render.c b/libs/display/EpdiyLcd/src/epdiy/src/render.c
 index 956ede3..5f3e553 100644
 --- a/libs/display/EpdiyLcd/src/epdiy/src/render.c
@@ -500,12 +670,16 @@ index 956ede3..5f3e553 100644
      if (render_context.error & EPD_DRAW_EMPTY_LINE_QUEUE) {
          ESP_LOGE("epdiy", "line buffer underrun occurred!");
 diff --git a/libs/display/EpdiyLcd/test/host/lcd_resources.c b/libs/display/EpdiyLcd/test/host/lcd_resources.c
-index d9ea33b..f91ca39 100644
+index d9ea33b..cdd8fe7 100644
 --- a/libs/display/EpdiyLcd/test/host/lcd_resources.c
 +++ b/libs/display/EpdiyLcd/test/host/lcd_resources.c
-@@ -3,6 +3,12 @@
+@@ -2,7 +2,16 @@
+ 
  #include "epd_lcd.h"
  #include "resource_heap.h"
++// Internal LCD callback declarations used by the audit counter hook test.
++void epd_lcd_frame_done_cb(void (*callback)(void*), void* data);
++void epd_lcd_start_frame(void);
  static int peripheral_live;
 +uint32_t host_lcd_irq_status;
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
@@ -516,7 +690,7 @@ index d9ea33b..f91ca39 100644
  void periph_module_enable(int id) {
    (void)id;
    assert(!peripheral_live);
-@@ -21,6 +27,9 @@ int esp_intr_alloc_intrstatus(int source, int flags, uint32_t status, uint32_t m
+@@ -21,6 +30,9 @@ int esp_intr_alloc_intrstatus(int source, int flags, uint32_t status, uint32_t m
    (void)status;
    (void)mask;
    (void)isr;
@@ -526,7 +700,7 @@ index d9ea33b..f91ca39 100644
    (void)data;
    *out = resource_allocate(1, 1);
    return *out ? ESP_OK : ESP_ERR_NO_MEM;
-@@ -96,7 +105,7 @@ int gpio_set_level(int pin, int level) {
+@@ -96,7 +108,7 @@ int gpio_set_level(int pin, int level) {
    return resource_step() ? ESP_OK : ESP_FAIL;
  }
  int gpio_reset_pin(int pin) {
@@ -535,7 +709,7 @@ index d9ea33b..f91ca39 100644
    return ESP_OK;
  }
  int main(void) {
-@@ -104,6 +113,28 @@ int main(void) {
+@@ -104,6 +116,28 @@ int main(void) {
    assert(epd_lcd_init(&cfg, 1216, 684) == ESP_OK);
    int total = calls;
    epd_lcd_deinit();
@@ -565,10 +739,27 @@ index d9ea33b..f91ca39 100644
    assert(!live && !peripheral_live);
    for (int i = 1; i <= total; i++) {
 diff --git a/libs/display/EpdiyLcd/test/host/test_resources.py b/libs/display/EpdiyLcd/test/host/test_resources.py
-index 4ea1960..199f99c 100644
+index 4ea1960..bc61824 100644
 --- a/libs/display/EpdiyLcd/test/host/test_resources.py
 +++ b/libs/display/EpdiyLcd/test/host/test_resources.py
-@@ -77,6 +77,8 @@ static inline void heap_caps_free(void* p) { resource_release(p); }
+@@ -66,10 +66,12 @@ static inline void heap_caps_free(void* p) { resource_release(p); }
+                LCD / "src/epdiy/src/output_common/line_queue.c",
+                LCD / "src/epdiy/src/output_common/lut.c"]
+     binary = root / "resources-test"
+-    subprocess.run(["cc", "-std=gnu11", "-ffunction-sections", "-fdata-sections", "-Wno-pointer-to-int-cast", "-Wno-int-to-pointer-cast", *flags,
+-                    *(str(p) for p in sources), "-Wl,--gc-sections", "-Wl,--wrap=malloc",
+-                    "-Wl,--wrap=calloc", "-Wl,--wrap=free", "-o", str(binary)], check=True)
+-    subprocess.run([str(binary)], check=True)
++    for paperdiy in (0, 1):
++        subprocess.run(["cc", "-std=gnu11", "-ffunction-sections", "-fdata-sections", "-Wno-pointer-to-int-cast", "-Wno-int-to-pointer-cast", *flags,
++                        f"-DFREEINK_DEVICE_PAPERDIY={paperdiy}",
++                        *(str(p) for p in sources), "-Wl,--gc-sections", "-Wl,--wrap=malloc",
++                        "-Wl,--wrap=calloc", "-Wl,--wrap=free", "-o", str(binary)], check=True)
++        subprocess.run([str(binary)], check=True)
+ 
+     # Raw register operations are no-ops; allocation/IRQ/GDMA/GPIO APIs record
+     # resource ownership and inject failures. Compile the entire real LCD driver.
+@@ -77,6 +79,8 @@ static inline void heap_caps_free(void* p) { resource_release(p); }
      driver = LCD / "src/epdiy/src/output_lcd/lcd_driver.c"
      names = sorted(set(re.findall(r"\b((?:lcd_ll_|lcd_hal_|gpio_hal_|rmt_compat_|Cache_|esp_rom_)[A-Za-z0-9_]+)\s*\(", driver.read_text())))
      (root / "lcd_host_noops.h").write_text("#pragma once\n" + "".join(f"#define {name}(...) 0\n" for name in names))
@@ -577,7 +768,7 @@ index 4ea1960..199f99c 100644
      (root / "lcd_host.h").write_text((HERE / "lcd_host.h").read_text())
      headers = ["esp_intr_alloc.h", "hal/gpio_types.h", "esp_private/periph_ctrl.h",
                 "soc/clk_tree_defs.h", "driver/gpio.h", "esp_check.h", "esp_lcd_panel_ops.h",
-@@ -95,9 +97,12 @@ static inline void* heap_caps_aligned_calloc(size_t a,size_t count,size_t n,int
+@@ -95,9 +99,12 @@ static inline void* heap_caps_aligned_calloc(size_t a,size_t count,size_t n,int
  }
  static inline void* heap_caps_calloc(size_t count,size_t n,int caps) { return heap_caps_aligned_calloc(1,count,n,caps); }
  """)
@@ -1545,6 +1736,80 @@ index 592795b..dded269 100644
    if (physical != twoButtonPhysicalState) {
      const uint8_t releasedPhysical = twoButtonPhysicalState;
      const bool emitShort = physical == 0 && !twoButtonLongPressActive;
+diff --git a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/paperdiy_feed_start.h b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/paperdiy_feed_start.h
+new file mode 100644
+--- /dev/null
++++ b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/paperdiy_feed_start.h
+@@ -0,0 +1,69 @@
++#pragma once
++
++// Included after retrieve_line_isr. All helpers run in feeder/task context.
++// State: 0 waiting, 1 scan claimed, 2 aborted before any scan.
++static inline int IRAM_ATTR paperdiy_feed_error(RenderContext_t* ctx) {
++    return __atomic_load_n(&ctx->error, __ATOMIC_ACQUIRE);
++}
++
++static inline void paperdiy_prepare_feed(RenderContext_t* ctx) {
++    memset(ctx->line_threads, 0xFF, ctx->lines_total);
++    for (int i = 0; i < NUM_RENDER_THREADS; ++i) {
++        atomic_store_explicit(&ctx->paperdiy_committed[i], -1, memory_order_relaxed);
++    }
++    atomic_store_explicit(&ctx->paperdiy_scan_state, 0, memory_order_release);
++}
++
++static inline void IRAM_ATTR paperdiy_try_start(RenderContext_t* ctx) {
++    if (atomic_load_explicit(&ctx->paperdiy_scan_state, memory_order_acquire) != 0) return;
++    // A producer may own every early row. Do not demand more than either
++    // queue can hold, or a full queue could prevent reaching the start gate.
++    int capacity = ctx->line_queues[0].size - 1;
++    for (int i = 1; i < NUM_RENDER_THREADS; ++i) {
++        int other = ctx->line_queues[i].size - 1;
++        if (other < capacity) capacity = other;
++    }
++    // start_frame synchronously fills two four-line bounce buffers.
++    int minimum = ctx->lines_total < 8 ? ctx->lines_total : 8;
++    if (capacity < minimum) {
++        __atomic_fetch_or(&ctx->error, EPD_DRAW_EMPTY_LINE_QUEUE, __ATOMIC_RELEASE);
++    }
++    if (paperdiy_feed_error(ctx)) {
++        int expected = 0;
++        if (atomic_compare_exchange_strong_explicit(&ctx->paperdiy_scan_state, &expected, 2,
++                                                    memory_order_acq_rel, memory_order_acquire)) {
++            // No LCD scan exists to give this semaphore. Wake the coordinator;
++            // it still joins BOTH producers before discarding either queue.
++            xSemaphoreGive(ctx->frame_done);
++        }
++        return;
++    }
++    int needed = epd_lcd_prefill_lines();
++    if (needed < minimum) needed = minimum;
++    if (needed > capacity) needed = capacity;
++    if (needed > ctx->lines_total) needed = ctx->lines_total;
++    for (int i = 0; i < NUM_RENDER_THREADS; ++i) {
++        if (atomic_load_explicit(&ctx->paperdiy_committed[i], memory_order_acquire) < needed - 1) return;
++    }
++    int expected = 0;
++    if (atomic_compare_exchange_strong_explicit(&ctx->paperdiy_scan_state, &expected, 1,
++                                               memory_order_acq_rel, memory_order_acquire)) {
++        epd_lcd_line_source_cb((line_cb_func_t)&retrieve_line_isr, ctx);
++        epd_lcd_start_frame();
++    }
++}
++
++static inline void IRAM_ATTR paperdiy_publish_line(RenderContext_t* ctx, int thread, int row) {
++    // Publish ownership only AFTER committing the payload. The ISR must never
++    // pop another producer's later row through a stale/default owner hint.
++    __atomic_store_n(&ctx->line_threads[row], thread, __ATOMIC_RELEASE);
++    atomic_store_explicit(&ctx->paperdiy_committed[thread], row, memory_order_release);
++    paperdiy_try_start(ctx);
++}
++
++static inline void IRAM_ATTR paperdiy_finish_feed(RenderContext_t* ctx, int thread) {
++    // A producer with no assigned rows must not prevent a short/all-one-worker
++    // frame from starting. Its own previous rows have all been committed.
++    atomic_store_explicit(&ctx->paperdiy_committed[thread], ctx->lines_total, memory_order_release);
++    paperdiy_try_start(ctx);
++}
 diff --git a/libs/display/EpdiyLcd/src/paperdiy/PaperDiyWaveform.c b/libs/display/EpdiyLcd/src/paperdiy/PaperDiyWaveform.c
 new file mode 100644
 --- /dev/null
