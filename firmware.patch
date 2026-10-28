@@ -5611,7 +5611,7 @@ new file mode 100644
 +static void xSemaphoreGive(int){++wakes;}
 +using line_cb_func_t=bool(*)(RenderContext_t*,uint8_t*);
 +static line_cb_func_t reader_cb;
-+static void epd_lcd_line_source_cb(line_cb_func_t f,RenderContext_t* c){reader_cb=f;active=c;}
++static void epd_lcd_line_source_cb(line_cb_func_t f,RenderContext_t* c){assert(active==c);reader_cb=f;}
 +static void epd_lcd_start_frame(){
 + ++starts;assert(starts==1);uint8_t dst[4];
 + for(int i=0;i<8;++i){
