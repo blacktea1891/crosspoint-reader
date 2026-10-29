@@ -8637,7 +8637,7 @@ new file mode 100644
 +
 +with tempfile.TemporaryDirectory(prefix='paperdiy-refresh-routing-') as directory:
 +    folder = Path(directory)
-+    (folder / 'Arduino.h').write_text('#pragma once\n#include <cstdint>\n')
++    (folder / 'Arduino.h').write_text('#pragma once\n#include <cstdint>\ninline unsigned long millis() { return 100; }\n')
 +    (folder / 'Logging.h').write_text('#pragma once\ntemplate<class... T> inline void logStub(T...) {}\n#define LOG_DBG(...) ((void)0)\n#define LOG_INF(...) logStub(__VA_ARGS__)\n')
 +    (folder / 'BoardConfig.h').write_text('''#pragma once
 +namespace BoardConfig { enum class DisplayController { Test }; inline constexpr struct {

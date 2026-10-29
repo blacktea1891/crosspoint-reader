@@ -23,20 +23,31 @@ index b8ebaef..8b0b65f 100644
  /// epdiyLcdBegin 的 `blackIsOne` 给定。
  /// / Push one frame. `fb` is 1 bpp MSB-first, width/8 bytes per row, height rows;
 diff --git a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
-index 72f56ea..a5ea44e 100644
+index 72f56ea..7a7beed 100644
 --- a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 +++ b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
-@@ -24,6 +24,9 @@ extern "C" int esp_rom_printf(const char* format, ...);
+@@ -9,6 +9,9 @@
+ 
+ #include <EpdiyLcd.h>
+ #include <esp_heap_caps.h>
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
++#include <esp_timer.h>
++#endif
+ #if FREEINK_READPICO_DIAGNOSTICS
+ #include <esp_timer.h>
+ // rom console rather than ESP_LOGI: on this build ESP_LOG does not reach the serial
+@@ -24,6 +27,10 @@ extern "C" int esp_rom_printf(const char* format, ...);
  #include <esp_log.h>
  
  #include <cstring>
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
++#include <algorithm>
 +#include <cstdio>
 +#endif
  
  extern "C" {
  // 未带 extern "C" 守卫的 epdiy 头（见本库 README 的清单）在这里统一包住；
-@@ -37,6 +40,9 @@ extern "C" {
+@@ -37,6 +44,9 @@ extern "C" {
  #include "epdiy/src/epd_display.h"
  #include "epdiy/src/epd_highlevel.h"
  #include "epdiy/src/epdiy.h"
@@ -46,7 +57,7 @@ index 72f56ea..a5ea44e 100644
  }
  
  namespace freeink {
-@@ -54,10 +60,143 @@ bool g_nativeGrayActive = false;
+@@ -54,10 +64,143 @@ bool g_nativeGrayActive = false;
  bool g_initialized = false;
  bool g_powerReady = false;
  bool g_baselineKnown = false;
@@ -190,7 +201,7 @@ index 72f56ea..a5ea44e 100644
  // 1bpp 行 → 4bpp 行的展开表：一个输入字节出 4 个输出字节。
  // epdiy 是每字节两个像素，偶数列在低半字节、奇数列在高半字节，15 = 白。
  // / Expansion table: one 1 bpp input byte becomes four 4 bpp bytes. epdiy packs
-@@ -181,10 +320,14 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
+@@ -181,10 +324,14 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
  
    // 波形必须在 epd_hl_init 之前建好：E0470_WAVEFORM 的相位数据由它填。
    // / The waveform must be built before epd_hl_init(): it fills E0470_WAVEFORM.
@@ -206,7 +217,7 @@ index 72f56ea..a5ea44e 100644
      ESP_LOGE("EpdiyLcd", "LCD renderer initialization failed");
      return false;
    }
-@@ -203,7 +346,7 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
+@@ -203,7 +350,7 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
      return false;
    }
  
@@ -215,7 +226,7 @@ index 72f56ea..a5ea44e 100644
    g_fb4 = epd_hl_get_framebuffer(&g_hl);
    if (g_fb4 == nullptr) {
      epdiyLcdEnd();
-@@ -262,6 +405,20 @@ void epdiyLcdEnd() {
+@@ -262,6 +409,20 @@ void epdiyLcdEnd() {
  namespace {
  
  enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
@@ -236,7 +247,7 @@ index 72f56ea..a5ea44e 100644
    switch (mode) {
      case EpdiyLcdRefresh::Full:
        return static_cast<enum EpdDrawMode>(MODE_GC16 | PREVIOUSLY_WHITE);
-@@ -272,6 +429,7 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
+@@ -272,6 +433,7 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
      default:
        return static_cast<enum EpdDrawMode>(MODE_DU | PREVIOUSLY_WHITE);
    }
@@ -244,7 +255,7 @@ index 72f56ea..a5ea44e 100644
  }
  
  // 文字转页换用对角线全保持的那张表：未变化的像素完全不驱动，所以不会把黑像素先擦白
-@@ -281,7 +439,11 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
+@@ -281,7 +443,11 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
  // and push it back to black, and that erase is the flash a turn shows. Every other
  // profile keeps the table epd_hl_init attached.
  const EpdWaveform* waveformFor(EpdiyLcdRefresh mode) {
@@ -256,7 +267,7 @@ index 72f56ea..a5ea44e 100644
  }
  
  // 1bpp 页 -> epdiy 4bpp。展开表把调用方的位约定翻成 epdiy 的灰度级；本玻璃实测
-@@ -314,15 +476,30 @@ void recordConversion(int64_t startedUs) {
+@@ -314,15 +480,30 @@ void recordConversion(int64_t startedUs) {
  #endif
  
  bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
@@ -287,7 +298,7 @@ index 72f56ea..a5ea44e 100644
      memset(g_hl.back_fb, 0xFF, static_cast<size_t>(epd_width()) / 2 * epd_height());
      mode = EpdiyLcdRefresh::Full;
    }
-@@ -333,14 +510,28 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -333,14 +514,28 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    const EpdWaveform* waveform = waveformFor(mode);
    const bool swapWaveform = waveform != g_hl.waveform;
    if (swapWaveform) epd_hl_waveform(&g_hl, waveform);
@@ -324,7 +335,7 @@ index 72f56ea..a5ea44e 100644
  #if FREEINK_READPICO_DIAGNOSTICS
    int diffMs, drawMs, copyMs;
    epd_hl_last_timing(&diffMs, &drawMs, &copyMs);
-@@ -351,18 +542,25 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -351,18 +546,25 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    // serial port in this build, while the board libraries' esp_rom_vprintf does. Only
    // compiled in development builds.
    esp_rom_printf("[EPDF] frame #%u mode=%u result=%u convert=%uus max_convert=%uus diff=%dms scan=%dms copy=%dms\r\n",
@@ -353,7 +364,7 @@ index 72f56ea..a5ea44e 100644
  uint8_t* epdiyLcdBeginGrayscale16() {
    if (!epdiyLcdReady() || g_nativeGrayActive) return nullptr;
    g_nativeGrayActive = true;
-@@ -370,10 +568,15 @@ uint8_t* epdiyLcdBeginGrayscale16() {
+@@ -370,10 +572,15 @@ uint8_t* epdiyLcdBeginGrayscale16() {
    return g_fb4;
  }
  
@@ -370,7 +381,7 @@ index 72f56ea..a5ea44e 100644
    epdiyLcdStashBase(bwProxy);
    return true;
  }
-@@ -386,6 +589,15 @@ void epdiyLcdCancelGrayscale16() {
+@@ -386,6 +593,15 @@ void epdiyLcdCancelGrayscale16() {
    }
  }
  
@@ -386,7 +397,7 @@ index 72f56ea..a5ea44e 100644
  bool epdiyLcdDraw(const uint8_t* fb, EpdiyLcdRefresh mode, bool turnOff) {
    if (!g_started || fb == nullptr || g_fb4 == nullptr || g_cfg == nullptr) return false;
  
-@@ -423,10 +635,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
+@@ -423,10 +639,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
  #endif
    // The existing 2-bit coverage maps directly to four panel tones. A set base
    // bit is white (15); selector masks choose the two calibrated mid tones.
