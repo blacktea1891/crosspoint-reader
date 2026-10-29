@@ -1,7 +1,16 @@
 diff --git a/libs/display/EpdiyLcd/include/EpdiyLcd.h b/libs/display/EpdiyLcd/include/EpdiyLcd.h
-index b8ebaef..8b0b65f 100644
+index b8ebaef..dc5f20a 100644
 --- a/libs/display/EpdiyLcd/include/EpdiyLcd.h
 +++ b/libs/display/EpdiyLcd/include/EpdiyLcd.h
+@@ -69,7 +69,7 @@ struct EpdiyLcdConfig {
+ /// entirely held so unchanged pixels are not driven at all. Re-driving a black pixel in
+ /// place erases it white first, which is the white flash a turn shows; ordinary
+ /// anti-aliased text turns use it, and static content is refreshed by the periodic GC16.
+-enum class EpdiyLcdRefresh : uint8_t { Full, Half, Fast, TextTurn };
++enum class EpdiyLcdRefresh : uint8_t { Full, Half, Fast, TextTurn, UiTurn, UiTransition };
+ 
+ /// 初始化总线并挂上波形。width/height 是面板扫描尺寸（本板 1216x684）。
+ ///
 @@ -89,9 +89,18 @@ void epdiyLcdEnd();
  // Borrow the existing front framebuffer. No allocation. Commit uses GL16 and
  // promotes an unknown baseline to GC16; cancellation never changes the glass.
@@ -23,7 +32,7 @@ index b8ebaef..8b0b65f 100644
  /// epdiyLcdBegin 的 `blackIsOne` 给定。
  /// / Push one frame. `fb` is 1 bpp MSB-first, width/8 bytes per row, height rows;
 diff --git a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
-index 72f56ea..7a7beed 100644
+index 72f56ea..7c3a428 100644
 --- a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 +++ b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 @@ -9,6 +9,9 @@
@@ -226,7 +235,7 @@ index 72f56ea..7a7beed 100644
    g_fb4 = epd_hl_get_framebuffer(&g_hl);
    if (g_fb4 == nullptr) {
      epdiyLcdEnd();
-@@ -262,6 +409,20 @@ void epdiyLcdEnd() {
+@@ -262,6 +409,22 @@ void epdiyLcdEnd() {
  namespace {
  
  enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
@@ -238,6 +247,8 @@ index 72f56ea..7a7beed 100644
 +    case EpdiyLcdRefresh::Half:
 +      return MODE_GC16;
 +    case EpdiyLcdRefresh::TextTurn:
++    case EpdiyLcdRefresh::UiTurn:
++    case EpdiyLcdRefresh::UiTransition:
 +      return MODE_GL16;
 +    case EpdiyLcdRefresh::Fast:
 +    default:
@@ -247,7 +258,7 @@ index 72f56ea..7a7beed 100644
    switch (mode) {
      case EpdiyLcdRefresh::Full:
        return static_cast<enum EpdDrawMode>(MODE_GC16 | PREVIOUSLY_WHITE);
-@@ -272,6 +433,7 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
+@@ -272,6 +435,7 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
      default:
        return static_cast<enum EpdDrawMode>(MODE_DU | PREVIOUSLY_WHITE);
    }
@@ -255,11 +266,13 @@ index 72f56ea..7a7beed 100644
  }
  
  // 文字转页换用对角线全保持的那张表：未变化的像素完全不驱动，所以不会把黑像素先擦白
-@@ -281,7 +443,11 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
+@@ -281,7 +445,13 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
  // and push it back to black, and that erase is the flash a turn shows. Every other
  // profile keeps the table epd_hl_init attached.
  const EpdWaveform* waveformFor(EpdiyLcdRefresh mode) {
 +#if FREEINK_DEVICE_PAPERDIY
++  if (mode == EpdiyLcdRefresh::UiTurn) return &PAPERDIY_UI_WAVEFORM;
++  if (mode == EpdiyLcdRefresh::UiTransition) return &PAPERDIY_UI_TRANSITION_WAVEFORM;
 +  return mode == EpdiyLcdRefresh::TextTurn ? &PAPERDIY_TEXTTURN_WAVEFORM : kWaveform;
 +#else
    return mode == EpdiyLcdRefresh::TextTurn ? &E0470_TEXTTURN_WAVEFORM : &E0470_WAVEFORM;
@@ -267,7 +280,7 @@ index 72f56ea..7a7beed 100644
  }
  
  // 1bpp 页 -> epdiy 4bpp。展开表把调用方的位约定翻成 epdiy 的灰度级；本玻璃实测
-@@ -314,15 +480,30 @@ void recordConversion(int64_t startedUs) {
+@@ -314,15 +484,30 @@ void recordConversion(int64_t startedUs) {
  #endif
  
  bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
@@ -298,7 +311,7 @@ index 72f56ea..7a7beed 100644
      memset(g_hl.back_fb, 0xFF, static_cast<size_t>(epd_width()) / 2 * epd_height());
      mode = EpdiyLcdRefresh::Full;
    }
-@@ -333,14 +514,28 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -333,14 +518,31 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    const EpdWaveform* waveform = waveformFor(mode);
    const bool swapWaveform = waveform != g_hl.waveform;
    if (swapWaveform) epd_hl_waveform(&g_hl, waveform);
@@ -319,6 +332,9 @@ index 72f56ea..7a7beed 100644
 +  // drives their Cartesian intersections, producing visible rectangular bands
 +  // and silently turning the periodic whole-screen clean into a local update.
 +  wholeScreenClean = wholeScreenClean || mode == EpdiyLcdRefresh::Half;
++  // The UI profiles include same-color reinforcement. A sparse difference mask
++  // would omit exactly the pixels whose physical residue is being addressed.
++  wholeScreenClean = wholeScreenClean || mode == EpdiyLcdRefresh::UiTurn || mode == EpdiyLcdRefresh::UiTransition;
 +#endif
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  audit.temperature = temperature;
@@ -335,7 +351,7 @@ index 72f56ea..7a7beed 100644
  #if FREEINK_READPICO_DIAGNOSTICS
    int diffMs, drawMs, copyMs;
    epd_hl_last_timing(&diffMs, &drawMs, &copyMs);
-@@ -351,18 +546,25 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -351,18 +553,25 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    // serial port in this build, while the board libraries' esp_rom_vprintf does. Only
    // compiled in development builds.
    esp_rom_printf("[EPDF] frame #%u mode=%u result=%u convert=%uus max_convert=%uus diff=%dms scan=%dms copy=%dms\r\n",
@@ -364,7 +380,7 @@ index 72f56ea..7a7beed 100644
  uint8_t* epdiyLcdBeginGrayscale16() {
    if (!epdiyLcdReady() || g_nativeGrayActive) return nullptr;
    g_nativeGrayActive = true;
-@@ -370,10 +572,15 @@ uint8_t* epdiyLcdBeginGrayscale16() {
+@@ -370,10 +579,15 @@ uint8_t* epdiyLcdBeginGrayscale16() {
    return g_fb4;
  }
  
@@ -381,7 +397,7 @@ index 72f56ea..7a7beed 100644
    epdiyLcdStashBase(bwProxy);
    return true;
  }
-@@ -386,6 +593,15 @@ void epdiyLcdCancelGrayscale16() {
+@@ -386,6 +600,15 @@ void epdiyLcdCancelGrayscale16() {
    }
  }
  
@@ -397,7 +413,17 @@ index 72f56ea..7a7beed 100644
  bool epdiyLcdDraw(const uint8_t* fb, EpdiyLcdRefresh mode, bool turnOff) {
    if (!g_started || fb == nullptr || g_fb4 == nullptr || g_cfg == nullptr) return false;
  
-@@ -423,10 +639,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
+@@ -415,6 +638,9 @@ void epdiyLcdStashBase(const uint8_t* fb) {
+ }
+ 
+ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mode, bool turnOff) {
++#if FREEINK_DEVICE_PAPERDIY
++  if (mode == EpdiyLcdRefresh::UiTurn || mode == EpdiyLcdRefresh::UiTransition) return false;
++#endif
+   if (!g_started || g_fb4 == nullptr || g_cfg == nullptr) return false;
+   if (g_base == nullptr || lsb == nullptr || msb == nullptr) return false;
+ 
+@@ -423,10 +649,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
  #endif
    // The existing 2-bit coverage maps directly to four panel tones. A set base
    // bit is white (15); selector masks choose the two calibrated mid tones.
@@ -924,7 +950,7 @@ index 059bbfa..6d8c0b2 100644
  
  if __name__ == "__main__":
 diff --git a/libs/display/EpdiyLcd/test/host/transactions.cpp b/libs/display/EpdiyLcd/test/host/transactions.cpp
-index f88a84b..2572229 100644
+index f88a84b..1b1828d 100644
 --- a/libs/display/EpdiyLcd/test/host/transactions.cpp
 +++ b/libs/display/EpdiyLcd/test/host/transactions.cpp
 @@ -5,10 +5,17 @@
@@ -988,7 +1014,7 @@ index f88a84b..2572229 100644
  esp_err_t epd_lcd_init(const LcdEpdConfig_t*, int, int) { return ESP_OK; }
  void epd_lcd_set_prefill_lines(int) {}
  void epd_lcd_deinit() {}
-@@ -91,14 +124,29 @@ EpdRect epd_difference_image_cropped(const uint8_t* to, const uint8_t* from, Epd
+@@ -91,14 +124,30 @@ EpdRect epd_difference_image_cropped(const uint8_t* to, const uint8_t* from, Epd
      lines[y] = std::memcmp(to + y * 8, from + y * 8, 8) != 0;
      changed |= lines[y];
    }
@@ -1007,6 +1033,7 @@ index f88a84b..2572229 100644
 -  for (int p = 0; p < 32; ++p) lastTo[p] = diff[p] >> 4;
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  auditExpected = (mode & 0x3F) == MODE_DU ? 5 : 30;
++  if (waveform == &PAPERDIY_UI_WAVEFORM || waveform == &PAPERDIY_UI_TRANSITION_WAVEFORM) auditExpected = 15;
 +  auditCompleted = failDraw ? 0 : auditExpected;
 +  auditStarts += failDraw ? 1 : auditExpected;
 +  auditDones += failDraw ? 1 : auditExpected;
@@ -1022,7 +1049,7 @@ index f88a84b..2572229 100644
    lastMode = mode & 0x3F;
    return failDraw ? EPD_DRAW_EMPTY_LINE_QUEUE : EPD_DRAW_SUCCESS;
  }
-@@ -115,7 +163,11 @@ void checkGrayPacking(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
+@@ -115,7 +164,11 @@ void checkGrayPacking(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
        if (bits & 1) base[pixel / 8] |= mask;
        if (bits & 2) lsb[pixel / 8] |= mask;
        if (bits & 4) msb[pixel / 8] |= mask;
@@ -1034,7 +1061,7 @@ index f88a84b..2572229 100644
      }
      driver.displayGrayscaleBaseWithContext(bus, base, freeink::RefreshMode::Full, false,
                                             freeink::RefreshContext::Normal);
-@@ -149,6 +201,31 @@ void checkNativeGray(freeink::EpdiyLcdDriver& driver) {
+@@ -149,6 +202,31 @@ void checkNativeGray(freeink::EpdiyLcdDriver& driver) {
    frame = driver.beginGrayscale16();
    memset(frame, 0, 16);
    assert(driver.commitGrayscale16(proxy) && lastMode == MODE_GC16);
@@ -1066,11 +1093,66 @@ index f88a84b..2572229 100644
    assert(allocation_calls == allocations);
  }
  
-@@ -170,6 +247,148 @@ void checkHighlevel() {
+@@ -170,6 +248,203 @@ void checkHighlevel() {
    assert(std::memcmp(hl.front_fb, hl.back_fb, 16) == 0);
  }
  
 +#if FREEINK_DEVICE_PAPERDIY
++void checkPaperDiyUiProfiles(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
++  uint8_t fb[4]{0x55, 0xAA, 0x55, 0xAA};
++  uint8_t previous[32];
++  memcpy(previous, lastTo, 32);
++  for (int update = 1; update <= 90; ++update) {
++    fb[update % 4] ^= 1;
++    const bool due = update % 30 == 0;
++    const bool scene = update % 7 == 0;
++    const auto context = scene ? freeink::RefreshContext::UiTransition : freeink::RefreshContext::Normal;
++    const int before = draws, oldClears = clears, allocations = allocation_calls;
++    driver.displayWithContext(bus, fb, nullptr, due ? freeink::RefreshMode::Half : freeink::RefreshMode::Fast, true,
++                              context);
++    assert(driver.displayCommitted() && draws == before + 1 && clears == oldClears);
++    assert(lastFullCoverage && allocation_calls == allocations);
++    assert(lastMode == (due ? MODE_GC16 : MODE_GL16));
++    assert(lastWaveform == (due ? &epdiy_ED047TC1 : scene ? &PAPERDIY_UI_TRANSITION_WAVEFORM : &PAPERDIY_UI_WAVEFORM));
++    for (int pixel = 0; pixel < 32; ++pixel) assert(lastTo[pixel] == 0 || lastTo[pixel] == 15);
++    assert(std::memcmp(lastFrom, previous, 32) == 0);
++    memcpy(previous, lastTo, 32);
++  }
++  // A gray reader -> B/W menu handoff preserves actual previous gray nibbles.
++  auto* gray = driver.beginGrayscale16();
++  assert(gray);
++  memset(gray, 0x5A, 16);
++  assert(driver.commitGrayscale16WithRefresh(fb, freeink::RefreshMode::Fast));
++  const int allocations = allocation_calls;
++  driver.displayWithContext(bus, fb, nullptr, freeink::RefreshMode::Fast, true, freeink::RefreshContext::UiTransition);
++  assert(lastWaveform == &PAPERDIY_UI_TRANSITION_WAVEFORM && lastFullCoverage);
++  for (const auto old : lastFrom) assert(old == 5 || old == 10);
++  uint8_t history[32];
++  memcpy(history, lastTo, 32);
++  fb[0] ^= 1;
++  failDraw = true;
++  driver.displayWithContext(bus, fb, nullptr, freeink::RefreshMode::Fast, true, freeink::RefreshContext::Normal);
++  assert(!driver.displayCommitted() && std::memcmp(history, lastFrom, 32) == 0);
++  failDraw = false;
++  const int oldClears = clears;
++  driver.displayWithContext(bus, fb, nullptr, freeink::RefreshMode::Fast, true, freeink::RefreshContext::Normal);
++  assert(driver.displayCommitted() && clears == oldClears + 1 && lastMode == MODE_GC16);
++  assert(lastWaveform == &epdiy_ED047TC1 && allocation_calls == allocations);
++  // Reader B/W contexts and explicit cleans must never inherit the UI profile.
++  for (const auto context : {freeink::RefreshContext::ContinuousReading, freeink::RefreshContext::TextOnlyAntiAliasing,
++                             freeink::RefreshContext::ImageReading}) {
++    fb[0] ^= 1;
++    driver.displayWithContext(bus, fb, nullptr, freeink::RefreshMode::Fast, true, context);
++    assert(lastMode == MODE_DU && lastWaveform == &epdiy_ED047TC1);
++  }
++  driver.displayWithContext(bus, fb, nullptr, freeink::RefreshMode::Full, true, freeink::RefreshContext::UiTransition);
++  assert(lastMode == MODE_GC16 && lastWaveform == &epdiy_ED047TC1);
++  uint8_t masks[4]{};
++  const int before = draws;
++  assert(!freeink::epdiyLcdDrawGray(masks, masks, freeink::EpdiyLcdRefresh::UiTurn, true));
++  assert(draws == before);  // Endpoint-only tables cannot silently flatten a gray page.
++}
++
 +void checkPaperDiyBwCleans(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
 +  uint8_t fb[4] = {0xFF, 0xFF, 0xFF, 0xFF};
 +  driver.display(bus, fb, nullptr, freeink::RefreshMode::Full, true);
@@ -1215,7 +1297,7 @@ index f88a84b..2572229 100644
  int main(int argc, char** argv) {
    if (argc > 1 && std::strcmp(argv[1], "highlevel") == 0) {
      checkHighlevel();
-@@ -206,11 +425,51 @@ int main(int argc, char** argv) {
+@@ -206,11 +481,52 @@ int main(int argc, char** argv) {
      driver.copyGrayscaleLsb(bus, gray);
      driver.copyGrayscaleMsb(bus, gray);
      driver.displayGray(bus, gray, true, nullptr, false);
@@ -1231,6 +1313,7 @@ index f88a84b..2572229 100644
 +#if FREEINK_DEVICE_PAPERDIY
 +  checkPaperDiyTurns(driver, bus);
 +  checkPaperDiyBwCleans(driver, bus);
++  checkPaperDiyUiProfiles(driver, bus);
 +  checkPaperDiyRecovery(driver, bus);
 +#if FREEINK_PAPERDIY_REFRESH_AUDIT
 +  const uint8_t auditFrame[4]{0x55, 0xAA, 0x55, 0xAA};
@@ -1289,6 +1372,17 @@ index 444ad15..f616f92 100644
    void skipInitialResync();
    void beginDisplayWork();
    void abortPostRefresh();
+diff --git a/libs/display/FreeInkDisplay/include/RefreshContext.h b/libs/display/FreeInkDisplay/include/RefreshContext.h
+index aceb066..62a550f 100644
+--- a/libs/display/FreeInkDisplay/include/RefreshContext.h
++++ b/libs/display/FreeInkDisplay/include/RefreshContext.h
+@@ -4,5 +4,5 @@
+ namespace freeink {
+ // Applies only to this refresh. A synchronized grayscale baseline may be reused
+ // between reading pages; transitions to other content retain physical cleanup.
+-enum class RefreshContext : uint8_t { Normal, ContinuousReading, TextOnlyAntiAliasing, ImageReading };
++enum class RefreshContext : uint8_t { Normal, ContinuousReading, TextOnlyAntiAliasing, ImageReading, UiTransition };
+ }  // namespace freeink
 diff --git a/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp b/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp
 index 632e107..8366549 100644
 --- a/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp
@@ -1325,35 +1419,241 @@ index 632e107..8366549 100644
  void FreeInkDisplay::skipInitialResync() {
    if (_driver)
 diff --git a/libs/display/FreeInkDisplay/src/driver/EpdiyLcdDriver.cpp b/libs/display/FreeInkDisplay/src/driver/EpdiyLcdDriver.cpp
-index cd2566c..2ca447b 100644
+index cd2566c..6d6c1ee 100644
 --- a/libs/display/FreeInkDisplay/src/driver/EpdiyLcdDriver.cpp
 +++ b/libs/display/FreeInkDisplay/src/driver/EpdiyLcdDriver.cpp
-@@ -195,9 +195,17 @@ void EpdiyLcdDriver::displayGray(EpdBus &bus, const uint8_t *fb, bool turnOff,
+@@ -22,7 +22,7 @@
+ #if FREEINK_DRIVER_EPDIY_LCD
+ 
+ #ifndef FREEINK_EPDIY_LCD_CONFIG
+-#error                                                                         \
++#error \
+     "FREEINK_DRIVER_EPDIY_LCD requires a board config: define `const EpdiyLcdConfig& yourConfig();` in namespace freeink and build with -DFREEINK_EPDIY_LCD_CONFIG=yourConfig"
+ #endif
+ 
+@@ -33,7 +33,7 @@ namespace freeink {
+ // / Board-supplied config function, name injected by -DFREEINK_EPDIY_LCD_CONFIG
+ // — the same pattern as LgfxEpd's FREEINK_LGFX_EPD_CONFIG, so the SDK never
+ // includes a board header.
+-const EpdiyLcdConfig &FREEINK_EPDIY_LCD_CONFIG();
++const EpdiyLcdConfig& FREEINK_EPDIY_LCD_CONFIG();
+ 
+ namespace {
+ 
+@@ -43,19 +43,19 @@ constexpr bool kBlackIsOne = true;
+ 
+ EpdiyLcdRefresh refreshFor(RefreshMode mode) {
+   switch (mode) {
+-  case RefreshMode::Full:
+-    return EpdiyLcdRefresh::Full;
+-  case RefreshMode::Half:
+-    return EpdiyLcdRefresh::Half;
+-  case RefreshMode::Fast:
+-    return EpdiyLcdRefresh::Fast;
++    case RefreshMode::Full:
++      return EpdiyLcdRefresh::Full;
++    case RefreshMode::Half:
++      return EpdiyLcdRefresh::Half;
++    case RefreshMode::Fast:
++      return EpdiyLcdRefresh::Fast;
+   }
+   return EpdiyLcdRefresh::Fast;
+ }
+ 
+-} // namespace
++}  // namespace
+ 
+-EpdiyLcdDriver::EpdiyLcdDriver(const EpdiyLcdConfig &cfg) : _cfg(cfg) {}
++EpdiyLcdDriver::EpdiyLcdDriver(const EpdiyLcdConfig& cfg) : _cfg(cfg) {}
+ 
+ PanelGeometry EpdiyLcdDriver::geometry() const {
+   const uint16_t w = BoardConfig::ACTIVE.displayWidth;
+@@ -64,27 +64,22 @@ PanelGeometry EpdiyLcdDriver::geometry() const {
+   return {w, h, wb, static_cast<uint32_t>(wb) * h};
+ }
+ 
+-GrayscaleCapabilities
+-EpdiyLcdDriver::grayscaleCapabilities(GrayscaleMode mode) const {
+-  if (mode != GrayscaleMode::Overlay)
+-    return {};
++GrayscaleCapabilities EpdiyLcdDriver::grayscaleCapabilities(GrayscaleMode mode) const {
++  if (mode != GrayscaleMode::Overlay) return {};
+   // OverlayMasks: plane background 0 = black/white (taken from the B/W base the
+   // host supplies first), LSB set = dark, MSB set = light. The host supplies
+   // whole LSB/MSB planes; strip uploads are not implemented.
+   // Combined: this driver defers the base so the grey commit presents the whole
+   // page once. See displayGrayscaleBaseWithContext() below.
+-  return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, false,
+-          false, false};
++  return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, false, false, false};
+ }
+ 
+-void EpdiyLcdDriver::begin(EpdBus &bus) {
++void EpdiyLcdDriver::begin(EpdBus& bus) {
+   (void)bus;
+   _basePending = false;
+   _displayCommitted = false;
+-  _ready = epdiyLcdBegin(_cfg, BoardConfig::ACTIVE.displayWidth,
+-                         BoardConfig::ACTIVE.displayHeight, kBlackIsOne);
+-  if (!_ready)
+-    return;
++  _ready = epdiyLcdBegin(_cfg, BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight, kBlackIsOne);
++  if (!_ready) return;
+ 
+   // 两个选择平面：只有宿主真的做抗锯齿时才会被写入，但分配是无条件的，因为它们
+   // 必须在 copyGrayscaleLsb() 第一次被调用之前就位。
+@@ -92,16 +87,11 @@ void EpdiyLcdDriver::begin(EpdBus &bus) {
+   // anti-aliases, but allocated unconditionally because they must exist before
+   // the first copyGrayscaleLsb() call.
+   const PanelGeometry g = geometry();
+-  if (_lsb == nullptr)
+-    _lsb = static_cast<uint8_t *>(
+-        heap_caps_malloc(g.bufferSize, MALLOC_CAP_SPIRAM));
+-  if (_msb == nullptr)
+-    _msb = static_cast<uint8_t *>(
+-        heap_caps_malloc(g.bufferSize, MALLOC_CAP_SPIRAM));
++  if (_lsb == nullptr) _lsb = static_cast<uint8_t*>(heap_caps_malloc(g.bufferSize, MALLOC_CAP_SPIRAM));
++  if (_msb == nullptr) _msb = static_cast<uint8_t*>(heap_caps_malloc(g.bufferSize, MALLOC_CAP_SPIRAM));
+   if (_lsb == nullptr || _msb == nullptr) {
+-    Serial.printf(
+-        "[EpdiyLcd] grayscale plane allocation failed (%u bytes each)\n",
+-        static_cast<unsigned>(g.bufferSize));
++    Serial.printf("[EpdiyLcd] grayscale plane allocation failed (%u bytes each)\n",
++                  static_cast<unsigned>(g.bufferSize));
+     heap_caps_free(_lsb);
+     heap_caps_free(_msb);
+     _lsb = nullptr;
+@@ -114,7 +104,7 @@ void EpdiyLcdDriver::begin(EpdBus &bus) {
+   memset(_msb, 0, g.bufferSize);
+ }
+ 
+-void EpdiyLcdDriver::deepSleep(EpdBus &bus) {
++void EpdiyLcdDriver::deepSleep(EpdBus& bus) {
+   (void)bus;
+   epdiyLcdDeepSleep();
+   heap_caps_free(_lsb);
+@@ -126,16 +116,13 @@ void EpdiyLcdDriver::deepSleep(EpdBus &bus) {
+   _displayCommitted = false;
+ }
+ 
+-void EpdiyLcdDriver::display(EpdBus &bus, const uint8_t *fb,
+-                             const uint8_t *prev, RefreshMode mode,
+-                             bool turnOff) {
++void EpdiyLcdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+   (void)bus;
+-  (void)prev; // epdiy's highlevel keeps its own previous frame / epdiy
+-              // 自己记上一帧
++  (void)prev;  // epdiy's highlevel keeps its own previous frame / epdiy
++               // 自己记上一帧
+   _basePending = false;
+   _displayCommitted = false;
+-  if (!_ready)
+-    return;
++  if (!_ready) return;
+ 
+   // 帧缓冲极性见文件顶部的 kBlackIsOne。/ Framebuffer polarity: see kBlackIsOne
+   // above.
+@@ -143,28 +130,42 @@ void EpdiyLcdDriver::display(EpdBus &bus, const uint8_t *fb,
+   _displayCommitted = epdiyLcdDraw(fb, _lastBaseMode, turnOff);
+ }
+ 
+-void EpdiyLcdDriver::copyGrayscaleLsb(EpdBus &bus, const uint8_t *lsb) {
+-  (void)bus;
+-  if (_lsb == nullptr || lsb == nullptr)
++#if FREEINK_DEVICE_PAPERDIY
++void EpdiyLcdDriver::displayWithContext(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
++                                        bool turnOff, RefreshContext context) {
++  if (mode != RefreshMode::Fast || (context != RefreshContext::Normal && context != RefreshContext::UiTransition)) {
++    display(bus, fb, prev, mode, turnOff);
+     return;
++  }
++  _basePending = false;
++  _displayCommitted = false;
++  if (!_ready) return;
++  _lastBaseMode = EpdiyLcdRefresh::Fast;
++  const auto profile =
++      context == RefreshContext::UiTransition ? EpdiyLcdRefresh::UiTransition : EpdiyLcdRefresh::UiTurn;
++  _displayCommitted = epdiyLcdDraw(fb, profile, turnOff);
++}
++#endif
++
++void EpdiyLcdDriver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
++  (void)bus;
++  if (_lsb == nullptr || lsb == nullptr) return;
+   memcpy(_lsb, lsb, geometry().bufferSize);
+ }
+ 
+-void EpdiyLcdDriver::copyGrayscaleMsb(EpdBus &bus, const uint8_t *msb) {
++void EpdiyLcdDriver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+   (void)bus;
+-  if (_msb == nullptr || msb == nullptr)
+-    return;
++  if (_msb == nullptr || msb == nullptr) return;
+   memcpy(_msb, msb, geometry().bufferSize);
+ }
+ 
+-void EpdiyLcdDriver::displayGray(EpdBus &bus, const uint8_t *fb, bool turnOff,
+-                                 const unsigned char *lut, bool factoryMode) {
++void EpdiyLcdDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
++                                 bool factoryMode) {
+   (void)bus;
+   (void)lut;
+   (void)factoryMode;
+   _displayCommitted = false;
+-  if (!_ready || _lsb == nullptr || _msb == nullptr)
+-    return;
++  if (!_ready || _lsb == nullptr || _msb == nullptr) return;
+ 
+   // `fb`
+   // 故意不用：抗锯齿提交时它装的是最后一个选择平面（与页面互补），推上去就是
+@@ -195,26 +196,27 @@ void EpdiyLcdDriver::displayGray(EpdBus &bus, const uint8_t *fb, bool turnOff,
    // rather than "is Fast": the reader promotes an ordinary page turn to GL16
    // (Half) on Read Pico, so keying on Fast alone would leave the table
    // uninstalled and silently lose the flicker-free turn.
+-  const EpdiyLcdRefresh grayMode = _lastBaseMode == EpdiyLcdRefresh::Full
+-                                       ? EpdiyLcdRefresh::Full
+-                                       : EpdiyLcdRefresh::TextTurn;
 +#if FREEINK_DEVICE_PAPERDIY
 +  // Preserve the reader's due/manual clean (HALF on this target). Ordinary
 +  // FAST commits retain intermediate gray and use the previous gray frame.
-+  const EpdiyLcdRefresh grayMode = _lastBaseMode == EpdiyLcdRefresh::Fast
-+                                      ? EpdiyLcdRefresh::TextTurn
-+                                      : EpdiyLcdRefresh::Full;
++  const EpdiyLcdRefresh grayMode =
++      _lastBaseMode == EpdiyLcdRefresh::Fast ? EpdiyLcdRefresh::TextTurn : EpdiyLcdRefresh::Full;
 +#else
-   const EpdiyLcdRefresh grayMode = _lastBaseMode == EpdiyLcdRefresh::Full
-                                        ? EpdiyLcdRefresh::Full
-                                        : EpdiyLcdRefresh::TextTurn;
++  const EpdiyLcdRefresh grayMode =
++      _lastBaseMode == EpdiyLcdRefresh::Full ? EpdiyLcdRefresh::Full : EpdiyLcdRefresh::TextTurn;
 +#endif
    _displayCommitted = epdiyLcdDrawGray(_lsb, _msb, grayMode, turnOff);
-   if (_displayCommitted)
-     _basePending = false;
-@@ -224,10 +232,18 @@ void EpdiyLcdDriver::displayGrayscaleBaseWithContext(EpdBus &bus,
+-  if (_displayCommitted)
+-    _basePending = false;
++  if (_displayCommitted) _basePending = false;
+ }
+ 
+-void EpdiyLcdDriver::displayGrayscaleBaseWithContext(EpdBus &bus,
+-                                                     const uint8_t *fb,
+-                                                     RefreshMode fallback,
+-                                                     bool turnOff,
++void EpdiyLcdDriver::displayGrayscaleBaseWithContext(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff,
+                                                      RefreshContext context) {
+   (void)bus;
+   (void)turnOff;
+   (void)context;
+   _displayCommitted = false;
+   _basePending = false;
+-  if (!_ready)
+-    return;
++  if (!_ready) return;
+   _lastBaseMode = refreshFor(fallback);
+   // 底图只暂存。宿主接下来会写 LSB/MSB 平面并调
+   // displayGray()，由它合成整页后推一次。 / Defer: the host writes the LSB/MSB
+@@ -224,26 +226,31 @@ void EpdiyLcdDriver::displayGrayscaleBaseWithContext(EpdBus &bus,
    _basePending = true;
  }
  
 -void EpdiyLcdDriver::requestResync(uint8_t) {
+-  if (_basePending)
+-    _displayCommitted = false;
 +void EpdiyLcdDriver::requestResync(uint8_t settlePasses) {
-   if (_basePending)
-     _displayCommitted = false;
++  if (_basePending) _displayCommitted = false;
    _basePending = false;
 +#if FREEINK_DEVICE_PAPERDIY
 +  if (settlePasses > 0) {
@@ -1365,16 +1665,69 @@ index cd2566c..2ca447b 100644
 +#endif
  }
  
- void EpdiyLcdDriver::cleanupGrayscaleBuffers(EpdBus &bus, const uint8_t *bw) {
+-void EpdiyLcdDriver::cleanupGrayscaleBuffers(EpdBus &bus, const uint8_t *bw) {
++void EpdiyLcdDriver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+   (void)bus;
+-  if (!_basePending)
+-    return;
+-  if (bw && _ready)
+-    _displayCommitted = epdiyLcdDraw(bw, _lastBaseMode, false);
++  if (!_basePending) return;
++  if (bw && _ready) _displayCommitted = epdiyLcdDraw(bw, _lastBaseMode, false);
+   _basePending = false;
+ }
+ 
+-PanelDriver &epdiyLcdDriver() {
++PanelDriver& epdiyLcdDriver() {
+   static EpdiyLcdDriver driver(FREEINK_EPDIY_LCD_CONFIG());
+   return driver;
+ }
+ 
+-} // namespace freeink
++}  // namespace freeink
+ 
+-#endif // FREEINK_DRIVER_EPDIY_LCD
++#endif  // FREEINK_DRIVER_EPDIY_LCD
 diff --git a/libs/display/FreeInkDisplay/src/driver/EpdiyLcdDriver.h b/libs/display/FreeInkDisplay/src/driver/EpdiyLcdDriver.h
-index 46ee18d..33cccc0 100644
+index 46ee18d..5a6e71a 100644
 --- a/libs/display/FreeInkDisplay/src/driver/EpdiyLcdDriver.h
 +++ b/libs/display/FreeInkDisplay/src/driver/EpdiyLcdDriver.h
-@@ -69,10 +69,24 @@ public:
+@@ -45,38 +45,52 @@
+ namespace freeink {
+ 
+ class EpdiyLcdDriver : public PanelDriver {
+-public:
+-  explicit EpdiyLcdDriver(const EpdiyLcdConfig &cfg);
++ public:
++  explicit EpdiyLcdDriver(const EpdiyLcdConfig& cfg);
+ 
+-  uint32_t spiHz() const override { return 0; } // epdiy owns the LCD_CAM bus
++  uint32_t spiHz() const override { return 0; }  // epdiy owns the LCD_CAM bus
+   BusyPolarity busyPolarity() const override { return BusyPolarity::ActiveLow; }
+   bool usesExternalBus() const override { return true; }
+   PanelGeometry geometry() const override;
+ 
+   // Whole-plane overlay selectors share one deferred B/W base.
+-  GrayscaleCapabilities grayscaleCapabilities(
+-      GrayscaleMode mode = GrayscaleMode::Overlay) const override;
++  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override;
+ 
+-  uint8_t *beginGrayscale16() override {
+-    auto *buffer = _ready ? epdiyLcdBeginGrayscale16() : nullptr;
++  uint8_t* beginGrayscale16() override {
++    auto* buffer = _ready ? epdiyLcdBeginGrayscale16() : nullptr;
+     if (buffer) {
+       _basePending = false;
+       _displayCommitted = false;
+     }
+     return buffer;
+   }
+-  bool commitGrayscale16(const uint8_t *bwProxy) override {
++  bool commitGrayscale16(const uint8_t* bwProxy) override {
      _displayCommitted = _ready && epdiyLcdCommitGrayscale16(bwProxy);
      return _displayCommitted;
    }
-+  bool commitGrayscale16WithRefresh(const uint8_t *bwProxy, RefreshMode mode) override {
++  bool commitGrayscale16WithRefresh(const uint8_t* bwProxy, RefreshMode mode) override {
 +#if FREEINK_DEVICE_PAPERDIY
 +    _displayCommitted = _ready && epdiyLcdCommitGrayscale16(bwProxy, mode != RefreshMode::Fast);
 +    return _displayCommitted;
@@ -1384,17 +1737,73 @@ index 46ee18d..33cccc0 100644
 +#endif
 +  }
    void cancelGrayscale16() override { epdiyLcdCancelGrayscale16(); }
-   void begin(EpdBus &bus) override;
-   void deepSleep(EpdBus &bus) override;
+-  void begin(EpdBus &bus) override;
+-  void deepSleep(EpdBus &bus) override;
++  void begin(EpdBus& bus) override;
++  void deepSleep(EpdBus& bus) override;
    bool displayCommitted() const override { return _displayCommitted; }
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
-+  void setRefreshAuditObserver(void (*observer)(const char*)) override {
-+    epdiyLcdSetRefreshAuditObserver(observer);
-+  }
++  void setRefreshAuditObserver(void (*observer)(const char*)) override { epdiyLcdSetRefreshAuditObserver(observer); }
 +#endif
    void requestResync(uint8_t) override;
-   void cleanupGrayscaleBuffers(EpdBus &bus, const uint8_t *bw) override;
-   void display(EpdBus &bus, const uint8_t *fb, const uint8_t *prev,
+-  void cleanupGrayscaleBuffers(EpdBus &bus, const uint8_t *bw) override;
+-  void display(EpdBus &bus, const uint8_t *fb, const uint8_t *prev,
+-               RefreshMode mode, bool turnOff) override;
++  void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
++  void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
++#if FREEINK_DEVICE_PAPERDIY
++  void displayWithContext(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
++                          RefreshContext context) override;
++#endif
+ 
+   // 抗锯齿用整体平面路径（supportsStripGrayscale() 保持默认 false，于是宿主走
+   // copyGrayscaleLsb/Msb +
+@@ -97,34 +111,32 @@ public:
+   // pushes the `fb` it is handed as if it were a page, but at that moment it
+   // holds the last selector plane (the complement of the page), which renders
+   // as a screen-wide negative. LgfxEpdDriver.cpp:187-201 records the same trap.
+-  void copyGrayscaleLsb(EpdBus &bus, const uint8_t *lsb) override;
+-  void copyGrayscaleMsb(EpdBus &bus, const uint8_t *msb) override;
+-  void displayGray(EpdBus &bus, const uint8_t *fb, bool turnOff,
+-                   const unsigned char *lut, bool factoryMode) override;
++  void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
++  void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
++  void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+ 
+   // Combined base: the B/W page is only STASHED here, and the grey commit
+   // presents base + mid tones together in one waveform. Pushing the base first
+   // would cost a second full panel refresh per anti-aliased page (and drive the
+   // frame through two different profiles). / Combined base: see above.
+-  void displayGrayscaleBaseWithContext(EpdBus &bus, const uint8_t *fb,
+-                                       RefreshMode fallback, bool turnOff,
++  void displayGrayscaleBaseWithContext(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff,
+                                        RefreshContext context) override;
+ 
+-private:
+-  const EpdiyLcdConfig &_cfg;
++ private:
++  const EpdiyLcdConfig& _cfg;
+   bool _ready = false;
+   bool _displayCommitted = false;
+   bool _basePending = false;
+-  uint8_t *_lsb = nullptr;
+-  uint8_t *_msb = nullptr;
++  uint8_t* _lsb = nullptr;
++  uint8_t* _msb = nullptr;
+   // 灰度提交用底图那一帧的档位；换成别的档位会让整屏按新 LUT
+   // 重新驱动一遍（闪）。 / The gray commit reuses the base frame's profile; a
+   // different profile re-drives the whole panel through the new LUT (a flash).
+   EpdiyLcdRefresh _lastBaseMode = EpdiyLcdRefresh::Half;
+ };
+ 
+-PanelDriver &epdiyLcdDriver();
++PanelDriver& epdiyLcdDriver();
+ 
+-} // namespace freeink
++}  // namespace freeink
+ 
+-#endif // FREEINK_DRIVER_EPDIY_LCD
++#endif  // FREEINK_DRIVER_EPDIY_LCD
 diff --git a/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp b/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp
 index eef99ef..371d702 100644
 --- a/libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp
@@ -1895,7 +2304,7 @@ diff --git a/libs/display/EpdiyLcd/src/paperdiy/PaperDiyWaveform.c b/libs/displa
 new file mode 100644
 --- /dev/null
 +++ b/libs/display/EpdiyLcd/src/paperdiy/PaperDiyWaveform.c
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,85 @@
 +// SPDX-License-Identifier: LGPL-3.0-or-later
 +// ED047TC1 waveform from epdiy d84d26e; keep the source tables unmodified.
 +#if FREEINK_DEVICE_PAPERDIY
@@ -1916,6 +2325,49 @@ new file mode 100644
 +static const EpdWaveformMode text_mode = {5, 1, text_ranges};
 +static const EpdWaveformMode* text_modes[1] = {&text_mode};
 +EpdWaveform PAPERDIY_TEXTTURN_WAVEFORM = {1, 1, text_modes, epdiy_ED047TC1_intervals};
++
++// UI targets are expanded from 1bpp: only black (0) and white (15) occur.
++// A changed endpoint receives the same 15 target-directed scans as TextTurn's
++// accepted B/W transitions, without the opposite-direction gray conditioning.
++// Ordinary UI frames reinforce unchanged endpoints once; a scene boundary
++// reinforces them for all 15 scans. Periodic/manual GC16 remains separate.
++// These are bounded flash-resident tables, not another mutable frame buffer.
++#define UI_HOLD {0, 0, 0, 0}
++#define UI_BLACK {0x55, 0x55, 0x55, 0x55}
++#define UI_WHITE {0xAA, 0xAA, 0xAA, 0xAA}
++#define UI_BLACK_CHANGED {0x15, 0x55, 0x55, 0x55}
++#define UI_WHITE_CHANGED {0xAA, 0xAA, 0xAA, 0xA8}
++#define UI_PHASE(black, white)                                             \
++  {black,   UI_HOLD, UI_HOLD, UI_HOLD, UI_HOLD, UI_HOLD, UI_HOLD, UI_HOLD, \
++   UI_HOLD, UI_HOLD, UI_HOLD, UI_HOLD, UI_HOLD, UI_HOLD, UI_HOLD, white}
++#define UI_CHANGED UI_PHASE(UI_BLACK_CHANGED, UI_WHITE_CHANGED)
++#define UI_SETTLE UI_PHASE(UI_BLACK, UI_WHITE)
++static const uint8_t ui_luts[15][16][4] = {UI_SETTLE,  UI_CHANGED, UI_CHANGED, UI_CHANGED, UI_CHANGED,
++                                           UI_CHANGED, UI_CHANGED, UI_CHANGED, UI_CHANGED, UI_CHANGED,
++                                           UI_CHANGED, UI_CHANGED, UI_CHANGED, UI_CHANGED, UI_CHANGED};
++static const uint8_t ui_transition_luts[15][16][4] = {UI_SETTLE, UI_SETTLE, UI_SETTLE, UI_SETTLE, UI_SETTLE,
++                                                      UI_SETTLE, UI_SETTLE, UI_SETTLE, UI_SETTLE, UI_SETTLE,
++                                                      UI_SETTLE, UI_SETTLE, UI_SETTLE, UI_SETTLE, UI_SETTLE};
++#undef UI_SETTLE
++#undef UI_CHANGED
++#undef UI_PHASE
++#undef UI_WHITE_CHANGED
++#undef UI_BLACK_CHANGED
++#undef UI_WHITE
++#undef UI_BLACK
++#undef UI_HOLD
++// LCD_CAM uses scan count at the existing clock, not phase_times metadata.
++static const EpdWaveformPhases ui_phases = {15, &ui_luts[0][0][0], epd_wp_epdiy_ED047TC1_5_0_times};
++static const EpdWaveformPhases ui_transition_phases = {15, &ui_transition_luts[0][0][0],
++                                                       epd_wp_epdiy_ED047TC1_5_0_times};
++static const EpdWaveformPhases* ui_ranges[1] = {&ui_phases};
++static const EpdWaveformPhases* ui_transition_ranges[1] = {&ui_transition_phases};
++static const EpdWaveformMode ui_mode = {5, 1, ui_ranges};
++static const EpdWaveformMode ui_transition_mode = {5, 1, ui_transition_ranges};
++static const EpdWaveformMode* ui_modes[1] = {&ui_mode};
++static const EpdWaveformMode* ui_transition_modes[1] = {&ui_transition_mode};
++const EpdWaveform PAPERDIY_UI_WAVEFORM = {1, 1, ui_modes, epdiy_ED047TC1_intervals};
++const EpdWaveform PAPERDIY_UI_TRANSITION_WAVEFORM = {1, 1, ui_transition_modes, epdiy_ED047TC1_intervals};
 +
 +void paperdiy_waveform_init(void) {
 +  memcpy(held_diagonal, epd_wp_epdiy_ED047TC1_5_0_data, sizeof(held_diagonal));
@@ -1942,7 +2394,7 @@ diff --git a/libs/display/EpdiyLcd/src/paperdiy/PaperDiyWaveform.h b/libs/displa
 new file mode 100644
 --- /dev/null
 +++ b/libs/display/EpdiyLcd/src/paperdiy/PaperDiyWaveform.h
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,12 @@
 +#pragma once
 +
 +#include "epd_display.h"
@@ -1951,6 +2403,9 @@ new file mode 100644
 +extern const EpdDisplay_t PAPERDIY_DISPLAY;
 +extern const EpdWaveform epdiy_ED047TC1;
 +extern EpdWaveform PAPERDIY_TEXTTURN_WAVEFORM;
++// Endpoint-only UI experiments; never use for native/overlay grayscale.
++extern const EpdWaveform PAPERDIY_UI_WAVEFORM;
++extern const EpdWaveform PAPERDIY_UI_TRANSITION_WAVEFORM;
 +void paperdiy_waveform_init(void);
 diff --git a/libs/display/EpdiyLcd/src/paperdiy/ed047tc1.h b/libs/display/EpdiyLcd/src/paperdiy/ed047tc1.h
 new file mode 100644
