@@ -218,10 +218,10 @@ index df35ac5d..84df7186 100644
  STR_KB_HINT_EXIT_URL_MODE: "Press ABC to exit URL mode"
  STR_KB_HINT_CLEAR_TEXT: "Hold DEL to clear all text"
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..c7accf73 100644
+index 2d854fe5..4f3092f2 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
-@@ -1,6 +1,15 @@
+@@ -1,6 +1,35 @@
  #include <HalDisplay.h>
  #include <HalGPIO.h>
  
@@ -229,6 +229,26 @@ index 2d854fe5..c7accf73 100644
 +#include <Logging.h>
 +
 +#include "PaperDiyRefreshBudget.h"
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++#include <cstdio>
++#include <cstring>
++namespace {
++void logPaperDiyAudit(const char* line) {
++  // logPrintf has a 256-byte buffer INCLUDING its prefix and newline.
++  // Keep every packet below that bound without growing the global RTC ring.
++  constexpr size_t chunkSize = 128;
++  const size_t length = std::strlen(line);
++  unsigned long frame = 0;
++  std::sscanf(line, "seq=%lu", &frame);
++  const unsigned total = static_cast<unsigned>((length + chunkSize - 1) / chunkSize);
++  for (unsigned part = 0; part < total; ++part) {
++    const size_t offset = part * chunkSize;
++    const int count = static_cast<int>(length - offset < chunkSize ? length - offset : chunkSize);
++    LOG_INF("PD-AUDIT", "packet frame=%lu part=%u total=%u data=%.*s", frame, part + 1, total, count, line + offset);
++  }
++}
++}  // namespace
++#endif
 +namespace {
 +PaperDiyRefreshBudget paperDiyRefreshBudget;
 +}
@@ -237,18 +257,18 @@ index 2d854fe5..c7accf73 100644
  #if FREEINK_DEVICE_READPICO
  #include <BoardReadPico.h>
  #include <Logging.h>
-@@ -44,6 +53,10 @@ void HalDisplay::begin(bool seamless) {
+@@ -44,6 +73,10 @@ void HalDisplay::begin(bool seamless) {
  #endif
  
    einkDisplay.begin();
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
-+  einkDisplay.setRefreshAuditObserver([](const char* line) { LOG_INF("PD-AUDIT", "%s", line); });
-+  LOG_INF("PD-AUDIT", "free-trace diagnostic: baseline 40628068556; every frame; waveform/feed/UI30 unchanged");
++  einkDisplay.setRefreshAuditObserver(logPaperDiyAudit);
++  LOG_INF("PD-AUDIT", "free-trace packet-v2: baseline 40814905442; every frame; waveform/feed/UI30 unchanged");
 +#endif
  
  #if FREEINK_DEVICE_READPICO
    // The facade publishes the driver's real geometry (EpdiyLcdDriver::geometry():
-@@ -112,19 +125,59 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
+@@ -112,19 +145,59 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
  }  // namespace
  
  void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen, DisplayRefreshContext context) {
@@ -308,7 +328,7 @@ index 2d854fe5..c7accf73 100644
  }
  
  void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
-@@ -138,11 +191,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
+@@ -138,11 +211,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
  bool HalDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
  
  void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
@@ -324,7 +344,7 @@ index 2d854fe5..c7accf73 100644
  }
  
  void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
-@@ -160,6 +217,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
+@@ -160,6 +237,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
  void HalDisplay::returnFrameBufferStorage() { einkDisplay.returnBuildStorage(); }
  
  bool HalDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback, bool turnOffScreen) {
@@ -334,7 +354,7 @@ index 2d854fe5..c7accf73 100644
    if (gpio.deviceIsX3() && fallback == HALF_REFRESH) einkDisplay.requestResync();
    return einkDisplay.displayGrayscaleBase(mode, static_cast<EInkDisplay::RefreshMode>(fallback), turnOffScreen);
  }
-@@ -169,6 +229,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
+@@ -169,6 +249,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
  }
  
  void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen, DisplayRefreshContext context) {
@@ -344,7 +364,7 @@ index 2d854fe5..c7accf73 100644
    // X3: a HALF fallback means the caller wants a clean base (e.g. the sleep
    // cover, a full-screen swap from arbitrary prior content). Without this, the
    // X3 grayscale base takes its gentle differential happy path and the prior
-@@ -195,7 +258,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
+@@ -195,7 +278,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
  
  void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.cleanupGrayscaleBuffers(bwBuffer); }
  
@@ -358,7 +378,7 @@ index 2d854fe5..c7accf73 100644
  
  void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
    einkDisplay.writeGrayscalePlaneStrip(lsbPlane ? EInkDisplay::GRAY_PLANE_LSB : EInkDisplay::GRAY_PLANE_MSB, rows,
-@@ -219,12 +287,46 @@ void HalDisplay::cancelGrayscale() {
+@@ -219,12 +307,46 @@ void HalDisplay::cancelGrayscale() {
  
  bool HalDisplay::displayCommitted() const { return einkDisplay.displayCommitted(); }
  
@@ -3549,7 +3569,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..e2a9c1ed 100644
+index b0b49733..3fb0730d 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -3561,7 +3581,7 @@ index b0b49733..e2a9c1ed 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,18 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +248,19 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -3569,6 +3589,7 @@ index b0b49733..e2a9c1ed 100644
 +add_test(NAME PaperDiyRefreshRouting COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_routing.py)
 +add_test(NAME PaperDiyDisplayRecovery COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_display_recovery.py)
 +add_test(NAME PaperDiyRefreshAudit COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_refresh_audit.py)
++add_test(NAME PaperDiyAuditPackets COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_audit_packets.py)
 +add_test(NAME PaperDiyFeedStart COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_feed_start.py)
 +add_test(NAME PaperDiyKeyboardButtons COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_buttons.py)
 +  add_test(NAME PaperDiyKeyboardEditing COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_keyboard_editing.py)
@@ -3820,7 +3841,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,763 @@
+@@ -0,0 +1,773 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -4539,6 +4560,16 @@ new file mode 100644
 +
 +# Free-trace diagnostic candidate (2026-10-29)
 +
++Transport correction after the first real-device check: the global logger has a
++256-byte total entry limit. Sending the SDK's long record as one LOG_INF silently
++truncated its tail and newline. The PaperDIY observer now sends 128-byte payload
++packets with frame/part/total identifiers. The desktop collector reconstructs
++one complete semantic frame, counts it once, and flags missing/duplicate parts.
++Raw logs retain the actual packets. The global logger/RTC allocation and SDK
++refresh logic are unchanged. PaperDiyAuditPackets runs the actual 256-byte
++logPrintf with worst-case timestamp/frame IDs, lengths at packet boundaries,
++round-trip checks and a negative control reproducing the old truncation.
++
 +Based on 40628068556. `FREEINK_PAPERDIY_REFRESH_AUDIT` now records successful
 +FAST and TextTurn frames too. This is an investigation build, not a display fix.
 +Waveforms, LCD/feed timing, power sequencing, history commit logic and UI30
@@ -4828,6 +4859,79 @@ new file mode 100644
 +  }
 +
 +
+diff --git a/test/test_paperdiy_audit_packets.py b/test/test_paperdiy_audit_packets.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_audit_packets.py
+@@ -0,0 +1,68 @@
++"""Run real diagnostic packetizer through the actual 256-byte logPrintf."""
++from pathlib import Path
++import os
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def method(text, signature):
++    start = text.index(signature)
++    end = text.index('{', start)+1
++    depth = 1
++    while depth:
++        depth += (text[end]=='{')-(text[end]=='}')
++        end += 1
++    return text[start:end]
++
++
++packetizer = method((ROOT/'lib/hal/HalDisplay.cpp').read_text(encoding='utf-8'), 'void logPaperDiyAudit(')
++logger = method((ROOT/'lib/Logging/Logging.cpp').read_text(encoding='utf-8'), 'void logPrintf(')
++code = r'''
++#include <algorithm>
++#include <cassert>
++#include <cstdarg>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++#define MAX_ENTRY_LEN 256
++#define FREEINK_LOG_TRANSPORT 0
++#define FREEINK_LOG_TRANSPORT_ROM_PRINTF 1
++std::vector<std::string> wire;
++unsigned long millis(){return 4294967295UL;}
++struct {void print(const char* s){wire.emplace_back(s);}} logSerial;
++void addToLogRingBuffer(const char* s){assert(strlen(s)<256);}
++''' + logger + r'''
++#define LOG_INF(tag,format,...) logPrintf("INF",tag,format "\n",##__VA_ARGS__)
++''' + packetizer + r'''
++int main(){
++ for(int length:{128,129,255,256,400,639}) {
++  std::string payload="seq=4294967295 ";
++  while(int(payload.size())<length)payload += (payload.size()%13==0?' ':'a'+payload.size()%26);
++  wire.clear();logPaperDiyAudit(payload.c_str());
++  std::string restored;
++  assert(wire.size()==(payload.size()+127)/128);
++  for(size_t i=0;i<wire.size();++i){
++   const auto& line=wire[i];assert(line.size()<256&&line.back()=='\n');
++   unsigned long frame=0;unsigned part=0,total=0;
++   auto p=line.find("packet frame=");assert(p!=std::string::npos);
++   assert(sscanf(line.c_str()+p,"packet frame=%lu part=%u total=%u",&frame,&part,&total)==3);
++   assert(frame==4294967295UL&&part==i+1&&total==wire.size());
++   auto d=line.find(" data=");assert(d!=std::string::npos);
++   restored+=line.substr(d+6,line.size()-d-7);
++  }
++  assert(restored==payload);
++ }
++ // Negative control demonstrates the exact old truncation with the real logger.
++ wire.clear();std::string old="seq=5 "+std::string(390,'x');LOG_INF("PD-AUDIT","%s",old.c_str());
++ assert(wire.size()==1&&wire[0].size()==255&&wire[0].back()!='\n');
++}
++'''
++with tempfile.TemporaryDirectory(prefix='paperdiy-log-packets-') as folder:
++    cpp=Path(folder)/'check.cpp';exe=Path(folder)/'check'
++    cpp.write_text(code)
++    subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-Wall','-Wextra','-Werror',str(cpp),'-o',str(exe)],check=True)
++    subprocess.run([str(exe)],check=True)
++print('Real 256-byte logger: worst timestamp/frame, boundary lengths, round-trip and old truncation negative control passed')
 diff --git a/test/test_paperdiy_board_tag.py b/test/test_paperdiy_board_tag.py
 new file mode 100644
 --- /dev/null
