@@ -1007,6 +1007,97 @@ index 3976e7d8..94fc2ae7 100644
  static_assert(static_cast<uint8_t>(AppId::Count) <= 32, "app IDs must fit the persisted mask");
  
  }  // namespace appVisibility
+diff --git a/src/NetworkStartup.cpp b/src/NetworkStartup.cpp
+index 31c3a50b..974f99e3 100644
+--- a/src/NetworkStartup.cpp
++++ b/src/NetworkStartup.cpp
+@@ -17,6 +17,11 @@
+ 
+ namespace {
+ 
++#if FREEINK_DEVICE_PAPERDIY
++// Loop-task owned; no framebuffer or heap allocation is retained for this handoff.
++bool fontRestorePending = false;
++#endif
++
+ constexpr size_t MIN_FREE_PSRAM = 256 * 1024;
+ constexpr size_t MIN_FREE_INTERNAL = 64 * 1024;
+ constexpr size_t MIN_LARGEST_INTERNAL_BLOCK = 32 * 1024;
+@@ -77,6 +82,11 @@ void prepare(GfxRenderer& renderer) {
+     RenderLock lock;
+     sdFontSystem.releaseLoadedFont(renderer);
+     if (auto* fontCache = renderer.getFontCacheManager()) fontCache->clearCache();
++#if FREEINK_DEVICE_PAPERDIY
++    // Also recover after a driver-start failure, when no network owner ever
++    // reaches a WiFi-enabled onExit(). A live session defers this automatically.
++    fontRestorePending = true;
++#endif
+   }
+   logMemory("after font reclaim");
+ }
+@@ -90,4 +100,43 @@ bool setMode(GfxRenderer& renderer, const wifi_mode_t mode) {
+   return started;
+ }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++bool finishSession() {
++  logMemory("PaperDIY network exit before driver stop");
++  // Arduino mode(OFF) stops and deinitializes the driver and its netifs. A plain
++  // disconnect(false) leaves those allocations alive. Do not erase credentials.
++  if (!WiFi.mode(WIFI_OFF) || WiFi.getMode() != WIFI_MODE_NULL) {
++    LOG_ERR("NET", "PaperDIY WiFi shutdown failed; retaining restart fallback");
++    return false;
++  }
++  WiFi.scanDelete();
++  fontRestorePending = true;
++  logMemory("PaperDIY network driver stopped without restart");
++  return true;
++}
++
++bool restoreAfterSession(GfxRenderer& renderer) {
++  if (!fontRestorePending || WiFi.getMode() != WIFI_MODE_NULL) return false;
++  fontRestorePending = false;
++  // onExit() can run under RenderLock. Restore only after every pending pop /
++  // replace is complete, before the destination gets its render notification.
++  {
++    RenderLock lock;
++    sdFontSystem.ensureLoaded(renderer);
++  }
++  logMemory("PaperDIY network exit resources restored");
++  return true;
++}
++
++bool canEnterWithoutRestart(GfxRenderer& renderer) {
++  prepare(renderer);
++  const auto internal = HalMemory::getInternalHeap();
++  const auto psram = HalMemory::getPsramHeap();
++  const bool ready =
++      internal.freeBytes >= 96 * 1024 && internal.largestBlockBytes >= 64 * 1024 && psram.freeBytes >= MIN_FREE_PSRAM;
++  logMemory(ready ? "PaperDIY join without restart" : "PaperDIY join requires fresh heap");
++  return ready;
++}
++#endif
++
+ }  // namespace NetworkStartup
+diff --git a/src/NetworkStartup.h b/src/NetworkStartup.h
+index 7701fab3..0dd163bf 100644
+--- a/src/NetworkStartup.h
++++ b/src/NetworkStartup.h
+@@ -16,4 +16,14 @@ void prepare(GfxRenderer& renderer);
+ // The only entry point for enabling STA/AP mode in application code.
+ bool setMode(GfxRenderer& renderer, wifi_mode_t mode);
+ 
++#if FREEINK_DEVICE_PAPERDIY
++// Finish only an owned network session. False retains the caller's reboot fallback.
++// Font I/O is deferred until ActivityManager has released its transition lock.
++bool finishSession();
++bool restoreAfterSession(GfxRenderer& renderer);
++
++// A conservative preflight for file transfer; low contiguous memory still reboots.
++bool canEnterWithoutRestart(GfxRenderer& renderer);
++#endif
++
+ }  // namespace NetworkStartup
 diff --git a/src/SettingsList.h b/src/SettingsList.h
 index 82f3d4c7..66768a54 100644
 --- a/src/SettingsList.h
@@ -1110,10 +1201,18 @@ index 51d93f0a..90335670 100644
    bool mainTabsAtBottom() const;
    bool hasMainTabStatusBar() const;
 diff --git a/src/activities/ActivityManager.cpp b/src/activities/ActivityManager.cpp
-index 8acbec08..c8a71eb9 100644
+index 8acbec08..42a15c27 100644
 --- a/src/activities/ActivityManager.cpp
 +++ b/src/activities/ActivityManager.cpp
-@@ -109,6 +109,13 @@ void ActivityManager::renderTaskLoop() {
+@@ -13,6 +13,7 @@
+ 
+ #include "CrossPointSettings.h"
+ #include "HapticFeedback.h"
++#include "NetworkStartup.h"
+ #include "OpdsServerStore.h"
+ #include "apps/2048/Game2048Activity.h"
+ #include "apps/AppsMenuActivity.h"
+@@ -109,6 +110,13 @@ void ActivityManager::renderTaskLoop() {
          const auto delayMs = currentActivity->idleRenderDelayMs();
          idleGeneration = idleRenderGeneration.load(std::memory_order_relaxed);
          display.setInverted(SETTINGS.screenInverted != 0);
@@ -1127,7 +1226,19 @@ index 8acbec08..c8a71eb9 100644
          currentActivity->render(std::move(lock));
          if (delayMs != 0) waitTicks = pdMS_TO_TICKS(delayMs);
        } else if (!idleRenderCancelled(idleGeneration)) {
-@@ -384,14 +391,28 @@ bool ActivityManager::handleMainTabInput() {
+@@ -283,6 +291,11 @@ void ActivityManager::loop() {
+     }
+   }
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  if (pendingAction.load() == PendingAction::None && NetworkStartup::restoreAfterSession(renderer)) {
++    requestedUpdate.store(true);
++  }
++#endif
+   if (pendingAction.load() == PendingAction::None && requestedUpdate.exchange(false)) {
+     // Using direct notification to signal the render task to update
+     // Increment counter so multiple rapid calls won't be lost
+@@ -384,14 +397,28 @@ bool ActivityManager::handleMainTabInput() {
    }
  
    if (mainTabEntryReleasePending) {
@@ -1156,7 +1267,7 @@ index 8acbec08..c8a71eb9 100644
        if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
          goToMainTab(MainTabs::adjacent(currentTab, -1));
          return true;
-@@ -416,6 +437,14 @@ bool ActivityManager::handleMainTabInput() {
+@@ -416,6 +443,14 @@ bool ActivityManager::handleMainTabInput() {
          return true;
        }
  
@@ -1171,7 +1282,7 @@ index 8acbec08..c8a71eb9 100644
        if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
          mainTabFocus = MainTabFocus::Content;
          mainTabEntryReleasePending = true;
-@@ -430,6 +459,7 @@ bool ActivityManager::handleMainTabInput() {
+@@ -430,6 +465,7 @@ bool ActivityManager::handleMainTabInput() {
          requestUpdate();
          return true;
        }
@@ -1179,7 +1290,7 @@ index 8acbec08..c8a71eb9 100644
  
        // Recent's Back is owned by the shared home Standby handler.
        if (currentTab == MainTab::Recent) return false;
-@@ -701,7 +731,15 @@ bool ActivityManager::deferBluetoothStart() const {
+@@ -701,7 +737,15 @@ bool ActivityManager::deferBluetoothStart() const {
  
  bool ActivityManager::handleForcedRefresh() {
    cancelIdleRender();
@@ -1209,6 +1320,28 @@ index 643e6e05..ef24c661 100644
    std::atomic<uint32_t> idleRenderGeneration{0};
  
   public:
+diff --git a/src/activities/CatalogActivity.cpp b/src/activities/CatalogActivity.cpp
+index fc9225b4..83801360 100644
+--- a/src/activities/CatalogActivity.cpp
++++ b/src/activities/CatalogActivity.cpp
+@@ -8,6 +8,7 @@
+ #include <WiFi.h>
+ 
+ #include "MappedInputManager.h"
++#include "NetworkStartup.h"
+ #include "SilentRestart.h"
+ #include "activities/network/WifiSelectionActivity.h"
+ #include "activities/util/KeyboardEntryActivity.h"
+@@ -25,6 +26,9 @@ void CatalogActivity::onExit() {
+   if (WiFi.getMode() != WIFI_MODE_NULL) {
+     WiFi.disconnect(false);
+     delay(30);
++#if FREEINK_DEVICE_PAPERDIY
++    if (NetworkStartup::finishSession()) return;
++#endif
+     silentRestart();
+   }
+ }
 diff --git a/src/activities/UiListActivity.cpp b/src/activities/UiListActivity.cpp
 index f25550ec..85afc636 100644
 --- a/src/activities/UiListActivity.cpp
@@ -2111,6 +2244,45 @@ index 370d39c1..e5f9aaca 100644
    // Shared tail of row activation and the options menu's Open entry.
    void openBookByPath(const std::string& path);
    void promptRebuildIndex();
+diff --git a/src/activities/network/CalibreConnectActivity.cpp b/src/activities/network/CalibreConnectActivity.cpp
+index 41746cd4..640debae 100644
+--- a/src/activities/network/CalibreConnectActivity.cpp
++++ b/src/activities/network/CalibreConnectActivity.cpp
+@@ -10,6 +10,7 @@
+ #include <algorithm>
+ 
+ #include "MappedInputManager.h"
++#include "NetworkStartup.h"
+ #include "SilentRestart.h"
+ #include "WifiSelectionActivity.h"
+ #include "components/UITheme.h"
+@@ -61,6 +62,10 @@ void CalibreConnectActivity::onExit() {
+   if (WiFi.getMode() != WIFI_MODE_NULL) {
+     WiFi.disconnect(false);
+     delay(30);
++#if FREEINK_DEVICE_PAPERDIY
++    webServer.reset();
++    if (NetworkStartup::finishSession()) return;
++#endif
+     silentRestart();
+   }
+ }
+diff --git a/src/activities/network/CrossPointWebServerActivity.cpp b/src/activities/network/CrossPointWebServerActivity.cpp
+index 61f926ca..6e1ea16a 100644
+--- a/src/activities/network/CrossPointWebServerActivity.cpp
++++ b/src/activities/network/CrossPointWebServerActivity.cpp
+@@ -128,6 +128,11 @@ void CrossPointWebServerActivity::onExit() {
+ 
+   // Skip reboot if WiFi was never activated (e.g. user backed out of mode selection).
+   if (WiFi.getMode() != WIFI_MODE_NULL) {
++#if FREEINK_DEVICE_PAPERDIY
++    // Close listeners and uploads before deinitializing their network driver.
++    webServer.reset();
++    if (NetworkStartup::finishSession()) return;
++#endif
+     if (isApMode) {
+       WiFi.softAPdisconnect(true);
+     } else {
 diff --git a/src/activities/reader/EpubReaderActivity.cpp b/src/activities/reader/EpubReaderActivity.cpp
 index 7b2a9366..b44377ac 100644
 --- a/src/activities/reader/EpubReaderActivity.cpp
@@ -2381,6 +2553,20 @@ index b3307951..1d92efe7 100644
  
      if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
        beginClear();
+diff --git a/src/activities/settings/ClockSyncActivity.cpp b/src/activities/settings/ClockSyncActivity.cpp
+index 59b8eb34..9c0826d2 100644
+--- a/src/activities/settings/ClockSyncActivity.cpp
++++ b/src/activities/settings/ClockSyncActivity.cpp
+@@ -40,6 +40,9 @@ void ClockSyncActivity::onExit() {
+   if (shouldTearDownWifiOnExit && WiFi.getMode() != WIFI_MODE_NULL) {
+     WiFi.disconnect(false);
+     delay(30);
++#if FREEINK_DEVICE_PAPERDIY
++    if (NetworkStartup::finishSession()) return;
++#endif
+     silentRestart();
+   }
+ }
 diff --git a/src/activities/settings/DateTimeSettingsActivity.cpp b/src/activities/settings/DateTimeSettingsActivity.cpp
 index 2f1a7e77..79bf53ef 100644
 --- a/src/activities/settings/DateTimeSettingsActivity.cpp
@@ -2545,6 +2731,42 @@ index 91b2e959..ddb06b23 100644
  
    void beginManualEdit();
    void adjustEditField(int delta);
+diff --git a/src/activities/settings/DictionaryDownloadActivity.cpp b/src/activities/settings/DictionaryDownloadActivity.cpp
+index 6d61d0f4..aed49c73 100644
+--- a/src/activities/settings/DictionaryDownloadActivity.cpp
++++ b/src/activities/settings/DictionaryDownloadActivity.cpp
+@@ -15,6 +15,7 @@
+ 
+ #include "CrossPointSettings.h"
+ #include "MappedInputManager.h"
++#include "NetworkStartup.h"
+ #include "SilentRestart.h"
+ #include "activities/network/WifiSelectionActivity.h"
+ #include "activities/util/ConfirmationActivity.h"
+@@ -93,6 +94,9 @@ void DictionaryDownloadActivity::onExit() {
+   if (WiFi.getMode() != WIFI_MODE_NULL) {
+     WiFi.disconnect(false);
+     delay(30);
++#if FREEINK_DEVICE_PAPERDIY
++    if (NetworkStartup::finishSession()) return;
++#endif
+     silentRestart();
+   }
+ }
+diff --git a/src/activities/settings/FontDownloadActivity.cpp b/src/activities/settings/FontDownloadActivity.cpp
+index c741ff8d..21f374c5 100644
+--- a/src/activities/settings/FontDownloadActivity.cpp
++++ b/src/activities/settings/FontDownloadActivity.cpp
+@@ -237,6 +237,9 @@ void FontDownloadActivity::onExit() {
+   // A cancelled/failed Wi-Fi launch still needs to reload the saved statistics.
+   if (!wifiWasEnabled && !readingStatsReleased_ && exitRoute_ != ExitRoute::ReaderPreloadChineseFont) return;
+ 
++#if FREEINK_DEVICE_PAPERDIY
++  if (exitRoute_ == ExitRoute::Home && NetworkStartup::finishSession()) return;
++#endif
+   switch (exitRoute_) {
+     case ExitRoute::Home:
+       silentRestart();
 diff --git a/src/activities/settings/HomeButtonSettingsActivity.cpp b/src/activities/settings/HomeButtonSettingsActivity.cpp
 index 9bf17800..a77cba99 100644
 --- a/src/activities/settings/HomeButtonSettingsActivity.cpp
@@ -2558,6 +2780,20 @@ index 9bf17800..a77cba99 100644
  }
  
  void HomeButtonSettingsActivity::activateIndex(int index) {
+diff --git a/src/activities/settings/KOReaderAuthActivity.cpp b/src/activities/settings/KOReaderAuthActivity.cpp
+index a27d7686..3a0c64cc 100644
+--- a/src/activities/settings/KOReaderAuthActivity.cpp
++++ b/src/activities/settings/KOReaderAuthActivity.cpp
+@@ -80,6 +80,9 @@ void KOReaderAuthActivity::onExit() {
+   if (WiFi.getMode() != WIFI_MODE_NULL) {
+     WiFi.disconnect(false);
+     delay(30);
++#if FREEINK_DEVICE_PAPERDIY
++    if (NetworkStartup::finishSession()) return;
++#endif
+     silentRestart();
+   }
+ }
 diff --git a/src/activities/settings/KOReaderSettingsActivity.cpp b/src/activities/settings/KOReaderSettingsActivity.cpp
 index 1ddfeef9..37a70516 100644
 --- a/src/activities/settings/KOReaderSettingsActivity.cpp
@@ -2584,6 +2820,20 @@ index 27d99d4c..1dfe6822 100644
  }
  
  void OpdsServerListActivity::onBackButton() {
+diff --git a/src/activities/settings/OtaUpdateActivity.cpp b/src/activities/settings/OtaUpdateActivity.cpp
+index b116e653..ba14fba5 100644
+--- a/src/activities/settings/OtaUpdateActivity.cpp
++++ b/src/activities/settings/OtaUpdateActivity.cpp
+@@ -207,6 +207,9 @@ void OtaUpdateActivity::onExit() {
+   // Reload saved statistics even if Wi-Fi allocation/selection never completed.
+   // Successful OTA installation uses the existing plain restart into the new image.
+   if (wifiWasEnabled || readingStatsReleased) {
++#if FREEINK_DEVICE_PAPERDIY
++    if (NetworkStartup::finishSession()) return;
++#endif
+     silentRestart();
+   }
+ }
 diff --git a/src/activities/settings/ReadingStatsSettingsActivity.cpp b/src/activities/settings/ReadingStatsSettingsActivity.cpp
 index 88514e76..df598ad7 100644
 --- a/src/activities/settings/ReadingStatsSettingsActivity.cpp
@@ -2598,10 +2848,18 @@ index 88514e76..df598ad7 100644
  }
  
 diff --git a/src/activities/settings/SettingsActivity.cpp b/src/activities/settings/SettingsActivity.cpp
-index 3dde1434..77883013 100644
+index 3dde1434..ba996fd8 100644
 --- a/src/activities/settings/SettingsActivity.cpp
 +++ b/src/activities/settings/SettingsActivity.cpp
-@@ -139,10 +139,12 @@ void SettingsActivity::rebuildSettingsLists() {
+@@ -30,6 +30,7 @@
+ #include "KeyboardLayoutsActivity.h"
+ #include "LanguageSelectActivity.h"
+ #include "MappedInputManager.h"
++#include "NetworkStartup.h"
+ #include "OpdsServerListActivity.h"
+ #include "OtaUpdateActivity.h"
+ #include "ReadingStatsSettingsActivity.h"
+@@ -139,10 +140,12 @@ void SettingsActivity::rebuildSettingsLists() {
    resourcesDirty = false;
  
    // Append device-only ACTION items
@@ -2614,7 +2872,7 @@ index 3dde1434..77883013 100644
  #if FREEINK_CAP_BLE_HID_HOST
    controlsSettings.push_back(SettingInfo::Action(StrId::STR_BLUETOOTH, SettingAction::Bluetooth));
  #endif
-@@ -368,7 +370,7 @@ void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valueP
+@@ -368,7 +371,7 @@ void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valueP
  }
  
  bool SettingsActivity::handleCustomInput() {
@@ -2623,7 +2881,7 @@ index 3dde1434..77883013 100644
  }
  
  void SettingsActivity::navigateButtons() {
-@@ -415,7 +417,11 @@ bool SettingsActivity::handleButtons() {
+@@ -415,7 +418,11 @@ bool SettingsActivity::handleButtons() {
    }
    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
      if (ringPos() == 0) {
@@ -2635,7 +2893,17 @@ index 3dde1434..77883013 100644
      } else {
        activateIndex(ringPos() - 1);
        requestUpdate();
-@@ -1000,11 +1006,21 @@ void SettingsActivity::drawFooter() {
+@@ -620,6 +627,9 @@ void SettingsActivity::toggleSetting(const SettingInfo& setting) {
+           // release the driver's heap. The scan alone brings it up, so tear
+           // down whether or not the user joined a network.
+           if (WiFi.getMode() == WIFI_MODE_NULL) return;
++#if FREEINK_DEVICE_PAPERDIY
++          if (NetworkStartup::finishSession()) return;
++#endif
+           WiFi.disconnect(false);
+           delay(30);
+           // Unlike the onExit() teardowns, this runs from the loop task with
+@@ -1000,11 +1010,21 @@ void SettingsActivity::drawFooter() {
    }
    const int ring = ringPos();
    const auto confirmLabel =
@@ -3506,10 +3774,28 @@ index 5f13b077..3da43201 100644
 +#endif
  }
 diff --git a/src/main.cpp b/src/main.cpp
-index 607d299a..0597b278 100644
+index 607d299a..db66e1be 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -868,9 +868,9 @@ void setup() {
+@@ -36,6 +36,7 @@
+ #include "CrossPointState.h"
+ #include "KOReaderCredentialStore.h"
+ #include "MappedInputManager.h"
++#include "NetworkStartup.h"
+ #include "OpdsServerStore.h"
+ #include "ReadingStatsStore.h"
+ #include "RecentBooksStore.h"
+@@ -300,6 +301,9 @@ void silentRestartToSettings() {
+ 
+ void silentRestartToJoinNetwork() {
+   if (deepSleepInProgress) return;
++#if FREEINK_DEVICE_PAPERDIY
++  if (NetworkStartup::canEnterWithoutRestart(renderer)) return;
++#endif
+ #if FREEINK_CAP_TOUCH
+   // A software reset would cycle touch/frontlight rails; those boards proceed
+   // into Join Network without the fresh-heap reboot (return, don't stop WiFi —
+@@ -868,9 +872,9 @@ void setup() {
      case HalGPIO::WakeupReason::AfterUSBPower:
        // Most devices return to sleep after a USB-powered cold boot.
        LOG_DBG("MAIN", "Wakeup reason: After USB Power");
@@ -3522,7 +3808,7 @@ index 607d299a..0597b278 100644
        // X4 Pro must stay awake so USB Serial/JTAG remains available after leaving
        // USB Drive and reconnecting the cable. Paper Mono has no armable GPIO wake
        // (its button is behind the PMIC). Metalio also needs native USB available
-@@ -1050,6 +1050,21 @@ void loop() {
+@@ -1050,6 +1054,21 @@ void loop() {
  
    gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
    mappedInputManager.update();
@@ -3544,7 +3830,7 @@ index 607d299a..0597b278 100644
  #if FREEINK_DEVICE_READPICO
    // Cancel before any handler can wait for the framebuffer lock. These are
    // snapshot queries: they do not consume the gesture from its normal owner.
-@@ -1243,8 +1258,8 @@ void loop() {
+@@ -1243,8 +1262,8 @@ void loop() {
      return;
    }
  
@@ -3569,7 +3855,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..3fb0730d 100644
+index b0b49733..b6b8513e 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -3581,7 +3867,16 @@ index b0b49733..3fb0730d 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -246,3 +248,19 @@ add_test(NAME TxtCoverCopy
+@@ -151,6 +153,8 @@ add_test(NAME ReadingStatsNetworkMemory
+   COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_reading_stats_network_memory.py)
+ add_test(NAME WifiFontRecovery
+   COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_wifi_font_recovery.py)
++add_test(NAME PaperDiyNetworkSession
++  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_network_session.py)
+ add_test(NAME HalClockSntp
+   COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_hal_clock_sntp.py)
+ add_test(NAME InxStyleCompatibility
+@@ -246,3 +250,19 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -3841,7 +4136,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,773 @@
+@@ -0,0 +1,824 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -4615,6 +4910,57 @@ new file mode 100644
 +if needed, and post-recovery operations. Explicitly report a lost connection or
 +capture failure. Journal/diagnostic code cannot detect physical paleness itself.
 +
++
++
++## Network session exit without repeated boot clears (2026-10-29)
++
++The packet-v2 diagnostic firmware remains the baseline; this change does not
++alter SDK patches, waveforms, feed timing, display history or UI30. The user
++observed repeated flashes when joining/leaving file transfer, leaving Wi-Fi
++settings, and cancelling font management. Logs confirmed deliberate heap-defrag
++reboots, not a display failure loop. Every Epdiy boot physically clears to white,
++so the loading popup, boot clear and destination paint are visibly separate.
++
++PaperDIY network owners now call `NetworkStartup::finishSession()` before their
++legacy reboot fallback. `WiFi.mode(WIFI_OFF)` is checked, including the resulting
++mode; unlike `disconnect(false)` it stops/deinitializes Arduino's Wi-Fi driver
++and netifs. The existing HalClock update observes the disconnected state and
++stops its owned SNTP session. Credentials are not erased. File-transfer/Calibre
++listeners are destroyed before driver teardown. A failed driver stop retains
++the original reboot. Other devices keep their original paths. Successful OTA
++installation, raw-SD handoff, and reader/font-preload restart routes are retained.
++
++The default font-management exit can now pop back to its Settings parent;
++Settings' existing result callback rebuilds its released lists and retains the
++selected tab/row. Owned session exits from catalog, dictionary, clock sync,
++KOReader authentication and cancelled update pages use the same PaperDIY
++teardown. Wi-Fi selection alone still leaves its parent session running.
++
++Font restoration must not acquire a nested RenderLock from onExit(). One
++loop-owned bool coalesces restoration, including failed driver startup after
++font reclaim. ActivityManager drains all pending transitions, restores fonts
++under a fresh lock, then issues the destination render notification. This
++uses the existing font objects/caches: no extra framebuffer, task, or retained
++heap allocation. Registry dirty flags from uploads still go through ensureLoaded.
++
++File-transfer Join skips its preparatory reboot only with conservative headroom
++after normal reclaim: at least 96 KiB internal free, 64 KiB largest internal
++block and 256 KiB PSRAM free. These are preflight policy limits, not measured
++proof that every future allocation succeeds. Low headroom retains the fresh-heap
++reboot and startup allocation failures retain their existing error handling.
++Exit logs report internal free/largest and DMA/PSRAM before/after. Actual heap
++recovery, repeat connection, font upload/download and optical behavior require
++hardware testing; host stubs cannot establish these.
++
++`PaperDiyNetworkSession` compiles the production helpers and actual Settings
++callback, font/server exits and render dispatch. It checks 100 modeled STA/AP
++sessions, listener-before-driver ordering, failure fallback, restore before one
++render notification, reclaim/start failure, memory thresholds and non-PaperDIY
++return paths. Keep the complete host suite, SDK transaction tests, formatting
++and static analysis as build gates. Device acceptance: repeat file transfer
++entry/cancel/exit and Settings Wi-Fi/font management exits, confirm parent
++position, join/rejoin, monitor free/largest-block trends, then reopen EPUB and
++menus. Do not flash automatically; user flashes the separately verified image.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -8268,6 +8614,330 @@ new file mode 100644
 +
 +
 +if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/test_paperdiy_network_session.py b/test/test_paperdiy_network_session.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_network_session.py
+@@ -0,0 +1,319 @@
++"""Exercise production network teardown/return paths with a driver ownership model.
++
++The model detects forgotten driver/socket ownership and nested font locks. It
++does not measure real ESP heap reclamation or validate optical refresh quality.
++"""
++from pathlib import Path
++import os
++import shlex
++import subprocess
++import tempfile
++import unittest
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def method(source, signature):
++    start = source.index(signature)
++    end = source.index('{', start) + 1
++    depth = 1
++    while depth:
++        depth += (source[end] == '{') - (source[end] == '}')
++        end += 1
++    return source[start:end]
++
++
++def run(code, paperdiy=1):
++    with tempfile.TemporaryDirectory(prefix='paperdiy-network-') as directory:
++        cpp = Path(directory) / 'check.cpp'
++        exe = Path(directory) / 'check'
++        cpp.write_text(code, encoding='utf-8')
++        subprocess.run(shlex.split(os.environ.get('CXX', 'c++')) + [
++            '-std=c++20', '-Wall', '-Wextra', '-Werror',
++            f'-DFREEINK_DEVICE_PAPERDIY={paperdiy}', str(cpp), '-o', str(exe)
++        ], check=True)
++        subprocess.run([str(exe)], check=True)
++
++
++STUBS = r'''
++#include <cassert>
++#include <cstddef>
++#include <memory>
++#include <string>
++#include <utility>
++#define LOG_INF(...) ((void)0)
++#define LOG_ERR(...) ((void)0)
++#define LOG_DBG(...) ((void)0)
++constexpr int WIFI_OFF=0, WIFI_MODE_NULL=0;
++bool locked=false;
++int sockets=0, fontLoads=0, driverBlocks=0, restarts=0;
++int clockSteps=0;
++struct FontCache { void clearCache() {} } fontCache;
++struct GfxRenderer { FontCache* getFontCacheManager() { return &fontCache; } } renderer;
++struct RenderLock {
++  RenderLock() { assert(!locked); locked=true; }
++  ~RenderLock() { locked=false; }
++};
++struct {
++ int current=0, scanBlocks=0, starts=0, stops=0;
++ bool stopOk=true;
++ int getMode() const { return current; }
++ bool mode(int next) {
++   if (!next) {
++     assert(sockets==0);
++     ++stops;
++     if (!stopOk) return false;
++     current=0; driverBlocks=0;
++   } else { ++starts; current=next; driverBlocks=1; }
++   return true;
++ }
++ void scanDelete() { scanBlocks=0; }
++ void disconnect(bool erase) { assert(!erase); }
++ void softAPdisconnect(bool) {}
++} WiFi;
++struct HalMemory {
++ struct HeapStats { size_t freeBytes, totalBytes, minFreeBytes, largestBlockBytes; };
++ static inline HeapStats internal{140*1024,0,0,96*1024}, psram{6*1024*1024,0,0,0};
++ static HeapStats getInternalHeap() { return internal; }
++ static HeapStats getPsramHeap() { return psram; }
++};
++struct {
++ bool loaded=true;
++ void ensureLoaded(GfxRenderer&) { assert(locked); ++fontLoads; loaded=true; }
++ void releaseLoadedFont(GfxRenderer&) { assert(locked); loaded=false; }
++} sdFontSystem;
++void delay(int) {}
++void silentRestart() { ++restarts; }
++void silentRestartToReader(bool=false) { restarts+=10; }
++void silentRestartToReaderAndPreloadChineseFont(unsigned) { restarts+=100; }
++void silentRestartToSettings() { assert(locked); ++restarts; }
++namespace NetworkStartup {
++constexpr size_t MIN_FREE_PSRAM=256*1024;
++bool fontRestorePending=false;
++void logMemory(const char*) {}
++void prepare(GfxRenderer&) {}
++}
++'''
++
++
++class PaperDiyNetworkTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.network = (ROOT / 'src/NetworkStartup.cpp').read_text(encoding='utf-8')
++        cls.finish = method(cls.network, 'bool finishSession()')
++        cls.restore = method(cls.network, 'bool restoreAfterSession(')
++        cls.entry = method(cls.network, 'bool canEnterWithoutRestart(')
++        cls.production = '\nnamespace NetworkStartup {\n' + '\n'.join(
++            (cls.finish, cls.restore, cls.entry)) + '\n}\n'
++
++    def test_failed_driver_start_restores_reclaimed_font(self):
++        prepare = method(self.network, 'void prepare(GfxRenderer& renderer)')
++        setup = STUBS.replace('void prepare(GfxRenderer&) {}', r'''
++struct MemorySnapshot {};
++MemorySnapshot readMemorySnapshot() { return {}; }
++bool shouldReleaseRenderMemory(MemorySnapshot) { return true; }
++''' + prepare)
++        run(setup + self.production + r'''
++int main() {
++  // Font reclaimed, then driver startup failed without ever enabling Wi-Fi.
++  NetworkStartup::prepare(renderer);
++  assert(!sdFontSystem.loaded && WiFi.getMode()==WIFI_MODE_NULL);
++  assert(NetworkStartup::restoreAfterSession(renderer));
++  assert(sdFontSystem.loaded && fontLoads==1);
++  assert(!NetworkStartup::restoreAfterSession(renderer));
++}
++''')
++
++    def test_join_entry_keeps_low_memory_and_sleep_fallbacks(self):
++        source = (ROOT / 'src/main.cpp').read_text(encoding='utf-8')
++        entry = method(source, 'void silentRestartToJoinNetwork()')
++        run(STUBS + self.production + r'''
++#include <cstdint>
++#define tr(key) "Loading"
++bool deepSleepInProgress=false;
++enum class SilentRebootTarget { JoinNetwork };
++uint32_t silentRebootTarget=0, silentRebootFontPointSize=0, silentRebootPayload=0, silentRebootMagic=0;
++constexpr uint32_t SILENT_REBOOT_LIGHT_ON=1, SILENT_REBOOT_MAGIC=123;
++struct { bool isOn() const { return false; } } Frontlight;
++struct { void drawPopup(GfxRenderer&,const char*) { ++clockSteps; } } GUI;
++struct { void restart() { ++restarts; } } ESP;
++''' + entry + r'''
++int main() {
++ silentRestartToJoinNetwork(); assert(restarts==0 && clockSteps==0);
++ HalMemory::internal.largestBlockBytes=1;
++ deepSleepInProgress=true;
++ silentRestartToJoinNetwork(); assert(restarts==0 && clockSteps==0);
++ deepSleepInProgress=false;
++ silentRestartToJoinNetwork(); assert(restarts==1 && clockSteps==1);
++ assert(silentRebootMagic==SILENT_REBOOT_MAGIC);
++}
++''')
++
++    def test_repeated_sessions_failure_and_deferred_font_restore(self):
++        run(STUBS + self.production + r'''
++int main() {
++  assert(!NetworkStartup::restoreAfterSession(renderer));
++  for(int cycle=0; cycle<100; ++cycle) {
++    assert(WiFi.mode(cycle%2+1)); // STA and AP ownership.
++    WiFi.scanBlocks=1; sdFontSystem.loaded=false;
++    {
++      RenderLock transition;
++      assert(NetworkStartup::finishSession());
++      assert(driverBlocks==0 && WiFi.scanBlocks==0);
++      assert(fontLoads==cycle); // No font I/O under the existing transition lock.
++      assert(NetworkStartup::finishSession()); // Multiple outgoing owners coalesce.
++    }
++    assert(NetworkStartup::restoreAfterSession(renderer));
++    assert(fontLoads==cycle+1 && sdFontSystem.loaded);
++    assert(!NetworkStartup::restoreAfterSession(renderer));
++  }
++  WiFi.mode(1); WiFi.stopOk=false;
++  assert(!NetworkStartup::finishSession());
++  assert(driverBlocks==1 && !NetworkStartup::fontRestorePending);
++  WiFi.stopOk=true;
++  assert(NetworkStartup::finishSession());
++  WiFi.mode(1); // An enclosing owner started another session in the same transition.
++  assert(!NetworkStartup::restoreAfterSession(renderer));
++  assert(NetworkStartup::fontRestorePending);
++  assert(NetworkStartup::finishSession());
++  assert(NetworkStartup::restoreAfterSession(renderer));
++  assert(fontLoads==101);
++  assert(NetworkStartup::canEnterWithoutRestart(renderer));
++  HalMemory::internal.freeBytes=96*1024-1;
++  assert(!NetworkStartup::canEnterWithoutRestart(renderer));
++  HalMemory::internal.freeBytes=96*1024;
++  HalMemory::internal.largestBlockBytes=64*1024-1;
++  assert(!NetworkStartup::canEnterWithoutRestart(renderer));
++  HalMemory::internal.largestBlockBytes=64*1024;
++  HalMemory::psram.freeBytes=256*1024-1;
++  assert(!NetworkStartup::canEnterWithoutRestart(renderer));
++  HalMemory::psram.freeBytes=256*1024;
++  assert(NetworkStartup::canEnterWithoutRestart(renderer));
++}
++''')
++
++    def test_settings_return_and_failure_fallback(self):
++        source = (ROOT / 'src/activities/settings/SettingsActivity.cpp').read_text(encoding='utf-8')
++        case = source[source.index('case SettingAction::Network:'):source.index('case SettingAction::ClearCache:')]
++        callback = method(case, '[](const ActivityResult&)')
++        for target in (0, 1):
++            run(STUBS + self.production + r'''
++struct ActivityResult {};
++struct { int saves=0; void saveToFile() { ++saves; } } SETTINGS;
++int main() {
++  auto callback = ''' + callback + r''';
++  callback({}); assert(restarts==0 && SETTINGS.saves==1);
++  WiFi.mode(1); callback({});
++#if FREEINK_DEVICE_PAPERDIY
++  assert(restarts==0 && driverBlocks==0 && NetworkStartup::fontRestorePending);
++  assert(NetworkStartup::restoreAfterSession(renderer));
++  WiFi.mode(1); WiFi.stopOk=false; callback({});
++  assert(restarts==1); // Driver error keeps the known restart route.
++#else
++  assert(restarts==1 && driverBlocks==1); // Other boards retain old policy.
++#endif
++}
++''', target)
++
++    def test_font_manage_returns_to_parent_reader_routes_still_restart(self):
++        source = (ROOT / 'src/activities/settings/FontDownloadActivity.cpp').read_text(encoding='utf-8')
++        body = method(source, 'void FontDownloadActivity::onExit()')
++        for target in (0, 1):
++            run(STUBS + self.production + r'''
++struct Activity { void onExit() {} };
++struct FontDownloadActivity : Activity {
++ enum class ExitRoute { Home, Reader, ReaderSuppressPrompt, ReaderPreloadChineseFont };
++ bool readingStatsReleased_=false;
++ unsigned targetPointSize_=16;
++ ExitRoute exitRoute_=ExitRoute::Home;
++ void onExit();
++};
++''' + body + r'''
++int main() {
++ FontDownloadActivity font;
++ font.onExit(); assert(restarts==0); // Cancel before Wi-Fi initialized.
++ WiFi.mode(1); font.onExit();
++#if FREEINK_DEVICE_PAPERDIY
++ assert(restarts==0 && driverBlocks==0);
++ assert(NetworkStartup::restoreAfterSession(renderer));
++ WiFi.mode(1); WiFi.stopOk=false; font.onExit(); assert(restarts==1);
++ WiFi.stopOk=true;
++#else
++ assert(restarts==1);
++#endif
++ restarts=0;
++ font.exitRoute_=FontDownloadActivity::ExitRoute::Reader;
++ font.onExit(); assert(restarts==10);
++ font.exitRoute_=FontDownloadActivity::ExitRoute::ReaderPreloadChineseFont;
++ font.onExit(); assert(restarts==110);
++}
++''', target)
++
++    def test_web_server_listeners_close_before_driver(self):
++        source = (ROOT / 'src/activities/network/CrossPointWebServerActivity.cpp').read_text(encoding='utf-8')
++        body = method(source, 'void CrossPointWebServerActivity::onExit()')
++        run(STUBS + self.production + r'''
++struct Activity { void onExit() {} };
++struct { void end() {} } MDNS;
++namespace pluginevents { void refreshSubscriptions() {} }
++void stopDnsServer() {}
++enum class WebServerActivityState { SHUTTING_DOWN };
++struct Server { Server() { ++sockets; } ~Server() { --sockets; } };
++struct CrossPointWebServerActivity : Activity {
++ WebServerActivityState state{};
++ bool isApMode=false;
++ std::unique_ptr<Server> webServer;
++ void onExit();
++};
++''' + body + r'''
++int main() {
++ for(int cycle=0; cycle<20; ++cycle) {
++   CrossPointWebServerActivity page;
++   WiFi.mode(cycle%2+1); page.isApMode=cycle%2;
++   page.webServer=std::make_unique<Server>();
++   { RenderLock transition; page.onExit(); }
++   assert(!page.webServer && sockets==0 && driverBlocks==0 && restarts==0);
++   assert(NetworkStartup::restoreAfterSession(renderer));
++ }
++ CrossPointWebServerActivity failed;
++ WiFi.mode(1); WiFi.stopOk=false;
++ failed.onExit(); assert(restarts==1);
++}
++''')
++
++    def test_restore_precedes_the_destination_render_notification(self):
++        source = (ROOT / 'src/activities/ActivityManager.cpp').read_text(encoding='utf-8')
++        start = source.index('#if FREEINK_DEVICE_PAPERDIY\n  if (pendingAction.load()')
++        end = source.index('\n}\n', start)
++        dispatch = source[start:end]
++        run(STUBS + self.production + r'''
++#include <atomic>
++enum class PendingAction { None, Pop };
++std::atomic<PendingAction> pendingAction{PendingAction::None};
++std::atomic<bool> requestedUpdate{true};
++int renderTaskHandle=1, notifications=0;
++constexpr int eIncrement=0;
++void xTaskNotify(int,int,int) {
++ assert(!locked && sdFontSystem.loaded && driverBlocks==0);
++ ++notifications;
++}
++void dispatch() {
++''' + dispatch + r'''
++}
++int main() {
++ WiFi.mode(1); sdFontSystem.loaded=false;
++ { RenderLock transition; assert(NetworkStartup::finishSession()); }
++ dispatch(); assert(notifications==1 && fontLoads==1);
++ dispatch(); assert(notifications==1); // No duplicate notification from font restore.
++ requestedUpdate=true;
++ pendingAction=PendingAction::Pop;
++ NetworkStartup::fontRestorePending=true;
++ dispatch(); assert(notifications==1 && fontLoads==1);
++ pendingAction=PendingAction::None;
++ dispatch(); assert(notifications==2 && fontLoads==2);
++}
++''')
++
++
++if __name__ == '__main__':
 +    unittest.main()
 diff --git a/test/test_paperdiy_record_actions.py b/test/test_paperdiy_record_actions.py
 new file mode 100644
