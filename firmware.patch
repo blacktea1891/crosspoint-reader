@@ -1008,7 +1008,7 @@ index 3976e7d8..94fc2ae7 100644
  
  }  // namespace appVisibility
 diff --git a/src/NetworkStartup.cpp b/src/NetworkStartup.cpp
-index 31c3a50b..974f99e3 100644
+index 31c3a50b..03d69755 100644
 --- a/src/NetworkStartup.cpp
 +++ b/src/NetworkStartup.cpp
 @@ -17,6 +17,11 @@
@@ -1035,7 +1035,7 @@ index 31c3a50b..974f99e3 100644
    }
    logMemory("after font reclaim");
  }
-@@ -90,4 +100,43 @@ bool setMode(GfxRenderer& renderer, const wifi_mode_t mode) {
+@@ -90,4 +100,47 @@ bool setMode(GfxRenderer& renderer, const wifi_mode_t mode) {
    return started;
  }
  
@@ -1061,6 +1061,10 @@ index 31c3a50b..974f99e3 100644
 +  // replace is complete, before the destination gets its render notification.
 +  {
 +    RenderLock lock;
++    // A parent's result callback may already have consumed the registry dirty
++    // flag while rebuilding Settings. Replacing an active file at the same
++    // path must still reload the resident font, just as a reboot used to.
++    sdFontSystem.markRegistryDirty();
 +    sdFontSystem.ensureLoaded(renderer);
 +  }
 +  logMemory("PaperDIY network exit resources restored");
@@ -8619,7 +8623,7 @@ diff --git a/test/test_paperdiy_network_session.py b/test/test_paperdiy_network_
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_network_session.py
-@@ -0,0 +1,319 @@
+@@ -0,0 +1,322 @@
 +"""Exercise production network teardown/return paths with a driver ownership model.
 +
 +The model detects forgotten driver/socket ownership and nested font locks. It
@@ -8700,8 +8704,11 @@ new file mode 100644
 + static HeapStats getPsramHeap() { return psram; }
 +};
 +struct {
-+ bool loaded=true;
-+ void ensureLoaded(GfxRenderer&) { assert(locked); ++fontLoads; loaded=true; }
++ bool loaded=true, dirty=false;
++ void markRegistryDirty() { assert(locked); dirty=true; }
++ void ensureLoaded(GfxRenderer&) {
++   assert(locked && dirty); dirty=false; ++fontLoads; loaded=true;
++ }
 + void releaseLoadedFont(GfxRenderer&) { assert(locked); loaded=false; }
 +} sdFontSystem;
 +void delay(int) {}
