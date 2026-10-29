@@ -28,7 +28,7 @@ index 5c2bd6bb..1d9409ee 100644
  - **无线功能**：浏览器传书与设置、Calibre 无线连接、OPDS 下载、WebDAV 和设备 OTA 更新。
  - **Apps 应用中心**：数独、五子棋、中国象棋、扫雷、2048、电子木鱼、Ugly Avatar 等轻量游戏与工具。[应用说明](./src/activities/apps/README.md)。
 diff --git a/lib/GfxRenderer/GfxRenderer.cpp b/lib/GfxRenderer/GfxRenderer.cpp
-index e08284b7..26c6119d 100644
+index e08284b7..7a364b72 100644
 --- a/lib/GfxRenderer/GfxRenderer.cpp
 +++ b/lib/GfxRenderer/GfxRenderer.cpp
 @@ -60,6 +60,11 @@ bool commitNativeGray(Display& display) {
@@ -78,6 +78,23 @@ index e08284b7..26c6119d 100644
  void GfxRenderer::displayBuffer(HalDisplay::RefreshMode refreshMode, DisplayRefreshContext context) const {
    auto elapsed = millis() - start_ms;
    LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
+@@ -2206,6 +2232,16 @@ void GfxRenderer::displayBuffer(HalDisplay::RefreshMode refreshMode, DisplayRefr
+   display.displayBuffer(effectiveRefreshMode, fadingFix);
+ #else
+   display.displayBuffer(effectiveRefreshMode, fadingFix, context);
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
++  LOG_INF("PD-GFX",
++          "orientation=%u size=%d,%d requested=%u effective=%u gray16=%u strip=%u scanning=%u "
++          "clip=%d,%d,%d,%d",
++          static_cast<unsigned>(orientation), getScreenWidth(), getScreenHeight(), static_cast<unsigned>(refreshMode),
++          static_cast<unsigned>(effectiveRefreshMode), static_cast<unsigned>(grayscale16Buffer != nullptr),
++          static_cast<unsigned>(_stripActive),
++          static_cast<unsigned>(fontCacheManager_ && fontCacheManager_->isScanning()), clipLeft_, clipTop_, clipRight_,
++          clipBottom_);
++#endif
+ #endif
+ }
+ 
 diff --git a/lib/GfxRenderer/GfxRenderer.h b/lib/GfxRenderer/GfxRenderer.h
 index 8471d5ac..360af56e 100644
 --- a/lib/GfxRenderer/GfxRenderer.h
@@ -201,7 +218,7 @@ index df35ac5d..84df7186 100644
  STR_KB_HINT_EXIT_URL_MODE: "Press ABC to exit URL mode"
  STR_KB_HINT_CLEAR_TEXT: "Hold DEL to clear all text"
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..c33f354b 100644
+index 2d854fe5..c7accf73 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
 @@ -1,6 +1,15 @@
@@ -226,12 +243,12 @@ index 2d854fe5..c33f354b 100644
    einkDisplay.begin();
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  einkDisplay.setRefreshAuditObserver([](const char* line) { LOG_INF("PD-AUDIT", "%s", line); });
-+  LOG_INF("PD-AUDIT", "feed-start candidate: baseline 40531224379; readiness enabled; STV17 unchanged");
++  LOG_INF("PD-AUDIT", "free-trace diagnostic: baseline 40628068556; every frame; waveform/feed/UI30 unchanged");
 +#endif
  
  #if FREEINK_DEVICE_READPICO
    // The facade publishes the driver's real geometry (EpdiyLcdDriver::geometry():
-@@ -112,19 +125,51 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
+@@ -112,19 +125,59 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
  }  // namespace
  
  void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen, DisplayRefreshContext context) {
@@ -249,8 +266,12 @@ index 2d854fe5..c33f354b 100644
 +    LOG_DBG("DISP", "PaperDIY UI clean: 30-update cadence");
 +  }
 +#if FREEINK_PAPERDIY_REFRESH_AUDIT
-+  if (mode != FAST_REFRESH) {
-+    LOG_INF("PD-AUDIT", "submit source=%s requested=%u selected=%u context=%u",
++  static uint32_t submitSequence = 0;
++  const uint32_t submitId = ++submitSequence;
++  const auto submitStarted = millis();
++  {
++    LOG_INF("PD-AUDIT", "submit id=%lu source=%s requested=%u selected=%u context=%u",
++            static_cast<unsigned long>(submitId),
 +            displayRecoveryPending ? "manual-recovery"
 +            : automaticClean       ? "ui30"
 +                                   : "explicit",
@@ -263,6 +284,10 @@ index 2d854fe5..c33f354b 100644
    }
  
    einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen, convertRefreshContext(context));
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
++  LOG_INF("PD-AUDIT", "submit-end id=%lu committed=%u elapsed_ms=%lu", static_cast<unsigned long>(submitId),
++          static_cast<unsigned>(einkDisplay.displayCommitted()), static_cast<unsigned long>(millis() - submitStarted));
++#endif
 +#if FREEINK_DEVICE_PAPERDIY
 +  paperDiyRefreshBudget.completed(mode == FAST_REFRESH, normalContext, einkDisplay.displayCommitted());
 +  completeDisplayRecovery();
@@ -283,7 +308,7 @@ index 2d854fe5..c33f354b 100644
  }
  
  void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
-@@ -138,11 +183,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
+@@ -138,11 +191,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
  bool HalDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
  
  void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
@@ -299,7 +324,7 @@ index 2d854fe5..c33f354b 100644
  }
  
  void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
-@@ -160,6 +209,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
+@@ -160,6 +217,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
  void HalDisplay::returnFrameBufferStorage() { einkDisplay.returnBuildStorage(); }
  
  bool HalDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback, bool turnOffScreen) {
@@ -309,7 +334,7 @@ index 2d854fe5..c33f354b 100644
    if (gpio.deviceIsX3() && fallback == HALF_REFRESH) einkDisplay.requestResync();
    return einkDisplay.displayGrayscaleBase(mode, static_cast<EInkDisplay::RefreshMode>(fallback), turnOffScreen);
  }
-@@ -169,6 +221,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
+@@ -169,6 +229,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
  }
  
  void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen, DisplayRefreshContext context) {
@@ -319,7 +344,7 @@ index 2d854fe5..c33f354b 100644
    // X3: a HALF fallback means the caller wants a clean base (e.g. the sleep
    // cover, a full-screen swap from arbitrary prior content). Without this, the
    // X3 grayscale base takes its gentle differential happy path and the prior
-@@ -195,7 +250,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
+@@ -195,7 +258,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
  
  void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.cleanupGrayscaleBuffers(bwBuffer); }
  
@@ -333,7 +358,7 @@ index 2d854fe5..c33f354b 100644
  
  void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
    einkDisplay.writeGrayscalePlaneStrip(lsbPlane ? EInkDisplay::GRAY_PLANE_LSB : EInkDisplay::GRAY_PLANE_MSB, rows,
-@@ -219,12 +279,46 @@ void HalDisplay::cancelGrayscale() {
+@@ -219,12 +287,46 @@ void HalDisplay::cancelGrayscale() {
  
  bool HalDisplay::displayCommitted() const { return einkDisplay.displayCommitted(); }
  
@@ -1583,7 +1608,7 @@ index 789f5a11..2b1a661a 100644
    bool handleButtons() override;
    // Header shows the current folder name (battery indicator via GUI.drawHeader);
 diff --git a/src/activities/home/HomeActivity.cpp b/src/activities/home/HomeActivity.cpp
-index e430f7d4..f01be60f 100644
+index e430f7d4..9e6f544e 100644
 --- a/src/activities/home/HomeActivity.cpp
 +++ b/src/activities/home/HomeActivity.cpp
 @@ -103,6 +103,67 @@ void HomeActivity::requestCarouselUpdate(CarouselUpdateScope scope) {
@@ -1708,7 +1733,26 @@ index e430f7d4..f01be60f 100644
      menuIcons.push_back(entry->item == HomeMenuItem::OPDS_BROWSER && hasPlugins ? Plugins : entry->icon);
    }
  
-@@ -755,7 +823,11 @@ void HomeActivity::render(RenderLock&&) {
+@@ -734,6 +802,18 @@ void HomeActivity::render(RenderLock&&) {
+ 
+   const CarouselUpdateScope updateScope = carouselUpdateScope.exchange(CarouselUpdateScope::None);
+   const bool menuOnlyUpdate = canRenderCarouselMenuOnly(isCarousel, recentsLoaded, updateScope);
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
++  static uint32_t homeDrawSequence = 0;
++  LOG_INF("PD-HOME",
++          "draw=%lu theme=%u selector=%d books=%u scope=%u menu_only=%u loaded=%u loading=%u "
++          "cover=%u stored=%u first=%u grid=%u",
++          static_cast<unsigned long>(++homeDrawSequence), static_cast<unsigned>(SETTINGS.uiTheme), selectorIndex,
++          static_cast<unsigned>(recentBooks.size()), static_cast<unsigned>(updateScope),
++          static_cast<unsigned>(menuOnlyUpdate), static_cast<unsigned>(recentsLoaded),
++          static_cast<unsigned>(recentsLoading), static_cast<unsigned>(coverRendered),
++          static_cast<unsigned>(coverBufferStored), static_cast<unsigned>(firstRenderDone),
++          static_cast<unsigned>(coverGridUi != nullptr));
++#endif
+   if (menuOnlyUpdate) {
+     renderer.fillRect(headerRect.x, headerRect.y, headerRect.width, headerRect.height, false);
+     drawHeader();
+@@ -755,7 +835,11 @@ void HomeActivity::render(RenderLock&&) {
      // Front Left/Right walk the tabs, so their hints read Left/Right; the
      // side page buttons (unhinted) walk the covers.
      const auto labels = mappedInput.mapLabels(hasContinueReading ? tr(STR_RESUME) : "", tr(STR_SELECT),
@@ -1720,7 +1764,7 @@ index e430f7d4..f01be60f 100644
      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
      renderer.displayBuffer(!firstRenderDone ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
      // Slot heights are recorded during the draw above; a change (first layout
-@@ -806,8 +878,15 @@ void HomeActivity::render(RenderLock&&) {
+@@ -806,8 +890,15 @@ void HomeActivity::render(RenderLock&&) {
    drawMenu();
  
    if (!isCarousel) {
@@ -3442,7 +3486,7 @@ index 5f13b077..3da43201 100644
 +#endif
  }
 diff --git a/src/main.cpp b/src/main.cpp
-index 607d299a..d51ffbad 100644
+index 607d299a..0597b278 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -868,9 +868,9 @@ void setup() {
@@ -3458,7 +3502,29 @@ index 607d299a..d51ffbad 100644
        // X4 Pro must stay awake so USB Serial/JTAG remains available after leaving
        // USB Drive and reconnecting the cable. Paper Mono has no armable GPIO wake
        // (its button is behind the PMIC). Metalio also needs native USB available
-@@ -1243,8 +1243,8 @@ void loop() {
+@@ -1050,6 +1050,21 @@ void loop() {
+ 
+   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
+   mappedInputManager.update();
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
++  // Snapshot getters only; never call the consuming long-press query here.
++  uint16_t pressed = 0, released = 0, held = 0;
++  for (uint8_t i = 0; i < MappedInputManager::kButtonCount; ++i) {
++    const auto button = static_cast<MappedInputManager::Button>(i);
++    if (mappedInputManager.wasPressed(button)) pressed |= uint16_t(1u << i);
++    if (mappedInputManager.wasReleased(button)) released |= uint16_t(1u << i);
++    if (mappedInputManager.isPressed(button)) held |= uint16_t(1u << i);
++  }
++  if (pressed || released) {
++    static uint32_t inputSequence = 0;
++    LOG_INF("PD-INPUT", "event=%lu press=%04x release=%04x held=%04x", static_cast<unsigned long>(++inputSequence),
++            static_cast<unsigned>(pressed), static_cast<unsigned>(released), static_cast<unsigned>(held));
++  }
++#endif
+ #if FREEINK_DEVICE_READPICO
+   // Cancel before any handler can wait for the framebuffer lock. These are
+   // snapshot queries: they do not consume the gesture from its normal owner.
+@@ -1243,8 +1258,8 @@ void loop() {
      return;
    }
  
@@ -3754,7 +3820,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,716 @@
+@@ -0,0 +1,763 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -4470,6 +4536,53 @@ new file mode 100644
 +order and liveness, not whether real DMA can overtake production. Device logs
 +must continue to check error/start/phase counts during cross-page and reading
 +tests. The candidate is not hardware accepted until those observations exist.
++
++# Free-trace diagnostic candidate (2026-10-29)
++
++Based on 40628068556. `FREEINK_PAPERDIY_REFRESH_AUDIT` now records successful
++FAST and TextTurn frames too. This is an investigation build, not a display fix.
++Waveforms, LCD/feed timing, power sequencing, history commit logic and UI30
++policy are unchanged. Code with the audit guards removed must match the prior
++candidate; verify that invariant before publishing its build snapshot.
++
++`PD-INPUT` reports logical press/release/held bitmasks and an input sequence,
++never entered text. Button bits use `MappedInputManager::Button` order. These
++are non-consuming snapshot queries; long holds are inferred from edge timing.
++`PD-HOME` reports actual drawing scope, theme, focus and cover-loading/cache
++flags. `scope=Full` means reconstructing the software frame, not a panel Full.
++`PD-GFX` reports orientation, gray/strip/font-scanning and clip state after the
++blocking presentation. Activity/setting logs provide page and theme transitions.
++
++Each `PD-AUDIT submit id=...` opens a blocking HAL submission; SDK `seq=...`
++records inside that bracket describe its actual scans, and `submit-end id=...`
++closes it. Native 16-gray commits also emit their own SDK sequence but need not
++have a HAL displayBuffer bracket. Input can interleave on its own task; correlate
++by monotonic device timestamps and submit brackets, not by adjacent line alone.
++
++SDK records retain target pre/post hashes and add pre/post history hashes,
++changed-pixel count/bounding box, four target-band hashes, temperature, draw mode,
++whole-screen selection, inspection microseconds and draw microseconds. Bounds
++are inclusive in native panel coordinates; `-1,-1,-1,-1` means no difference.
++Bands partition native source columns into four equal spans, not UI menu bands;
++use logged orientation to interpret them. Unknown baselines mark the initial
++history as untrusted. Software equality/scan success is not optical success.
++
++No new heap, framebuffer, task or ISR output is added. HAL/Home/input counters
++are four static bytes each. SDK fields and its 640-byte output line are stack
++storage; its old line was 320 bytes. Hashes are read-only passes over existing
++buffers before/after synchronous drawing. These passes and serial output have
++real overhead: inspect_us excludes printing, draw_us measures the update call,
++HAL elapsed includes the bracket and SDK output. Actual timing impact remains
++to be measured on hardware; do not claim unchanged observed timing.
++
++The desktop journal defaults to continuous capture (`--seconds 0`), retaining
++raw bytes, UTC-tagged frame/submit events, disconnect gaps and operator marks.
++Create `<label>.mark` containing a unique description to mark an observation;
++create `<label>.stop` to end after recovery checks. These control local capture,
++not the device. Never stop merely because a pale frame was reported. First
++photograph/mark it; then record the next UI30, a separate manual power-key refresh
++if needed, and post-recovery operations. Explicitly report a lost connection or
++capture failure. Journal/diagnostic code cannot detect physical paleness itself.
 +
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
@@ -8260,8 +8373,8 @@ diff --git a/test/test_paperdiy_refresh_audit.py b/test/test_paperdiy_refresh_au
 new file mode 100644
 --- /dev/null
 +++ b/test/test_paperdiy_refresh_audit.py
-@@ -0,0 +1,82 @@
-+"""Check the production numeric audit, including changed targets and scan mismatches."""
+@@ -0,0 +1,100 @@
++"""Exercise every-frame production audit: target/history changes and scan faults."""
 +from pathlib import Path
 +import os
 +import subprocess
@@ -8278,6 +8391,7 @@ new file mode 100644
 +audit=source[start:end]+';'
 +code=r'''
 +#include <cassert>
++#include <algorithm>
 +#include <cstdint>
 +#include <cstddef>
 +#include <cstdio>
@@ -8286,6 +8400,9 @@ new file mode 100644
 +enum class EpdiyLcdRefresh:uint8_t{Full,Half,Fast,TextTurn};
 +static uint8_t target[16];
 +static uint8_t* g_fb4=target;
++static uint8_t history[16];
++static struct { uint8_t* back_fb=history; } g_hl;
++static int64_t esp_timer_get_time(){ static int64_t t=0;return ++t; }
 +static bool g_baselineKnown=true;
 +static uint32_t g_refreshAuditSequence=0,starts=0,done=0;
 +static int expected=0,completed=0;
@@ -8304,21 +8421,35 @@ new file mode 100644
 +}
 +int main(){
 + for(auto& b:target)b=0x0F;
++ for(auto& b:history)b=0xff;
 + g_refreshAuditObserver=observe;
 + RefreshAudit clean(EpdiyLcdRefresh::Half);clean.powerReady=true;
 + clean.beginDraw();starts+=30;done+=30;expected=completed=30;clean.endDraw();
++ for(int i=0;i<16;++i)history[i]=target[i];
 + clean.emit(0,EpdiyLcdRefresh::Half);
++ assert(lines.back().size()<640 && field(lines.back(),"draw_us=")!="");
 + assert(lines.size()==1 && lines.back().find("scan=30/30 phase=30/30 err=00000000")!=std::string::npos);
 + assert(lines.back().find("ink=16 mid=0")!=std::string::npos);
 + assert(field(lines.back(),"target=")==field(lines.back(),"after="));
++ assert(field(lines.back(),"hist_after=")==field(lines.back(),"target="));
++ assert(field(lines.back(),"hist=")!=field(lines.back(),"hist_after="));
++ assert(lines.back().find("changed=16 bbox=1,0,15,1")!=std::string::npos);
 + RefreshAudit fast(EpdiyLcdRefresh::Fast);fast.emit(0,EpdiyLcdRefresh::Fast);
-+ assert(lines.size()==1); // ordinary successful moves do not hash/print
++ assert(lines.size()==2); // Successful ordinary frames must remain observable.
++ assert(lines.back().find("changed=0 bbox=-1,-1,-1,-1")!=std::string::npos);
++ target[15]=0xa5;
++ RefreshAudit gray(EpdiyLcdRefresh::TextTurn);
++ assert(gray.changedPixels==2 && gray.x0==14 && gray.x1==15 && gray.y0==1 && gray.y1==1);
++ for(int i=0;i<16;++i)history[i]=target[i];
++ gray.emit(0,EpdiyLcdRefresh::TextTurn);
++ assert(lines.size()==3 && field(lines.back(),"hist_after=")==field(lines.back(),"target="));
 + RefreshAudit changed(EpdiyLcdRefresh::Half);
 + target[0]=0x55;
 + changed.beginDraw();starts+=31;done+=30;expected=30;completed=29;changed.endDraw();
 + changed.emit(0x400,EpdiyLcdRefresh::Half);
 + assert(lines.back().find("scan=31/30 phase=29/30 err=00000400")!=std::string::npos);
 + assert(field(lines.back(),"target=")!=field(lines.back(),"after="));
++ assert(field(lines.back(),"hist_after=")!=field(lines.back(),"after="));
 + g_baselineKnown=false;
 + RefreshAudit reset(EpdiyLcdRefresh::Fast);
 + reset.beginClear();starts+=78;done+=78;reset.endClear();
