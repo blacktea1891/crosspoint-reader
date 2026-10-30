@@ -2448,10 +2448,11 @@ diff --git a/libs/hardware/BoardConfig/include/PaperDiyBoard.h b/libs/hardware/B
 new file mode 100644
 --- /dev/null
 +++ b/libs/hardware/BoardConfig/include/PaperDiyBoard.h
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,54 @@
 +#pragma once
 +
 +#include <M5Pm1.h>
++#include <PaperDiyPowerClicks.h>
 +
 +namespace freeink::paperdiy {
 +
@@ -2463,7 +2464,7 @@ new file mode 100644
 +  // PYG2 supplies the EPD; PYG3 is the active-low charger status input.
 +  ready = updateRegChecked(REG_GPIO_FUNC0, 0xF0, 0) && updateRegChecked(REG_GPIO_MODE, 0x08, 0x04) &&
 +          updateRegChecked(REG_GPIO_DRV, 0x04, 0) && updateRegChecked(REG_GPIO_PULL0, 0xC0, 0x40) &&
-+          configureAppPowerButton();
++          configureAppPowerButton() && updateRegChecked(REG_BTN_CFG_2, 0x01, 0x01);
 +  return ready;
 +}
 +
@@ -2474,14 +2475,81 @@ new file mode 100644
 +  return true;
 +}
 +
++inline bool& powerOffRequested() {
++  static bool pending = false;
++  return pending;
++}
++
++inline bool consumePowerOffRequest() {
++  const bool pending = powerOffRequested();
++  powerOffRequested() = false;
++  return pending;
++}
++
 +inline bool pollPowerButtonClicked(unsigned long nowMs) {
 +  static unsigned long lastPollMs = 0;
-+  if (nowMs - lastPollMs < 250) return false;
++  static PowerClicks clicks;
++  // Raw events have no click count. Poll fast enough to distinguish two
++  // physical presses; do not use IRQ_STATUS3, which needs a configured IRQ pin.
++  if (nowMs - lastPollMs < 40) return false;
 +  lastPollMs = nowMs;
 +  if (!ensureBooted()) return false;
 +  uint8_t status = 0;
-+  return m5pm1::readButtonStatus(&status) && (status & m5pm1::BTN_EVENT) != 0;
++  if (!m5pm1::readButtonStatus(&status)) return false;
++  const auto event =
++      clicks.update(static_cast<uint32_t>(nowMs), (status & m5pm1::BTN_EVENT) != 0, (status & m5pm1::BTN_PRESSED) != 0);
++  if (event == PowerClicks::Event::Shutdown) powerOffRequested() = true;
++  return event == PowerClicks::Event::Single;
 +}
++
++}  // namespace freeink::paperdiy
+diff --git a/libs/hardware/BoardConfig/include/PaperDiyPowerClicks.h b/libs/hardware/BoardConfig/include/PaperDiyPowerClicks.h
+new file mode 100644
+--- /dev/null
++++ b/libs/hardware/BoardConfig/include/PaperDiyPowerClicks.h
+@@ -0,0 +1,44 @@
++#pragma once
++
++#include <stdint.h>
++
++namespace freeink::paperdiy {
++
++// BTN_EVENT is read-clear even without a configured PMIC IRQ pin. Defer the
++// single action so a double click cannot start a refresh and then cut its power.
++// Keep the PMIC's long-hold/download configuration untouched.
++class PowerClicks {
++ public:
++  enum class Event : uint8_t { None, Single, Shutdown };
++  static constexpr uint32_t windowMs = 450;
++
++  Event update(uint32_t now, bool event, bool held) {
++    if (event && !doublePending_) {
++      if (singlePending_ && static_cast<uint32_t>(now - firstAt_) <= windowMs) {
++        singlePending_ = false;
++        doublePending_ = true;
++      } else {
++        const bool expired = singlePending_;
++        singlePending_ = true;
++        firstAt_ = now;
++        if (expired) return Event::Single;
++      }
++    }
++    if (doublePending_ && !held) {
++      doublePending_ = false;
++      return Event::Shutdown;
++    }
++    if (singlePending_ && !held && static_cast<uint32_t>(now - firstAt_) >= windowMs) {
++      singlePending_ = false;
++      return Event::Single;
++    }
++    return Event::None;
++  }
++
++ private:
++  uint32_t firstAt_ = 0;
++  bool singlePending_ = false;
++  bool doublePending_ = false;
++};
 +
 +}  // namespace freeink::paperdiy
 diff --git a/libs/hardware/BoardPaperDIY/library.json b/libs/hardware/BoardPaperDIY/library.json
@@ -2583,7 +2651,7 @@ diff --git a/libs/hardware/InputManager/test/host/paperdiy_stubs/Wire.h b/libs/h
 new file mode 100644
 --- /dev/null
 +++ b/libs/hardware/InputManager/test/host/paperdiy_stubs/Wire.h
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,35 @@
 +#pragma once
 +#include <array>
 +#include <cstddef>
@@ -2593,6 +2661,7 @@ new file mode 100644
 +  std::array<uint8_t, 256> registers{};
 +  std::vector<uint8_t> tx;
 +  bool fail = false;
++  int failWriteReg = -1;
 +  int sda = -1, scl = -1;
 +  uint8_t reg = 0;
 +  bool begin(int a, int b, uint32_t) {
@@ -2604,7 +2673,7 @@ new file mode 100644
 +  void beginTransmission(uint8_t) { tx.clear(); }
 +  void write(uint8_t b) { tx.push_back(b); }
 +  int endTransmission(bool = true) {
-+    if (fail) return 1;
++    if (fail || (tx.size() > 1 && tx.at(0) == failWriteReg)) return 1;
 +    reg = tx.at(0);
 +    for (size_t i = 1; i < tx.size(); ++i) registers.at(reg + i - 1) = tx[i];
 +    return 0;
@@ -2637,7 +2706,7 @@ diff --git a/libs/hardware/InputManager/test/host/test_paperdiy.cpp b/libs/hardw
 new file mode 100644
 --- /dev/null
 +++ b/libs/hardware/InputManager/test/host/test_paperdiy.cpp
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,87 @@
 +#include <BoardConfig.h>
 +#include <InputManager.h>
 +#include <PaperDiyBoard.h>
@@ -2661,10 +2730,13 @@ new file mode 100644
 +  Wire.fail = false;
 +  Wire.registers[0x49] = 0xB6;
 +  Wire.registers[0x4A] = 0x20;
++  Wire.failWriteReg = 0x4A;
++  assert(!freeink::paperdiy::ensureBooted());
++  Wire.failWriteReg = -1;
 +  assert(freeink::paperdiy::ensureBooted());
 +  assert(Wire.sda == 41 && Wire.scl == 42);
 +  assert(Wire.registers[0x49] == 0x37);
-+  assert(Wire.registers[0x4A] == 0x20);
++  assert(Wire.registers[0x4A] == 0x21);
 +  assert((Wire.registers[0x10] & 0x0C) == 0x04);
 +  assert((Wire.registers[0x14] & 0xC0) == 0x40);
 +  assert(freeink::paperdiy::setEpdPower(true));
@@ -2697,6 +2769,9 @@ new file mode 100644
 +  fakeNow += 300;
 +  Wire.registers[0x48] = 0x80;
 +  input.update();
++  assert(!input.wasPressed(InputManager::BTN_POWER));
++  fakeNow += 450;
++  input.update();
 +  assert(input.wasPressed(InputManager::BTN_POWER));
 +  fakeNow += 30;
 +  input.update();
@@ -2704,5 +2779,18 @@ new file mode 100644
 +  fakeNow += 300;
 +  input.update();
 +  assert(!input.wasPressed(InputManager::BTN_POWER));
-+  puts("PaperDIY profile, PMIC recovery, display rail, buttons and one-shot power click passed");
++  Wire.registers[0x48] = 0x80;
++  fakeNow += 300;
++  input.update();
++  assert(!input.wasPressed(InputManager::BTN_POWER));
++  Wire.registers[0x48] = 0x80;
++  fakeNow += 150;
++  input.update();
++  assert(!input.wasPressed(InputManager::BTN_POWER));
++  assert(freeink::paperdiy::consumePowerOffRequest());
++  assert(!freeink::paperdiy::consumePowerOffRequest());
++  fakeNow += 500;
++  input.update();
++  assert(!input.wasPressed(InputManager::BTN_POWER));
++  puts("PaperDIY profile, PMIC recovery, rail, buttons, deferred single and software shutdown passed");
 +}
