@@ -277,7 +277,7 @@ index 00777a37..4ceddeb1 100644
 +  UiTransition
 +};
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..ce59906c 100644
+index 2d854fe5..5e2443b1 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
 @@ -1,6 +1,35 @@
@@ -322,7 +322,7 @@ index 2d854fe5..ce59906c 100644
    einkDisplay.begin();
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  einkDisplay.setRefreshAuditObserver(logPaperDiyAudit);
-+  LOG_INF("PD-AUDIT", "free-trace packet-v2: ui-handoff-v2 wake-drain-v1 off-trace-v1; reader/feed/UI30 retained");
++  LOG_INF("PD-AUDIT", "free-trace packet-v2: ui-handoff-v3 filebrowser-policy-v1 wake-drain-v1 off-trace-v1");
 +#endif
  
  #if FREEINK_DEVICE_READPICO
@@ -1784,7 +1784,7 @@ index fd2bb855..01bcbe5a 100644
  
    selectMainTab(mainTab_.load() == MainTab::Shelf ? MainTab::Manage : MainTab::Shelf);
 diff --git a/src/activities/home/FileBrowserActivity.cpp b/src/activities/home/FileBrowserActivity.cpp
-index 5615bf06..907d6b89 100644
+index 5615bf06..ed279b40 100644
 --- a/src/activities/home/FileBrowserActivity.cpp
 +++ b/src/activities/home/FileBrowserActivity.cpp
 @@ -28,7 +28,11 @@
@@ -1885,7 +1885,7 @@ index 5615bf06..907d6b89 100644
    }
  
    if (files.empty()) {
-@@ -664,7 +694,13 @@ void FileBrowserActivity::drawFooter() {
+@@ -664,11 +694,22 @@ void FileBrowserActivity::drawFooter() {
                            nav.selected >= 0 && nav.selected < listCount() && files[nav.selected] == MOVE_HERE_ENTRY;
    const char* confirmLabel =
        files.empty() ? "" : (movingHere ? tr(STR_MOVE_HERE) : (selectingFile ? tr(STR_SELECT) : tr(STR_OPEN)));
@@ -1899,6 +1899,15 @@ index 5615bf06..907d6b89 100644
    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
  }
  
+ void FileBrowserActivity::render(RenderLock&& lock) {
++#if FREEINK_DEVICE_PAPERDIY
++  // Keep row/directory and edit-popup paints on the same endpoint policy as
++  // the scene handoff. Do this before the popup's early return as well.
++  renderer.requestUiTransition();
++#endif
+   if (editPopup.processRender(renderer, mappedInput)) return;
+   UiListActivity::render(std::move(lock));
+ }
 diff --git a/src/activities/home/FileBrowserActivity.h b/src/activities/home/FileBrowserActivity.h
 index 789f5a11..2b1a661a 100644
 --- a/src/activities/home/FileBrowserActivity.h
@@ -4090,7 +4099,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..2ce391dc 100644
+index b0b49733..b80bd07b 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -4102,7 +4111,7 @@ index b0b49733..2ce391dc 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -151,6 +153,14 @@ add_test(NAME ReadingStatsNetworkMemory
+@@ -151,6 +153,16 @@ add_test(NAME ReadingStatsNetworkMemory
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_reading_stats_network_memory.py)
  add_test(NAME WifiFontRecovery
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_wifi_font_recovery.py)
@@ -4114,10 +4123,12 @@ index b0b49733..2ce391dc 100644
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_power_clicks.py)
 +add_test(NAME PaperDiyHandoffFix
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_handoff_fix.py)
++add_test(NAME PaperDiyFileBrowserProfile
++  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_filebrowser_profile.py)
  add_test(NAME HalClockSntp
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_hal_clock_sntp.py)
  add_test(NAME InxStyleCompatibility
-@@ -246,3 +256,19 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +258,19 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -4377,7 +4388,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,966 @@
+@@ -0,0 +1,1000 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -5343,6 +5354,40 @@ new file mode 100644
 +Settings vertical/category moves, Home follow-up paints, reader return, UI30,
 +then USB-connected light shutdown for at least10seconds without darkening.
 +Do not auto-flash or restart capture; user installs and explicitly starts tests.
++
++## FileBrowser policy-continuity candidate (2026-10-30)
++
++The user initially selected the old40981850452 folder. After correcting the
++file, the ui-handoff-v2 runtime marker was captured. Lyra Settings movement
++and Settings-to-Home/menu tests remained clear in limited observed samples;
++boot still painted a splash plus three Home frames, including two unchanged
++Home targets. Intermittent shutdown darkening remains open, not accepted.
++
++FileBrowser has a separate proven optical failure: entry was clear, then row
++movement fogged. Entry used UiTransition and later rows used UiTurn. A manual
++recovery with78clear and30draw phases fully restored clarity; later UiTurn
++row movements remained clear. On Home-to-FileBrowser re-entry the same four
++target hashes as the first failed entry reproduced fog after row movement.
++Scans/phases completed without a draw error; neither failing group included
++a periodic clean. The post-manual normal sample selected later rows, so this
++is not a pixel-identical optical A/B or proof of a single waveform cause.
++
++Only FileBrowserActivity::render now re-arms the existing UiTransition before
++both editPopup and UiListActivity. This covers row/viewport/directory paints
++and the overlay early-return path. The shared UiListActivity, Home/Settings,
++SDK tables/driver/feed/clock, reader, UI30 and power-off paths stay unchanged.
++No new state, buffer, task or heap allocation is introduced. This does not
++claim coverage for every list or application, nor a measured optical fix.
++
++The host regression compiles the actual render and renderer's one-shot
++consumer on PaperDIY/non-PaperDIY, with120list/popup submits and specialized
++reader-context isolation. It detects a missing rearm and a rearm placed after
++the popup return. Existing UI30, gray, recovery, input and SDK transaction
++gates remain required. Marker: ui-handoff-v3 filebrowser-policy-v1
++wake-drain-v1 off-trace-v1. Hardware validation must repeat Home entry then
++three rows before manual/periodic cleaning; also check edit-popup cancel,
++subdirectory/back, UI30 and Home/Settings/reader regressions. Keep boot
++deduplication and shutdown experiments out of this bounded candidate.
 +
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
@@ -7089,6 +7134,86 @@ new file mode 100644
 +
 +
 +if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/test_paperdiy_filebrowser_profile.py b/test/test_paperdiy_filebrowser_profile.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_filebrowser_profile.py
+@@ -0,0 +1,75 @@
++"""Compile the real FileBrowser render and renderer's one-shot context consumer.
++
++Checks policy continuity only; panel optics require the recorded re-entry test.
++"""
++from test_paperdiy_power_clicks import ROOT, method, run
++import unittest
++
++
++def check_render(body):
++    renderer = (ROOT/'lib/GfxRenderer/GfxRenderer.h').read_text(encoding='utf-8')
++    request = method(renderer, 'void requestUiTransition()')
++    consume = method(renderer, 'DisplayRefreshContext consumeUiTransition(')
++    for board in (0, 1):
++        run(r'''
++#include <cassert>
++#include <utility>
++enum class DisplayRefreshContext {Normal, ContinuousReading, TextOnlyAntiAliasing, ImageReading, UiTransition};
++struct RenderLock{};
++struct Renderer {
++ mutable bool uiTransitionPending=false;
++ int frames=0,scenes=0;
++''' + request + '\n' + consume + r'''
++ void submit(){
++  const auto context=consumeUiTransition(DisplayRefreshContext::Normal);
++  ++frames;
++  scenes+=(context==DisplayRefreshContext::UiTransition);
++ }
++} renderer;
++struct UiListActivity {
++ int listFrames=0;
++ void render(RenderLock&&){++listFrames;renderer.submit();}
++};
++struct FileBrowserActivity:UiListActivity {
++ int mappedInput=0;
++ struct Popup {
++  bool active=false;int popupFrames=0;
++  bool processRender(Renderer& r,int){if(!active)return false;++popupFrames;r.submit();return true;}
++ } editPopup;
++ void render(RenderLock&&);
++};
++''' + body + r'''
++int main(){
++ FileBrowserActivity browser;
++ // First entry, successive row movements, editing overlay, close/back to list,
++ // directory refresh and repeated entry all go through the actual function.
++ for(int i=0;i<120;++i){
++  browser.editPopup.active=(i%4==2);
++  browser.render(RenderLock{});
++  assert(renderer.frames==i+1);
++  assert(renderer.scenes==(i+1)*FREEINK_DEVICE_PAPERDIY);
++  assert(!renderer.uiTransitionPending);
++ }
++ assert(browser.listFrames==90&&browser.editPopup.popupFrames==30);
++ // The real consumer preserves specialized reader contexts; it clears a hint
++ // once instead of allowing it to escape into an unrelated later frame.
++ for(auto context:{DisplayRefreshContext::ContinuousReading,DisplayRefreshContext::TextOnlyAntiAliasing,
++                   DisplayRefreshContext::ImageReading}){
++  renderer.requestUiTransition();
++  assert(renderer.consumeUiTransition(context)==context);
++  assert(!renderer.uiTransitionPending);
++  assert(renderer.consumeUiTransition(DisplayRefreshContext::Normal)==DisplayRefreshContext::Normal);
++ }
++}
++'''.replace('#include <cassert>', '#include <cassert>\n#include <initializer_list>'), paperdiy=board)
++
++
++class FileBrowserProfileTest(unittest.TestCase):
++    def test_actual_render_rearms_list_and_popup_without_cross_device_effects(self):
++        body = method((ROOT/'src/activities/home/FileBrowserActivity.cpp').read_text(encoding='utf-8'),
++                      'void FileBrowserActivity::render(')
++        check_render(body)
++
++
++if __name__ == '__main__':
 +    unittest.main()
 diff --git a/test/test_paperdiy_footer_geometry.py b/test/test_paperdiy_footer_geometry.py
 new file mode 100644
