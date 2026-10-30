@@ -277,7 +277,7 @@ index 00777a37..4ceddeb1 100644
 +  UiTransition
 +};
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..af1bc3ac 100644
+index 2d854fe5..ce59906c 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
 @@ -1,6 +1,35 @@
@@ -322,7 +322,7 @@ index 2d854fe5..af1bc3ac 100644
    einkDisplay.begin();
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  einkDisplay.setRefreshAuditObserver(logPaperDiyAudit);
-+  LOG_INF("PD-AUDIT", "free-trace packet-v2: ui-target-v1 power-click-v1; endpoint UI; reader/feed/UI30 retained");
++  LOG_INF("PD-AUDIT", "free-trace packet-v2: ui-handoff-v2 wake-drain-v1 off-trace-v1; reader/feed/UI30 retained");
 +#endif
  
  #if FREEINK_DEVICE_READPICO
@@ -527,7 +527,7 @@ index 68001659..2e12ec82 100644
  };
  
 diff --git a/lib/hal/HalGPIO.cpp b/lib/hal/HalGPIO.cpp
-index 4aeb2553..d4985a4a 100644
+index 4aeb2553..367a2cdb 100644
 --- a/lib/hal/HalGPIO.cpp
 +++ b/lib/hal/HalGPIO.cpp
 @@ -1,4 +1,7 @@
@@ -538,18 +538,19 @@ index 4aeb2553..d4985a4a 100644
  #if FREEINK_DEVICE_METALIO_EINK4
  #include <MetalioEInk4Board.h>
  #endif
-@@ -318,6 +321,10 @@ void HalGPIO::update() {
+@@ -318,6 +321,11 @@ void HalGPIO::update() {
  
  bool HalGPIO::wasUsbStateChanged() const { return usbStateChanged; }
  
 +#if FREEINK_DEVICE_PAPERDIY
 +bool HalGPIO::consumePowerOffRequest() { return freeink::paperdiy::consumePowerOffRequest(); }
++void HalGPIO::discardWakePowerClick() { freeink::paperdiy::discardWakePowerClick(); }
 +#endif
 +
  bool HalGPIO::isPressed(uint8_t buttonIndex) const { return inputMgr.isPressed(buttonIndex); }
  
  bool HalGPIO::wasPressed(uint8_t buttonIndex) const { return inputMgr.wasPressed(buttonIndex); }
-@@ -481,7 +488,11 @@ bool HalGPIO::isUsbConnected() const {
+@@ -481,7 +489,11 @@ bool HalGPIO::isUsbConnected() const {
    // a /STAT pin — and reports false on boards with no battery telemetry at all.
    // Caveat: charge termination at 100% reads as "not connected".
    static const BatteryMonitor battery;
@@ -561,7 +562,7 @@ index 4aeb2553..d4985a4a 100644
  }
  
  bool HalGPIO::coldBootImpliesPowerButton() const {
-@@ -494,7 +505,8 @@ bool HalGPIO::coldBootImpliesPowerButton() const {
+@@ -494,7 +506,8 @@ bool HalGPIO::coldBootImpliesPowerButton() const {
    // EEGO A4 misread them the same way once the charger terminates at 100%
    // (STAT inactive reads as "no USB").
    // The Metalio sleeps powered off and only its button turns it back on.
@@ -572,21 +573,22 @@ index 4aeb2553..d4985a4a 100644
  
  HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
 diff --git a/lib/hal/HalGPIO.h b/lib/hal/HalGPIO.h
-index 9ce8bab5..25a4d167 100644
+index 9ce8bab5..d5be222d 100644
 --- a/lib/hal/HalGPIO.h
 +++ b/lib/hal/HalGPIO.h
-@@ -92,6 +92,9 @@ class HalGPIO {
+@@ -92,6 +92,10 @@ class HalGPIO {
  
    // Button input methods
    void update();
 +#if FREEINK_DEVICE_PAPERDIY
 +  bool consumePowerOffRequest();
++  void discardWakePowerClick();
 +#endif
    bool isPressed(uint8_t buttonIndex) const;
    bool wasPressed(uint8_t buttonIndex) const;
    uint8_t physicalPressedMask() const;
 diff --git a/lib/hal/HalPowerManager.cpp b/lib/hal/HalPowerManager.cpp
-index 4d90e713..148e8c37 100644
+index 4d90e713..fc7e9eb2 100644
 --- a/lib/hal/HalPowerManager.cpp
 +++ b/lib/hal/HalPowerManager.cpp
 @@ -25,9 +25,12 @@
@@ -603,7 +605,24 @@ index 4d90e713..148e8c37 100644
  
  HalPowerManager powerManager;  // Singleton instance
  
-@@ -300,7 +303,7 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+@@ -224,13 +227,14 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+ #if FREEINK_DEVICE_WAVESHARE_EPAPER_397
+   Waveshare397Power::waitForPowerButtonRelease();
+ #endif
+-#if defined(ENABLE_SERIAL_LOG) && !FREEINK_DEVICE_METALIO_EINK4 && !FREEINK_DEVICE_READPICO
++#if defined(ENABLE_SERIAL_LOG) && !FREEINK_DEVICE_METALIO_EINK4 && !FREEINK_DEVICE_READPICO && !FREEINK_DEVICE_PAPERDIY
+   // Tear down HWCDC so the host sees a clean disconnect and the peripheral
+   // doesn't hold power domains that interfere with USB-powered GPIO wake.
+   // logSerial is the raw HWCDC reference; Serial is the MySerialImpl proxy
+   // (which doesn't expose end()).
+   //
+-  // Metalio and Read Pico are excluded because neither has a USB-powered GPIO
++  // Metalio, Read Pico and PaperDIY keep diagnostics until the PMU handoff.
++  // The original Metalio/Read Pico exclusions have no USB-powered GPIO
+   // wake to protect: their "off" is a board-owned shutdown (M5PM1 / the CW32L010
+   // PMU) that drops the rail, and tearing HWCDC down first would swallow the very
+   // handoff diagnostics those boards need when the shutdown fails.
+@@ -300,16 +304,37 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
    while (digitalRead(FALLBACK_WAKE_PIN) == LOW) delay(50);
    freeink::PowerManager::armWakeOnPins(1ULL << FALLBACK_WAKE_PIN, true);
    freeink::PowerManager::deepSleep();
@@ -612,17 +631,31 @@ index 4d90e713..148e8c37 100644
    // Its power button is behind the M5PM1 PMIC rather than an ESP GPIO, so
    // normal GPIO deep sleep would have no wake source. Ask the PMIC to shut the
    // device down; a button click then restarts it through a cold boot.
-@@ -309,7 +312,16 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+-  if (freeink::m5pm1::requestShutdown()) {
++#if FREEINK_DEVICE_PAPERDIY
++  uint8_t epdBefore = 0;
++  const bool beforeRead = freeink::m5pm1::readReg(freeink::m5pm1::REG_GPIO_OUT, &epdBefore);
++  LOG_INF("PD-OFF", "before PMIC request: epd_reg_ok=%u epd_out=%02x", static_cast<unsigned>(beforeRead), epdBefore);
++#endif
++  const bool shutdownRequested = freeink::m5pm1::requestShutdown();
++#if FREEINK_DEVICE_PAPERDIY
++  LOG_INF("PD-OFF", "PMIC request ack=%u; waiting for power cut", static_cast<unsigned>(shutdownRequested));
++#endif
++  if (shutdownRequested) {
+     delay(1000);  // allow the PMIC firmware time to drop power
    }
  #endif
  
 -#if !FREEINK_DEVICE_WAVESHARE_EPAPER_397
 +#if FREEINK_DEVICE_PAPERDIY
 +  // USB can keep the ESP powered after the PMIC shutdown request.
-+  if (!freeink::paperdiy::setEpdPower(false)) LOG_ERR("PWR", "PaperDIY display power-off failed");
++  const bool epdOff = freeink::paperdiy::setEpdPower(false);
++  LOG_INF("PD-OFF", "host still running; panel supply-off checked=%u", static_cast<unsigned>(epdOff));
++  if (!epdOff) LOG_ERR("PWR", "PaperDIY display power-off failed");
 +  const auto& keys = BoardConfig::ACTIVE.input;
 +  while (digitalRead(keys.up) == LOW || digitalRead(keys.down) == LOW) delay(10);
 +  freeink::PowerManager::armWakeOnPins((1ULL << keys.up) | (1ULL << keys.down));
++  LOG_INF("PD-OFF", "enter ESP sleep fallback; register ack is not a rail-voltage measurement");
 +  freeink::PowerManager::deepSleep();
 +#endif
 +
@@ -1890,7 +1923,7 @@ index 789f5a11..2b1a661a 100644
    bool handleButtons() override;
    // Header shows the current folder name (battery indicator via GUI.drawHeader);
 diff --git a/src/activities/home/HomeActivity.cpp b/src/activities/home/HomeActivity.cpp
-index e430f7d4..9e6f544e 100644
+index e430f7d4..5612f9d4 100644
 --- a/src/activities/home/HomeActivity.cpp
 +++ b/src/activities/home/HomeActivity.cpp
 @@ -103,6 +103,67 @@ void HomeActivity::requestCarouselUpdate(CarouselUpdateScope scope) {
@@ -1995,7 +2028,19 @@ index e430f7d4..9e6f544e 100644
      return;
    }
  
-@@ -698,15 +765,16 @@ void HomeActivity::render(RenderLock&&) {
+@@ -686,6 +753,11 @@ void HomeActivity::loop() {
+ }
+ 
+ void HomeActivity::render(RenderLock&&) {
++#if FREEINK_DEVICE_PAPERDIY
++  // Keep later cover/first-frame paints on the same endpoint policy as the
++  // scene handoff. Do not silently switch an unchanged page to UiTurn.
++  renderer.requestUiTransition();
++#endif
+   static_assert(canRenderCarouselMenuOnly(true, true, CarouselUpdateScope::MenuOnly));
+   static_assert(!canRenderCarouselMenuOnly(false, true, CarouselUpdateScope::MenuOnly));
+   static_assert(!canRenderCarouselMenuOnly(true, false, CarouselUpdateScope::MenuOnly));
+@@ -698,15 +770,16 @@ void HomeActivity::render(RenderLock&&) {
        static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
  
    const Rect content = isCarousel ? Rect{0, 0, pageWidth, pageHeight} : UITheme::getContentArea(renderer);
@@ -2015,7 +2060,7 @@ index e430f7d4..9e6f544e 100644
      menuIcons.push_back(entry->item == HomeMenuItem::OPDS_BROWSER && hasPlugins ? Plugins : entry->icon);
    }
  
-@@ -734,6 +802,18 @@ void HomeActivity::render(RenderLock&&) {
+@@ -734,6 +807,18 @@ void HomeActivity::render(RenderLock&&) {
  
    const CarouselUpdateScope updateScope = carouselUpdateScope.exchange(CarouselUpdateScope::None);
    const bool menuOnlyUpdate = canRenderCarouselMenuOnly(isCarousel, recentsLoaded, updateScope);
@@ -2034,7 +2079,7 @@ index e430f7d4..9e6f544e 100644
    if (menuOnlyUpdate) {
      renderer.fillRect(headerRect.x, headerRect.y, headerRect.width, headerRect.height, false);
      drawHeader();
-@@ -755,7 +835,11 @@ void HomeActivity::render(RenderLock&&) {
+@@ -755,7 +840,11 @@ void HomeActivity::render(RenderLock&&) {
      // Front Left/Right walk the tabs, so their hints read Left/Right; the
      // side page buttons (unhinted) walk the covers.
      const auto labels = mappedInput.mapLabels(hasContinueReading ? tr(STR_RESUME) : "", tr(STR_SELECT),
@@ -2046,7 +2091,7 @@ index e430f7d4..9e6f544e 100644
      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
      renderer.displayBuffer(!firstRenderDone ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
      // Slot heights are recorded during the draw above; a change (first layout
-@@ -806,8 +890,15 @@ void HomeActivity::render(RenderLock&&) {
+@@ -806,8 +895,15 @@ void HomeActivity::render(RenderLock&&) {
    drawMenu();
  
    if (!isCarousel) {
@@ -2977,7 +3022,7 @@ index 88514e76..df598ad7 100644
  }
  
 diff --git a/src/activities/settings/SettingsActivity.cpp b/src/activities/settings/SettingsActivity.cpp
-index 3dde1434..102dc552 100644
+index 3dde1434..f542a1af 100644
 --- a/src/activities/settings/SettingsActivity.cpp
 +++ b/src/activities/settings/SettingsActivity.cpp
 @@ -30,6 +30,7 @@
@@ -3043,7 +3088,7 @@ index 3dde1434..102dc552 100644
            WiFi.disconnect(false);
            delay(30);
            // Unlike the onExit() teardowns, this runs from the loop task with
-@@ -1000,11 +1014,21 @@ void SettingsActivity::drawFooter() {
+@@ -1000,15 +1014,29 @@ void SettingsActivity::drawFooter() {
    }
    const int ring = ringPos();
    const auto confirmLabel =
@@ -3066,6 +3111,14 @@ index 3dde1434..102dc552 100644
    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
  }
  
+ void SettingsActivity::render(RenderLock&& lock) {
++#if FREEINK_DEVICE_PAPERDIY
++  // Row moves, category changes and popups must not alternate pulse policies.
++  renderer.requestUiTransition();
++#endif
+   if (optionPopup.processRender(renderer, mappedInput)) return;
+ #if LOG_LEVEL >= 2
+   const auto started = millis();
 diff --git a/src/activities/settings/SettingsActivity.h b/src/activities/settings/SettingsActivity.h
 index 1f370f1f..02f60301 100644
 --- a/src/activities/settings/SettingsActivity.h
@@ -3914,7 +3967,7 @@ index 5f13b077..3da43201 100644
 +#endif
  }
 diff --git a/src/main.cpp b/src/main.cpp
-index 607d299a..2ab90511 100644
+index 607d299a..e424647b 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -36,6 +36,7 @@
@@ -3935,7 +3988,17 @@ index 607d299a..2ab90511 100644
  #if FREEINK_CAP_TOUCH
    // A software reset would cycle touch/frontlight rails; those boards proceed
    // into Join Network without the fresh-heap reboot (return, don't stop WiFi —
-@@ -470,7 +474,16 @@ void enterDeepSleep(bool fromTimeout = false) {
+@@ -359,6 +363,9 @@ bool handleX4ProFrontlightDoubleClick() {
+ }
+ 
+ void waitForPowerRelease() {
++#if FREEINK_DEVICE_PAPERDIY
++  gpio.discardWakePowerClick();
++#endif
+   gpio.update();
+   while (gpio.isPressed(HalGPIO::BTN_POWER)) {
+     delay(50);
+@@ -470,7 +477,16 @@ void enterDeepSleep(bool fromTimeout = false) {
    // Commit to sleeping before goToSleep() runs the outgoing activity's onExit():
    // a WiFi activity would otherwise silentRestart() here and reboot instead.
    deepSleepInProgress = true;
@@ -3952,7 +4015,7 @@ index 607d299a..2ab90511 100644
  
    if (!READING_STATS.saveToFile()) {
      LOG_ERR("RST", "Failed to save reading stats before deep sleep");
-@@ -868,9 +881,9 @@ void setup() {
+@@ -868,9 +884,9 @@ void setup() {
      case HalGPIO::WakeupReason::AfterUSBPower:
        // Most devices return to sleep after a USB-powered cold boot.
        LOG_DBG("MAIN", "Wakeup reason: After USB Power");
@@ -3965,7 +4028,7 @@ index 607d299a..2ab90511 100644
        // X4 Pro must stay awake so USB Serial/JTAG remains available after leaving
        // USB Drive and reconnecting the cable. Paper Mono has no armable GPIO wake
        // (its button is behind the PMIC). Metalio also needs native USB available
-@@ -1050,6 +1063,21 @@ void loop() {
+@@ -1050,6 +1066,21 @@ void loop() {
  
    gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
    mappedInputManager.update();
@@ -3987,7 +4050,7 @@ index 607d299a..2ab90511 100644
  #if FREEINK_DEVICE_READPICO
    // Cancel before any handler can wait for the framebuffer lock. These are
    // snapshot queries: they do not consume the gesture from its normal owner.
-@@ -1177,6 +1205,14 @@ void loop() {
+@@ -1177,6 +1208,14 @@ void loop() {
      screenshotComboActive = false;
    }
  
@@ -4002,7 +4065,7 @@ index 607d299a..2ab90511 100644
    if (handleX4ProFrontlightDoubleClick()) return;
  
    const bool x4ProDoubleClickPwrLight = BoardConfig::isX4Pro() && SETTINGS.doubleClickPwrLight;
-@@ -1243,8 +1279,8 @@ void loop() {
+@@ -1243,8 +1282,8 @@ void loop() {
      return;
    }
  
@@ -4027,7 +4090,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..23487fde 100644
+index b0b49733..2ce391dc 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -4039,7 +4102,7 @@ index b0b49733..23487fde 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -151,6 +153,12 @@ add_test(NAME ReadingStatsNetworkMemory
+@@ -151,6 +153,14 @@ add_test(NAME ReadingStatsNetworkMemory
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_reading_stats_network_memory.py)
  add_test(NAME WifiFontRecovery
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_wifi_font_recovery.py)
@@ -4049,10 +4112,12 @@ index b0b49733..23487fde 100644
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_ui_profiles.py)
 +add_test(NAME PaperDiyPowerClicks
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_power_clicks.py)
++add_test(NAME PaperDiyHandoffFix
++  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_handoff_fix.py)
  add_test(NAME HalClockSntp
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_hal_clock_sntp.py)
  add_test(NAME InxStyleCompatibility
-@@ -246,3 +254,19 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +256,19 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -4312,7 +4377,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,925 @@
+@@ -0,0 +1,966 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -5238,6 +5303,47 @@ new file mode 100644
 +must separately check single-refresh, quick-double shutdown, configured light/
 +dark/cover modes, USB vs battery, sleep/wake, settings motion and EPUB/Home paths.
 +Keep the prior optical improvement, UI30 and diagnostics; never auto-flash.
++## Wake/UI handoff and shutdown trace follow-up (2026-10-30)
++
++Baseline40981850452 was not accepted: wake replay caused an extra manual
++recovery; Settings vertical UiTurn fogged while category UiTransition restored;
++Home handoff was followed by two same-target UiTurn paints; a light sleep frame
++later darkened over5-6seconds with USB connected. Capture is stopped and sealed.
++
++PaperDIY's startup barrier now drains the raw read-clear wake event and resets
++the pending single/double/shutdown state through HalGPIO. Suppression lasts
++until physical release, including I2C failure; setup never waits forever for
++the PMIC. New runtime clicks retain the450ms classification and double-off
++behavior. The PMIC long-hold/download policy is unchanged.
++
++Only HomeActivity and SettingsActivity re-arm UiTransition at each render entry,
++including Settings popups. Cover/recents callbacks still render real new data;
++zero-change redraws are not blindly removed. UiTurn/UiTransition tables are
++unchanged. Other activities, reader gray, explicit recovery and UI30 retain
++their existing dispatch. This is a bounded optical candidate, not proof that
++every UI fog or long-term charge/temperature issue is solved.
++
++PaperDIY keeps USB diagnostics through the PMIC handoff, logging the prior
++PYG2 register read, shutdown command acknowledgement, and checked supply-off
++fallback when the host is still running. These are I2C/register observations,
++not rail-voltage measurements. Shutdown order/delays, factory VCOM, clock,
++power rails and feed protocol stay unchanged. STV hooks use gpio_set_level,
++matching the LCD backend's gpio_config ownership; they do not call pinMode
++or steal its peripheral registration. Power-on failure parks OE/boost low and
++fails the frame; park-low failure is logged. This removes a proven ineffective
++Arduino write but does not establish that the optical shutdown defect is fixed.
++
++Startup marker: `ui-handoff-v2 wake-drain-v1 off-trace-v1`. No extra tasks,
++framebuffers, LUTs or heap allocations are introduced; the classifier adds one
++boolean. Host regression covers the actual startup barrier/classifier, failed
++wake drain and fresh input, Settings popup/list submits, Home entry markers,
++PMIC/off failure paths and owned-STV writes. Existing full renderer, SDK driver,
++gray, UI30, power and networking suites remain build gates. Hardware acceptance
++must check one wake press without extra recovery, real new power bindings,
++Settings vertical/category moves, Home follow-up paints, reader return, UI30,
++then USB-connected light shutdown for at least10seconds without darkening.
++Do not auto-flash or restart capture; user installs and explicitly starts tests.
++
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -7562,6 +7668,167 @@ new file mode 100644
 +
 +
 +if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/test_paperdiy_handoff_fix.py b/test/test_paperdiy_handoff_fix.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_handoff_fix.py
+@@ -0,0 +1,156 @@
++"""Regression gates for wake replay, UI policy handoff and observable shutdown."""
++from pathlib import Path
++from test_paperdiy_power_clicks import run, method, ROOT
++import unittest
++
++
++class HandoffFixTest(unittest.TestCase):
++    def test_actual_startup_barrier_consumes_delayed_wake_and_allows_new_click(self):
++        barrier = method((ROOT/'src/main.cpp').read_text(encoding='utf-8'), 'void waitForPowerRelease()')
++        run(r'''
++#include <cassert>
++#include <PaperDiyPowerClicks.h>
++using freeink::paperdiy::PowerClicks;
++unsigned long now=2000;
++void delay(unsigned long n){now+=n;}
++struct HalGPIO {static constexpr int BTN_POWER=6;};
++struct {
++ PowerClicks clicks; bool wake=true,pressed=false;
++ void discardWakePowerClick(){clicks.discardWakeClick();}
++ void update(){pressed=clicks.update(now,wake,false)==PowerClicks::Event::Single;wake=false;}
++ bool isPressed(int)const{return pressed;}
++} gpio;
++''' + barrier + r'''
++int main(){
++ waitForPowerRelease();now+=500;gpio.update();assert(!gpio.pressed);
++ gpio.wake=true;gpio.update();assert(!gpio.pressed);
++ now+=450;gpio.update();assert(gpio.pressed);gpio.update();assert(!gpio.pressed);
++ PowerClicks held;
++ assert(held.update(0,true,true)==PowerClicks::Event::None);
++ held.discardWakeClick();
++ assert(held.update(800,true,true)==PowerClicks::Event::None);
++ assert(held.update(900,true,false)==PowerClicks::Event::None);
++ assert(held.update(1500,false,false)==PowerClicks::Event::None);
++ assert(held.update(1600,true,false)==PowerClicks::Event::None);
++ assert(held.update(1800,true,false)==PowerClicks::Event::Shutdown);
++ assert(held.update(2300,false,false)==PowerClicks::Event::None);
++}
++''')
++
++    def test_settings_rows_and_popups_and_home_entry_rearm_scene_policy(self):
++        settings = method((ROOT/'src/activities/settings/SettingsActivity.cpp').read_text(encoding='utf-8'),
++                          'void SettingsActivity::render(')
++        home = method((ROOT/'src/activities/home/HomeActivity.cpp').read_text(encoding='utf-8'),
++                      'void HomeActivity::render(')
++        # Every Home branch follows this entry; actual layout/cover paths keep
++        # their existing host suites. The Settings function is compiled whole.
++        entry = home[home.index('{')+1:home.index('  static_assert(')]
++        for board in (0,1):
++            run(r'''
++#include <cassert>
++#include <utility>
++#define LOG_LEVEL 0
++struct RenderLock{};
++struct {bool hint=false;int frames=0,scenes=0;
++ void requestUiTransition(){hint=true;}
++ void submit(){++frames;if(hint)++scenes;hint=false;}
++} renderer;
++struct UiListActivity {void render(RenderLock&&){renderer.submit();}};
++struct SettingsActivity:UiListActivity {
++ int mappedInput=0;
++ struct Popup {bool active=false;
++ bool processRender(decltype(renderer)& r,int){if(!active)return false;r.submit();return true;}
++ } optionPopup;
++ void render(RenderLock&&);
++};
++''' + settings + r'''
++void homePaint(){
++''' + entry + r'''
++ renderer.submit();
++}
++int main(){
++ SettingsActivity settings;
++ for(int i=0;i<60;++i){settings.optionPopup.active=(i%3==0);settings.render(RenderLock{});}
++ // First frame, repeated same-target cover notifications, and menu movement.
++ for(int i=0;i<60;++i)homePaint();
++ assert(renderer.frames==120&&renderer.scenes==120*FREEINK_DEVICE_PAPERDIY);
++ assert(!renderer.hint);
++}
++''', paperdiy=board)
++
++    def test_actual_shutdown_keeps_console_and_checks_failure_fallback(self):
++        body = method((ROOT/'lib/hal/HalPowerManager.cpp').read_text(encoding='utf-8'),
++                      'void HalPowerManager::startDeepSleep(')
++        run(r'''
++#include <cassert>
++#include <cstdint>
++#include <string>
++#include <vector>
++#define ENABLE_SERIAL_LOG 1
++#define SOC_PM_SUPPORT_EXT1_WAKEUP 1
++constexpr int HIGH=1,LOW=0,OUTPUT=3,XTEINK_C3_GPIO13=13;
++using gpio_num_t=int;
++std::string events;std::vector<std::string> logs;bool requested=true,panelOk=true;
++int errors=0;
++template<class... Args>void info(const char*,const char* fmt,Args...){logs.emplace_back(fmt);}
++#define LOG_INF(...) info(__VA_ARGS__)
++#define LOG_ERR(...) (++errors)
++void gpio_hold_dis(int){}void gpio_hold_en(int){}void pinMode(int,int){}
++void digitalWrite(int,int){}int digitalRead(int){return HIGH;}
++void delay(int n){assert(n==1000);events+='W';}
++struct {void end(){events+='D';}} logSerial;
++struct {void setOn(bool on){assert(!on);events+='L';}} Frontlight;
++namespace BoardConfig {
++struct {struct {int8_t latch0=-1,latch1=-1;}power;struct{int up=4,down=3;}input;} ACTIVE;
++}
++struct HalGPIO{void prepareForDeepSleep(){events+='T';}};
++namespace freeink{
++namespace m5pm1{constexpr int REG_GPIO_OUT=0x11;
++ bool readReg(int r,uint8_t* b){assert(r==REG_GPIO_OUT);*b=4;events+='B';return true;}
++ bool requestShutdown(){events+='Q';return requested;}}
++namespace paperdiy{bool setEpdPower(bool on){assert(!on);events+='O';return panelOk;}}
++struct PowerManager {
++ static void powerDownRailsForSleep(){events+='R';}
++ static void armWakeOnPins(uint64_t mask){assert(mask==24);}
++ static void deepSleep(){events+='S';}
++};}
++struct HalPowerManager{void startDeepSleep(HalGPIO&)const;};
++''' + body + r'''
++int main(){
++ (void)logSerial;
++ HalGPIO gpio;
++ for(bool req:{false,true})for(bool off:{false,true}){
++  requested=req;panelOk=off;events.clear();logs.clear();errors=0;
++  HalPowerManager{}.startDeepSleep(gpio);
++  assert(events==(req?"LTRBQWOS":"LTRBQOS")); // No console-end before PMIC/off readback.
++  assert(logs.size()==4&&errors==!off);
++ }
++}
++''')
++
++    def test_actual_panel_hooks_use_backend_owned_stv_and_fail_closed(self):
++        source = (ROOT/'freeink-sdk/libs/hardware/BoardPaperDIY/src/PaperDiyEpdiyConfig.cpp').read_text(encoding='utf-8')
++        hooks = '\n'.join(method(source, name) for name in ('bool prepare()', 'bool powerOn()', 'void powerOff()'))
++        run(r'''
++#include <cassert>
++constexpr int HIGH=1,LOW=0,OUTPUT=3,GPIO_NUM_17=17,ESP_OK=0;
++bool gpioFail=false;int stv=-1,oe=-1,boost=-1,errors=0;
++void pinMode(int pin,int){assert(pin!=17);}
++void digitalWrite(int pin,int v){assert(pin==45||pin==46);(pin==45?boost:oe)=v;}
++int gpio_set_level(int pin,int v){assert(pin==17);if(gpioFail)return -1;stv=v;return 0;}
++void delay(int){}void delayMicroseconds(int){}
++#define ESP_LOGE(...) (++errors)
++namespace freeink::paperdiy{bool setEpdPower(bool on){assert(on);return true;}}
++''' + hooks + r'''
++int main(){
++ assert(prepare());assert(oe==0&&boost==0);
++ assert(powerOn());assert(oe==1&&boost==1&&stv==1);
++ powerOff();assert(oe==0&&boost==0&&stv==0&&errors==0);
++ gpioFail=true;assert(!powerOn());assert(oe==0&&boost==0);
++ powerOff();assert(errors==1);
++}
++''')
++
++
++if __name__ == '__main__':
 +    unittest.main()
 diff --git a/test/test_paperdiy_keyboard_buttons.py b/test/test_paperdiy_keyboard_buttons.py
 new file mode 100644

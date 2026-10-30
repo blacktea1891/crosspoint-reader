@@ -2448,7 +2448,7 @@ diff --git a/libs/hardware/BoardConfig/include/PaperDiyBoard.h b/libs/hardware/B
 new file mode 100644
 --- /dev/null
 +++ b/libs/hardware/BoardConfig/include/PaperDiyBoard.h
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,71 @@
 +#pragma once
 +
 +#include <M5Pm1.h>
@@ -2486,9 +2486,26 @@ new file mode 100644
 +  return pending;
 +}
 +
++inline PowerClicks& powerClicks() {
++  static PowerClicks clicks;
++  return clicks;
++}
++
++inline void discardWakePowerClick() {
++  powerClicks().discardWakeClick();
++  powerOffRequested() = false;
++  uint8_t status = 0;
++  // Drain the PMIC's read-clear wake event, including a Single/Double already
++  // pending in software. On I2C failure suppression survives until a successful
++  // poll sees physical release; never hang setup waiting for the PMIC.
++  if (ensureBooted() && m5pm1::readButtonStatus(&status)) {
++    (void)powerClicks().update(static_cast<uint32_t>(millis()), (status & m5pm1::BTN_EVENT) != 0,
++                               (status & m5pm1::BTN_PRESSED) != 0);
++  }
++}
++
 +inline bool pollPowerButtonClicked(unsigned long nowMs) {
 +  static unsigned long lastPollMs = 0;
-+  static PowerClicks clicks;
 +  // Raw events have no click count. Poll fast enough to distinguish two
 +  // physical presses; do not use IRQ_STATUS3, which needs a configured IRQ pin.
 +  if (nowMs - lastPollMs < 40) return false;
@@ -2496,8 +2513,8 @@ new file mode 100644
 +  if (!ensureBooted()) return false;
 +  uint8_t status = 0;
 +  if (!m5pm1::readButtonStatus(&status)) return false;
-+  const auto event =
-+      clicks.update(static_cast<uint32_t>(nowMs), (status & m5pm1::BTN_EVENT) != 0, (status & m5pm1::BTN_PRESSED) != 0);
++  const auto event = powerClicks().update(static_cast<uint32_t>(nowMs), (status & m5pm1::BTN_EVENT) != 0,
++                                          (status & m5pm1::BTN_PRESSED) != 0);
 +  if (event == PowerClicks::Event::Shutdown) powerOffRequested() = true;
 +  return event == PowerClicks::Event::Single;
 +}
@@ -2507,7 +2524,7 @@ diff --git a/libs/hardware/BoardConfig/include/PaperDiyPowerClicks.h b/libs/hard
 new file mode 100644
 --- /dev/null
 +++ b/libs/hardware/BoardConfig/include/PaperDiyPowerClicks.h
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,55 @@
 +#pragma once
 +
 +#include <stdint.h>
@@ -2522,7 +2539,17 @@ new file mode 100644
 +  enum class Event : uint8_t { None, Single, Shutdown };
 +  static constexpr uint32_t windowMs = 450;
 +
++  void discardWakeClick() {
++    singlePending_ = false;
++    doublePending_ = false;
++    discardUntilRelease_ = true;
++  }
++
 +  Event update(uint32_t now, bool event, bool held) {
++    if (discardUntilRelease_) {
++      if (!held) discardUntilRelease_ = false;
++      return Event::None;
++    }
 +    if (event && !doublePending_) {
 +      if (singlePending_ && static_cast<uint32_t>(now - firstAt_) <= windowMs) {
 +        singlePending_ = false;
@@ -2549,6 +2576,7 @@ new file mode 100644
 +  uint32_t firstAt_ = 0;
 +  bool singlePending_ = false;
 +  bool doublePending_ = false;
++  bool discardUntilRelease_ = false;
 +};
 +
 +}  // namespace freeink::paperdiy
@@ -2569,10 +2597,12 @@ diff --git a/libs/hardware/BoardPaperDIY/src/PaperDiyEpdiyConfig.cpp b/libs/hard
 new file mode 100644
 --- /dev/null
 +++ b/libs/hardware/BoardPaperDIY/src/PaperDiyEpdiyConfig.cpp
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,61 @@
 +#if FREEINK_PAPERDIY_EPDIY
 +#include <EpdiyLcd.h>
 +#include <PaperDiyBoard.h>
++#include <driver/gpio.h>
++#include <esp_log.h>
 +namespace {
 +// Preserve the known-working M5GFX PaperDIY rail sequence (OE/boost/SPV).
 +// The PMU hook only controls PYG2; factory VCOM is never changed.
@@ -2588,7 +2618,13 @@ new file mode 100644
 +  delayMicroseconds(100);
 +  digitalWrite(46, HIGH);
 +  delayMicroseconds(100);
-+  digitalWrite(17, HIGH);
++  // STV is configured by the LCD backend through gpio_config, not Arduino's
++  // peripheral manager. Do not steal/reconfigure it with pinMode here.
++  if (gpio_set_level(GPIO_NUM_17, 1) != ESP_OK) {
++    digitalWrite(46, LOW);
++    digitalWrite(45, LOW);
++    return false;
++  }
 +  delay(1);
 +  return true;
 +}
@@ -2598,7 +2634,7 @@ new file mode 100644
 +  delayMicroseconds(10);
 +  digitalWrite(45, LOW);
 +  delayMicroseconds(100);
-+  digitalWrite(17, LOW);
++  if (gpio_set_level(GPIO_NUM_17, 0) != ESP_OK) ESP_LOGE("PaperDIY", "STV park-low failed");
 +}
 +}  // namespace
 +
@@ -2706,7 +2742,7 @@ diff --git a/libs/hardware/InputManager/test/host/test_paperdiy.cpp b/libs/hardw
 new file mode 100644
 --- /dev/null
 +++ b/libs/hardware/InputManager/test/host/test_paperdiy.cpp
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,118 @@
 +#include <BoardConfig.h>
 +#include <InputManager.h>
 +#include <PaperDiyBoard.h>
@@ -2793,4 +2829,35 @@ new file mode 100644
 +  input.update();
 +  assert(!input.wasPressed(InputManager::BTN_POWER));
 +  puts("PaperDIY profile, PMIC recovery, rail, buttons, deferred single and software shutdown passed");
++  // A released wake event may already be waiting in the delayed classifier.
++  fakeNow += 100;
++  Wire.registers[0x48] = 0x80;
++  input.update();
++  freeink::paperdiy::discardWakePowerClick();
++  fakeNow += 500;
++  input.update();
++  assert(!input.wasPressed(InputManager::BTN_POWER));
++  // Failed wake drain must not hang boot or release a held wake as a new click.
++  Wire.fail = true;
++  freeink::paperdiy::powerOffRequested() = true;
++  freeink::paperdiy::discardWakePowerClick();
++  assert(!freeink::paperdiy::consumePowerOffRequest());
++  Wire.fail = false;
++  Wire.registers[0x48] = 0x81;
++  fakeNow += 100;
++  input.update();
++  Wire.registers[0x48] = 0;
++  fakeNow += 100;
++  input.update();
++  fakeNow += 500;
++  input.update();
++  assert(!input.wasPressed(InputManager::BTN_POWER));
++  // New runtime clicks still have their normal meaning after the wake drain.
++  Wire.registers[0x48] = 0x80;
++  fakeNow += 100;
++  input.update();
++  fakeNow += 500;
++  input.update();
++  assert(input.wasPressed(InputManager::BTN_POWER));
++  puts("PaperDIY wake event/pending state drained; I2C failure, release and new runtime click passed");
 +}
