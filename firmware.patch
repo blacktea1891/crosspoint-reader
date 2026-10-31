@@ -289,7 +289,7 @@ index 00777a37..4ceddeb1 100644
 +  UiTransition
 +};
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..ace87612 100644
+index 2d854fe5..2b3ca596 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
 @@ -1,5 +1,37 @@
@@ -330,10 +330,13 @@ index 2d854fe5..ace87612 100644
  
  #if FREEINK_DEVICE_READPICO
  #include <BoardReadPico.h>
-@@ -44,6 +76,12 @@ void HalDisplay::begin(bool seamless) {
+@@ -44,6 +76,15 @@ void HalDisplay::begin(bool seamless) {
  #endif
  
    einkDisplay.begin();
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_STOCK_DISPLAY
++  LOG_INF("DISP", "paperdiy-stock-m5gfx-v1 vendor-driver original-quick-resume; epdiy experiments disabled");
++#endif
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  einkDisplay.setRefreshAuditObserver(logPaperDiyAudit);
 +  LOG_INF("PD-AUDIT",
@@ -343,7 +346,7 @@ index 2d854fe5..ace87612 100644
  
  #if FREEINK_DEVICE_READPICO
    // The facade publishes the driver's real geometry (EpdiyLcdDriver::geometry():
-@@ -98,6 +136,8 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
+@@ -98,6 +139,8 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
  namespace {
  EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context) {
    switch (context) {
@@ -352,7 +355,7 @@ index 2d854fe5..ace87612 100644
      case DisplayRefreshContext::Normal:
        return EInkDisplay::RefreshContext::Normal;
      case DisplayRefreshContext::ContinuousReading:
-@@ -112,19 +152,60 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
+@@ -112,19 +155,60 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
  }  // namespace
  
  void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen, DisplayRefreshContext context) {
@@ -413,7 +416,7 @@ index 2d854fe5..ace87612 100644
  }
  
  void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
-@@ -138,11 +219,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
+@@ -138,11 +222,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
  bool HalDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
  
  void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
@@ -429,7 +432,7 @@ index 2d854fe5..ace87612 100644
  }
  
  void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
-@@ -153,6 +238,12 @@ bool HalDisplay::isInverted() const { return einkDisplay.isInverted(); }
+@@ -153,6 +241,12 @@ bool HalDisplay::isInverted() const { return einkDisplay.isInverted(); }
  
  void HalDisplay::deepSleep() { einkDisplay.deepSleep(); }
  
@@ -442,7 +445,7 @@ index 2d854fe5..ace87612 100644
  uint8_t* HalDisplay::getFrameBuffer() const { return einkDisplay.getFrameBuffer(); }
  
  uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisplay.lendBuildStorage(sizeOut); }
-@@ -160,6 +251,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
+@@ -160,6 +254,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
  void HalDisplay::returnFrameBufferStorage() { einkDisplay.returnBuildStorage(); }
  
  bool HalDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback, bool turnOffScreen) {
@@ -452,7 +455,7 @@ index 2d854fe5..ace87612 100644
    if (gpio.deviceIsX3() && fallback == HALF_REFRESH) einkDisplay.requestResync();
    return einkDisplay.displayGrayscaleBase(mode, static_cast<EInkDisplay::RefreshMode>(fallback), turnOffScreen);
  }
-@@ -169,6 +263,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
+@@ -169,6 +266,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
  }
  
  void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen, DisplayRefreshContext context) {
@@ -462,7 +465,7 @@ index 2d854fe5..ace87612 100644
    // X3: a HALF fallback means the caller wants a clean base (e.g. the sleep
    // cover, a full-screen swap from arbitrary prior content). Without this, the
    // X3 grayscale base takes its gentle differential happy path and the prior
-@@ -195,7 +292,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
+@@ -195,7 +295,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
  
  void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.cleanupGrayscaleBuffers(bwBuffer); }
  
@@ -476,7 +479,7 @@ index 2d854fe5..ace87612 100644
  
  void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
    einkDisplay.writeGrayscalePlaneStrip(lsbPlane ? EInkDisplay::GRAY_PLANE_LSB : EInkDisplay::GRAY_PLANE_MSB, rows,
-@@ -219,12 +321,46 @@ void HalDisplay::cancelGrayscale() {
+@@ -219,12 +324,46 @@ void HalDisplay::cancelGrayscale() {
  
  bool HalDisplay::displayCommitted() const { return einkDisplay.displayCommitted(); }
  
@@ -788,10 +791,10 @@ index 4d90e713..b14fd7d1 100644
    // immediately wake the device again), then arms the wake source and sleeps.
    freeink::PowerManager::deepSleepUntilPowerButton();
 diff --git a/platformio.ini b/platformio.ini
-index baacb3e2..50bf7105 100644
+index baacb3e2..91158081 100644
 --- a/platformio.ini
 +++ b/platformio.ini
-@@ -1139,3 +1139,43 @@ build_flags =
+@@ -1139,3 +1139,64 @@ build_flags =
    -DCROSSPOINT_VERSION=\"${crosspoint.version}-lilygo\"
    -DENABLE_SERIAL_LOG
    -DLOG_LEVEL=2
@@ -832,6 +835,27 @@ index baacb3e2..50bf7105 100644
 +  ${paperdiy_hardware.build_flags}
 +  -DFREEINK_PAPERDIY_REFRESH_AUDIT=1
 +  -DFREEINK_PAPERDIY_FINAL_RAIL_OFF=1
++  -DCROSSPOINT_VERSION=\"${crosspoint.version}-paperdiy\"
++  -DENABLE_SERIAL_LOG
++  -DLOG_LEVEL=2
++
++; Isolated rollback: same vendor backend/pinned M5GFX as the original PaperDIY
++; CrossPoint port. Keep the epdiy environment intact for source comparison.
++[env:paperdiy_m5gfx]
++extends = paperdiy_hardware
++lib_deps =
++  ${s3_ble_psram.lib_deps}
++  BoardPaperDIY=symlink://freeink-sdk/libs/hardware/BoardPaperDIY
++  https://github.com/m5stack/M5GFX.git#d8074bbac8b75d22149d128d71d55b6a34dbc808
++build_flags =
++  ${base.build_flags}
++  ${s3_ble_psram.build_flags}
++  -flto=auto
++  -DFREEINK_DEVICE_PAPERDIY=1
++  -DFREEINK_PAPERDIY_STOCK_DISPLAY=1
++  -DBOARD_HAS_PSRAM
++  -DUSB_PRODUCT=\"CrossMux-PaperDIY\"
++  -DUSB_MANUFACTURER=\"CrossMux\"
 +  -DCROSSPOINT_VERSION=\"${crosspoint.version}-paperdiy\"
 +  -DENABLE_SERIAL_LOG
 +  -DLOG_LEVEL=2
@@ -4236,7 +4260,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..462926ea 100644
+index b0b49733..cccf2d22 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -4248,7 +4272,7 @@ index b0b49733..462926ea 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -151,6 +153,24 @@ add_test(NAME ReadingStatsNetworkMemory
+@@ -151,6 +153,26 @@ add_test(NAME ReadingStatsNetworkMemory
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_reading_stats_network_memory.py)
  add_test(NAME WifiFontRecovery
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_wifi_font_recovery.py)
@@ -4270,10 +4294,12 @@ index b0b49733..462926ea 100644
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_shutdown_neutral.py)
 +add_test(NAME PaperDiySleepGateTiming
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_sleep_gate_timing.py)
++add_test(NAME PaperDiyStockDisplay
++    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_stock_display.py)
  add_test(NAME HalClockSntp
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_hal_clock_sntp.py)
  add_test(NAME InxStyleCompatibility
-@@ -246,3 +266,19 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +268,19 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -4533,7 +4559,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,1254 @@
+@@ -0,0 +1,1283 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -5788,6 +5814,35 @@ new file mode 100644
 +PMIC register readback do not measure physical voltage, discharge or optical
 +retention; this corrects a demonstrated lifecycle defect without claiming it
 +is the unique physical root cause. New runtime marker: final-rail-off-v1.
++
++## Vendor backend rollback candidate (2026-10-31)
++
++41202693157 also failed by user report; quick resume was described as more
++disordered. No new serial capture or verified startup banner accompanies that
++report. Do not call the final-rail transaction an accepted retention fix.
++
++Quick Resume UI is unchanged from the pinned CrossMux base: keep the current
++page, draw a moon bottom-left, request FAST; main saves the retained1bpp frame
++to sleep_frame.bin and removes that stale file on other sleep modes. It still
++uses the active display backend. Selecting it cannot restore the vendor driver.
++
++Build only the isolated env paperdiy_m5gfx for the rollback candidate. It uses
++the original CrossPoint PaperDIY M5GFX commit
++d8074bbac8b75d22149d128d71d55b6a34dbc808, the existing PaperDiyLgfxConfig with
++16MHz/stock LUTs and stock Bus_EPD power sequencing. The board selects LGFX,
++not epdiy. Omit the epdiy dependency, config/include flags, phase timing,
++neutral scans, staged shutdown, final-rail and epdiy audit opt-ins. Keep the
++epdiy environment/source intact for comparison and future work.
++
++Retain CrossMux navigation, keyboard, footer fixes and the shared UI30 request
++budget. M5GFX owns actual pixel conversion/gray waves; epdiy optical tuning
++does not carry over and must not be advertised as equivalent. This is a vendor
++backend rollback within CrossMux, not a byte-identical original CrossPoint
++image or proof of unchanged physical refresh. No hardware flash by the agent.
++Marker paperdiy-stock-m5gfx-v1; ordinary serial logs remain available but
++epdiy per-phase diagnostics are intentionally absent. Software selection,
++original quick-resume request behavior and existing vendor driver tests run
++in CI; optical retention and startup/sleep behavior require device confirmation.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -11484,6 +11539,71 @@ new file mode 100644
 +
 +
 +if __name__=='__main__':
++    unittest.main()
+diff --git a/test/test_paperdiy_stock_display.py b/test/test_paperdiy_stock_display.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_stock_display.py
+@@ -0,0 +1,60 @@
++"""Original PaperDIY vendor-backend selection and unchanged quick-resume UI."""
++import configparser
++import unittest
++from test_paperdiy_power_clicks import ROOT, method, run
++
++
++class StockDisplayTest(unittest.TestCase):
++    def test_production_board_selects_vendor_instead_of_epdiy(self):
++        board = (ROOT/'freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h').read_text(encoding='utf-8')
++        selectors = board[board.index('#if FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_PAPERS3 ||'):
++                          board.index('// M5Paper v1.1:')]
++        run(selectors+r'''
++static_assert(FREEINK_DRIVER_LGFX_EPD == 1);
++static_assert(FREEINK_DRIVER_EPDIY_LCD == 0);
++int main() {}
++''', extra=['-DFREEINK_PAPERDIY_STOCK_DISPLAY=1'])
++
++    def test_isolated_environment_omits_all_epdiy_runtime_experiments(self):
++        ini = configparser.ConfigParser(interpolation=None, strict=False)
++        ini.read(ROOT/'platformio.ini', encoding='utf-8')
++        env = ini['env:paperdiy_m5gfx']
++        flags, deps = env['build_flags'], env['lib_deps']
++        assert '-DFREEINK_DEVICE_PAPERDIY=1' in flags
++        assert '-DFREEINK_PAPERDIY_STOCK_DISPLAY=1' in flags
++        assert 'paperdiy_hardware.build_flags' not in flags
++        for text in ('EPDIY', 'FINAL_RAIL_OFF', 'TIMED_SLEEP', 'SHUTDOWN_STAGE', 'NEUTRAL_FRAME', 'REFRESH_AUDIT'):
++            assert text not in flags, text
++        assert 'EpdiyLcd' not in deps
++        assert 'M5GFX.git#d8074bbac8b75d22149d128d71d55b6a34dbc808' in deps
++
++    def test_actual_quick_resume_keeps_page_adds_moon_and_requests_fast(self):
++        body = method((ROOT/'src/activities/boot_sleep/SleepActivity.cpp').read_text(encoding='utf-8'),
++                      'void SleepActivity::renderLastScreenSleepScreen() const')
++        run(r'''
++#include <cassert>
++namespace HalDisplay {constexpr int FAST_REFRESH=2;}
++constexpr int MOONICON_HEIGHT=24,MOONICON_WIDTH=24,MoonIcon=1;
++struct {bool x3=false;bool deviceIsX3(){return x3;}}gpio;
++struct {
++ int height=960,draws=0,frames=0,gray=0;
++ int getScreenHeight(){return height;}
++ void drawImage(int icon,int x,int y,int w,int h){
++  assert(icon==MoonIcon&&x==0&&y==height-24&&w==24&&h==24);++draws;
++ }
++ void displayBuffer(int mode){assert(mode==HalDisplay::FAST_REFRESH);++frames;}
++ void displayGrayscaleBase(int mode){assert(mode==HalDisplay::FAST_REFRESH);++gray;}
++}renderer;
++struct SleepActivity {void renderLastScreenSleepScreen()const;};
++''' + body + r'''
++int main(){SleepActivity s;
++ for(int height:{540,960}){
++  renderer.height=height;gpio.x3=false;s.renderLastScreenSleepScreen();
++ }
++ assert(renderer.draws==2&&renderer.frames==2&&renderer.gray==0);
++}
++'''.replace('for(int height:{540,960})', 'for(int height=540;height<=960;height+=420)'))
++
++
++if __name__ == '__main__':
 +    unittest.main()
 diff --git a/test/test_paperdiy_ui_profiles.py b/test/test_paperdiy_ui_profiles.py
 new file mode 100644
