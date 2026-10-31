@@ -32,7 +32,7 @@ index b8ebaef..dc5f20a 100644
  /// epdiyLcdBegin 的 `blackIsOne` 给定。
  /// / Push one frame. `fb` is 1 bpp MSB-first, width/8 bytes per row, height rows;
 diff --git a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
-index 72f56ea..7c3a428 100644
+index 72f56ea..e56bca0 100644
 --- a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 +++ b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 @@ -9,6 +9,9 @@
@@ -66,13 +66,26 @@ index 72f56ea..7c3a428 100644
  }
  
  namespace freeink {
-@@ -54,10 +64,143 @@ bool g_nativeGrayActive = false;
+@@ -54,10 +64,156 @@ bool g_nativeGrayActive = false;
  bool g_initialized = false;
  bool g_powerReady = false;
  bool g_baselineKnown = false;
++#if FREEINK_DEVICE_PAPERDIY
++// Scoped to the final shutdown call; ordinary End/init-failure cleanup is unchanged.
++bool g_shutdownDeinit = false;
++#endif
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +void (*g_refreshAuditObserver)(const char*) = nullptr;
 +uint32_t g_refreshAuditSequence = 0;
++
++void traceShutdown(const char* stage) {
++  if (g_refreshAuditObserver == nullptr) return;
++  char line[144];
++  snprintf(line, sizeof(line), "[PD-OFF-DISPLAY] stage=%s seq=%u gpio_preserve=%u initialized=%u started=%u", stage,
++           static_cast<unsigned>(g_refreshAuditSequence), static_cast<unsigned>(g_shutdownDeinit),
++           static_cast<unsigned>(g_initialized), static_cast<unsigned>(g_started));
++  g_refreshAuditObserver(line);
++}
 +
 +struct RefreshAudit {
 +  bool enabled = g_refreshAuditObserver != nullptr;
@@ -210,7 +223,27 @@ index 72f56ea..7c3a428 100644
  // 1bpp 行 → 4bpp 行的展开表：一个输入字节出 4 个输出字节。
  // epdiy 是每字节两个像素，偶数列在低半字节、奇数列在高半字节，15 = 白。
  // / Expansion table: one 1 bpp input byte becomes four 4 bpp bytes. epdiy packs
-@@ -181,10 +324,14 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
+@@ -125,7 +281,18 @@ bool boardInit(uint32_t epdRowWidth) {
+   return true;
+ }
+ 
+-void boardDeinit() { epd_lcd_deinit(); }
++void boardDeinit() {
++#if FREEINK_DEVICE_PAPERDIY
++  if (g_shutdownDeinit) {
++    epd_lcd_deinit_for_shutdown();
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++    traceShutdown("lcd-stopped-gpio-preserved");
++#endif
++    return;
++  }
++#endif
++  epd_lcd_deinit();
++}
+ 
+ // XOE 与 MODE 在 FCA9555 上，由 powerOn/powerOff 按顺序持有；本板没有 epdiy 假设的
+ // 那个通用控制寄存器，所以这里是空实现。
+@@ -181,10 +348,14 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
  
    // 波形必须在 epd_hl_init 之前建好：E0470_WAVEFORM 的相位数据由它填。
    // / The waveform must be built before epd_hl_init(): it fills E0470_WAVEFORM.
@@ -226,7 +259,7 @@ index 72f56ea..7c3a428 100644
      ESP_LOGE("EpdiyLcd", "LCD renderer initialization failed");
      return false;
    }
-@@ -203,7 +350,7 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
+@@ -203,7 +374,7 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
      return false;
    }
  
@@ -235,7 +268,7 @@ index 72f56ea..7c3a428 100644
    g_fb4 = epd_hl_get_framebuffer(&g_hl);
    if (g_fb4 == nullptr) {
      epdiyLcdEnd();
-@@ -262,6 +409,22 @@ void epdiyLcdEnd() {
+@@ -262,6 +433,22 @@ void epdiyLcdEnd() {
  namespace {
  
  enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
@@ -258,7 +291,7 @@ index 72f56ea..7c3a428 100644
    switch (mode) {
      case EpdiyLcdRefresh::Full:
        return static_cast<enum EpdDrawMode>(MODE_GC16 | PREVIOUSLY_WHITE);
-@@ -272,6 +435,7 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
+@@ -272,6 +459,7 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
      default:
        return static_cast<enum EpdDrawMode>(MODE_DU | PREVIOUSLY_WHITE);
    }
@@ -266,7 +299,7 @@ index 72f56ea..7c3a428 100644
  }
  
  // 文字转页换用对角线全保持的那张表：未变化的像素完全不驱动，所以不会把黑像素先擦白
-@@ -281,7 +445,13 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
+@@ -281,7 +469,13 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
  // and push it back to black, and that erase is the flash a turn shows. Every other
  // profile keeps the table epd_hl_init attached.
  const EpdWaveform* waveformFor(EpdiyLcdRefresh mode) {
@@ -280,7 +313,7 @@ index 72f56ea..7c3a428 100644
  }
  
  // 1bpp 页 -> epdiy 4bpp。展开表把调用方的位约定翻成 epdiy 的灰度级；本玻璃实测
-@@ -314,15 +484,30 @@ void recordConversion(int64_t startedUs) {
+@@ -314,15 +508,30 @@ void recordConversion(int64_t startedUs) {
  #endif
  
  bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
@@ -311,7 +344,7 @@ index 72f56ea..7c3a428 100644
      memset(g_hl.back_fb, 0xFF, static_cast<size_t>(epd_width()) / 2 * epd_height());
      mode = EpdiyLcdRefresh::Full;
    }
-@@ -333,14 +518,31 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -333,14 +542,31 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    const EpdWaveform* waveform = waveformFor(mode);
    const bool swapWaveform = waveform != g_hl.waveform;
    if (swapWaveform) epd_hl_waveform(&g_hl, waveform);
@@ -351,7 +384,7 @@ index 72f56ea..7c3a428 100644
  #if FREEINK_READPICO_DIAGNOSTICS
    int diffMs, drawMs, copyMs;
    epd_hl_last_timing(&diffMs, &drawMs, &copyMs);
-@@ -351,18 +553,25 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -351,18 +577,25 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    // serial port in this build, while the board libraries' esp_rom_vprintf does. Only
    // compiled in development builds.
    esp_rom_printf("[EPDF] frame #%u mode=%u result=%u convert=%uus max_convert=%uus diff=%dms scan=%dms copy=%dms\r\n",
@@ -380,7 +413,7 @@ index 72f56ea..7c3a428 100644
  uint8_t* epdiyLcdBeginGrayscale16() {
    if (!epdiyLcdReady() || g_nativeGrayActive) return nullptr;
    g_nativeGrayActive = true;
-@@ -370,10 +579,15 @@ uint8_t* epdiyLcdBeginGrayscale16() {
+@@ -370,10 +603,15 @@ uint8_t* epdiyLcdBeginGrayscale16() {
    return g_fb4;
  }
  
@@ -397,7 +430,7 @@ index 72f56ea..7c3a428 100644
    epdiyLcdStashBase(bwProxy);
    return true;
  }
-@@ -386,6 +600,15 @@ void epdiyLcdCancelGrayscale16() {
+@@ -386,6 +624,15 @@ void epdiyLcdCancelGrayscale16() {
    }
  }
  
@@ -413,7 +446,7 @@ index 72f56ea..7c3a428 100644
  bool epdiyLcdDraw(const uint8_t* fb, EpdiyLcdRefresh mode, bool turnOff) {
    if (!g_started || fb == nullptr || g_fb4 == nullptr || g_cfg == nullptr) return false;
  
-@@ -415,6 +638,9 @@ void epdiyLcdStashBase(const uint8_t* fb) {
+@@ -415,6 +662,9 @@ void epdiyLcdStashBase(const uint8_t* fb) {
  }
  
  bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mode, bool turnOff) {
@@ -423,7 +456,7 @@ index 72f56ea..7c3a428 100644
    if (!g_started || g_fb4 == nullptr || g_cfg == nullptr) return false;
    if (g_base == nullptr || lsb == nullptr || msb == nullptr) return false;
  
-@@ -423,10 +649,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
+@@ -423,10 +673,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
  #endif
    // The existing 2-bit coverage maps directly to four panel tones. A set base
    // bit is white (15); selector masks choose the two calibrated mid tones.
@@ -441,12 +474,38 @@ index 72f56ea..7c3a428 100644
  
    const int w = static_cast<int>(epd_width());
    const int h = static_cast<int>(epd_height());
+@@ -465,7 +720,19 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
+ void epdiyLcdDeepSleep() {
+   if (!g_started) return;
+   (void)epd_poweroff();
++#if FREEINK_DEVICE_PAPERDIY
++  g_shutdownDeinit = true;
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++  traceShutdown("board-parked-before-deinit");
++#endif
++#endif
+   epdiyLcdEnd();
++#if FREEINK_DEVICE_PAPERDIY
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++  traceShutdown("display-resources-released");
++#endif
++  g_shutdownDeinit = false;
++#endif
+ }
+ 
+ bool epdiyLcdReady() { return g_started && g_fb4 != nullptr; }
 diff --git a/libs/display/EpdiyLcd/src/epdiy/include/epd_lcd.h b/libs/display/EpdiyLcd/src/epdiy/include/epd_lcd.h
-index 7880dd3..8b8e0ce 100644
+index 7880dd3..3e0ef33 100644
 --- a/libs/display/EpdiyLcd/src/epdiy/include/epd_lcd.h
 +++ b/libs/display/EpdiyLcd/src/epdiy/include/epd_lcd.h
-@@ -37,6 +37,9 @@ esp_err_t epd_lcd_init(const LcdEpdConfig_t* config, int display_width, int disp
+@@ -35,8 +35,15 @@ typedef struct {
+ 
+ esp_err_t epd_lcd_init(const LcdEpdConfig_t* config, int display_width, int display_height);
  void epd_lcd_deinit(void);
++#if FREEINK_DEVICE_PAPERDIY
++// Final host shutdown only: release resources without resetting parked bus GPIO.
++void epd_lcd_deinit_for_shutdown(void);
++#endif
  void epd_lcd_set_pixel_clock_MHz(int frequency);
  void epd_lcd_set_line_timing(const LcdLineTiming_t* timing);
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
@@ -494,7 +553,7 @@ index d697b96..9b0ca61 100644
 \ No newline at end of file
 +);
 diff --git a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c
-index e30e1f8..2acfae9 100644
+index e30e1f8..51a31a6 100644
 --- a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c
 +++ b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c
 @@ -163,6 +163,13 @@ typedef struct {
@@ -511,6 +570,20 @@ index e30e1f8..2acfae9 100644
  
  void IRAM_ATTR epd_lcd_line_source_cb(line_cb_func_t line_source, void* payload) {
      lcd.line_source_cb = line_source;
+@@ -261,11 +268,11 @@ static void init_ckv_rmt() {
+ /**
+  * Reset the CKV RMT configuration.
+  */
+-static void deinit_ckv_rmt() {
++static void deinit_ckv_rmt(bool release_gpio) {
+     rmt_compat_reset_module();
+     rmt_compat_enable_periph_clock(false);
+     rmt_compat_enable_module(false);
+-    gpio_reset_pin(lcd.config.bus.ckv);
++    if (release_gpio) gpio_reset_pin(lcd.config.bus.ckv);
+ }
+ 
+ __attribute__((optimize("O3"))) IRAM_ATTR static void lcd_isr_vsync(void* args) {
 @@ -283,6 +290,9 @@ __attribute__((optimize("O3"))) IRAM_ATTR static void lcd_isr_vsync(void* args)
          if (lcd.batches >= batches_needed) {
              lcd_ll_stop(lcd.hal.dev);
@@ -530,7 +603,38 @@ index e30e1f8..2acfae9 100644
          gpio_reset_pin(lcd.config.bus.data[i]);
      }
  
-@@ -804,6 +814,9 @@ void epd_lcd_set_pixel_clock_MHz(int frequency) {
+@@ -738,21 +748,27 @@ err:
+     return ret;
+ }
+ 
+-void epd_lcd_deinit() {
++static void deinit_lcd(bool release_gpio) {
+     epd_lcd_line_source_cb(NULL, NULL);
+     epd_lcd_frame_done_cb(NULL, NULL);
+     // Interrupts/peripheral must stop before their DMA buffers are released.
+     deinit_lcd_peripheral();
+     lcd.peripheral_enabled = false;
+     deinit_dma_trans_link();
+-    if (lcd.ckv_initialized) deinit_ckv_rmt();
++    if (lcd.ckv_initialized) deinit_ckv_rmt(release_gpio);
+     lcd.ckv_initialized = false;
+-    if (lcd.gpio_attempted) deinit_bus_gpio();
++    if (lcd.gpio_attempted && release_gpio) deinit_bus_gpio();
+     lcd.gpio_attempted = false;
+     free_lcd_buffers();
+     lcd.initialized = false;
+ }
+ 
++void epd_lcd_deinit() { deinit_lcd(true); }
++
++#if FREEINK_DEVICE_PAPERDIY
++void epd_lcd_deinit_for_shutdown() { deinit_lcd(false); }
++#endif
++
+ void epd_lcd_set_line_timing(const LcdLineTiming_t* timing) {
+     if (timing == NULL) return;
+     lcd.config.line = *timing;
+@@ -804,6 +820,9 @@ void epd_lcd_set_pixel_clock_MHz(int frequency) {
  }
  
  void IRAM_ATTR epd_lcd_start_frame() {
@@ -761,10 +865,10 @@ index 956ede3..5f3e553 100644
      if (render_context.error & EPD_DRAW_EMPTY_LINE_QUEUE) {
          ESP_LOGE("epdiy", "line buffer underrun occurred!");
 diff --git a/libs/display/EpdiyLcd/test/host/lcd_resources.c b/libs/display/EpdiyLcd/test/host/lcd_resources.c
-index d9ea33b..cdd8fe7 100644
+index d9ea33b..947f7fb 100644
 --- a/libs/display/EpdiyLcd/test/host/lcd_resources.c
 +++ b/libs/display/EpdiyLcd/test/host/lcd_resources.c
-@@ -2,7 +2,16 @@
+@@ -2,7 +2,17 @@
  
  #include "epd_lcd.h"
  #include "resource_heap.h"
@@ -772,6 +876,7 @@ index d9ea33b..cdd8fe7 100644
 +void epd_lcd_frame_done_cb(void (*callback)(void*), void* data);
 +void epd_lcd_start_frame(void);
  static int peripheral_live;
++static int gpio_reset_calls;
 +uint32_t host_lcd_irq_status;
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +static void (*audit_vsync_isr)(void*);
@@ -781,7 +886,7 @@ index d9ea33b..cdd8fe7 100644
  void periph_module_enable(int id) {
    (void)id;
    assert(!peripheral_live);
-@@ -21,6 +30,9 @@ int esp_intr_alloc_intrstatus(int source, int flags, uint32_t status, uint32_t m
+@@ -21,6 +31,9 @@ int esp_intr_alloc_intrstatus(int source, int flags, uint32_t status, uint32_t m
    (void)status;
    (void)mask;
    (void)isr;
@@ -791,16 +896,17 @@ index d9ea33b..cdd8fe7 100644
    (void)data;
    *out = resource_allocate(1, 1);
    return *out ? ESP_OK : ESP_ERR_NO_MEM;
-@@ -96,7 +108,7 @@ int gpio_set_level(int pin, int level) {
+@@ -96,7 +109,8 @@ int gpio_set_level(int pin, int level) {
    return resource_step() ? ESP_OK : ESP_FAIL;
  }
  int gpio_reset_pin(int pin) {
 -  (void)pin;
 +  assert(pin >= 0);
++  ++gpio_reset_calls;
    return ESP_OK;
  }
  int main(void) {
-@@ -104,6 +116,28 @@ int main(void) {
+@@ -104,6 +118,39 @@ int main(void) {
    assert(epd_lcd_init(&cfg, 1216, 684) == ESP_OK);
    int total = calls;
    epd_lcd_deinit();
@@ -811,6 +917,17 @@ index d9ea33b..cdd8fe7 100644
 +  LcdEpdConfig_t diy = {.pixel_clock = 20000000, .bus_width = 8, .line = {4, 4, 4, 60}};
 +  for (int i = 0; i < 16; ++i) diy.bus.data[i] = i < 8 ? i : -1;
 +  assert(epd_lcd_init(&diy, 960, 540) == ESP_OK);
++#if FREEINK_DEVICE_PAPERDIY
++  const int resets_before_shutdown = gpio_reset_calls;
++  epd_lcd_deinit_for_shutdown();
++  epd_lcd_deinit_for_shutdown();
++  assert(!live && !peripheral_live && gpio_reset_calls == resets_before_shutdown);
++  // A later normal init/End still owns and releases the complete bus, including CKV.
++  assert(epd_lcd_init(&diy, 960, 540) == ESP_OK);
++  epd_lcd_deinit();
++  assert(!live && !peripheral_live && gpio_reset_calls == resets_before_shutdown + 13);
++  assert(epd_lcd_init(&diy, 960, 540) == ESP_OK);
++#endif
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  uint32_t started, done, next_started, next_done;
 +  epd_lcd_audit_counts(&started, &done);
@@ -830,7 +947,7 @@ index d9ea33b..cdd8fe7 100644
    assert(!live && !peripheral_live);
    for (int i = 1; i <= total; i++) {
 diff --git a/libs/display/EpdiyLcd/test/host/test_resources.py b/libs/display/EpdiyLcd/test/host/test_resources.py
-index 4ea1960..bc61824 100644
+index 4ea1960..f42019f 100644
 --- a/libs/display/EpdiyLcd/test/host/test_resources.py
 +++ b/libs/display/EpdiyLcd/test/host/test_resources.py
 @@ -66,10 +66,12 @@ static inline void heap_caps_free(void* p) { resource_release(p); }
@@ -869,10 +986,10 @@ index 4ea1960..bc61824 100644
 -                    "-Wl,--wrap=malloc", "-Wl,--wrap=calloc", "-Wl,--wrap=free",
 -                    "-o", str(binary)], check=True)
 -    subprocess.run([str(binary)], check=True)
-+    for audit in (0, 1):
-+        binary = root / f"lcd-resources-test-{audit}"
++    for paperdiy, audit in ((0, 0), (0, 1), (1, 0), (1, 1)):
++        binary = root / f"lcd-resources-test-{paperdiy}-{audit}"
 +        subprocess.run(["cc", "-std=gnu11", "-ffunction-sections", "-fdata-sections", "-Wno-pointer-to-int-cast", "-Wno-int-to-pointer-cast", *flags,
-+                        "-DFREEINK_DEVICE_PAPERDIY=1", f"-DFREEINK_PAPERDIY_REFRESH_AUDIT={audit}",
++                        f"-DFREEINK_DEVICE_PAPERDIY={paperdiy}", f"-DFREEINK_PAPERDIY_REFRESH_AUDIT={audit}",
 +                        str(HERE / "lcd_resources.c"), str(driver), "-Wl,--gc-sections",
 +                        "-Wl,--wrap=malloc", "-Wl,--wrap=calloc", "-Wl,--wrap=free",
 +                        "-o", str(binary)], check=True)
@@ -950,7 +1067,7 @@ index 059bbfa..6d8c0b2 100644
  
  if __name__ == "__main__":
 diff --git a/libs/display/EpdiyLcd/test/host/transactions.cpp b/libs/display/EpdiyLcd/test/host/transactions.cpp
-index f88a84b..1b1828d 100644
+index f88a84b..52fabe8 100644
 --- a/libs/display/EpdiyLcd/test/host/transactions.cpp
 +++ b/libs/display/EpdiyLcd/test/host/transactions.cpp
 @@ -5,10 +5,17 @@
@@ -990,7 +1107,7 @@ index f88a84b..1b1828d 100644
  const EpdBoardDefinition* board = nullptr;
  EpdiyHighlevelState* state = nullptr;
  bool powerOn() {
-@@ -71,7 +88,23 @@ void epd_poweroff() { board->poweroff(nullptr); }
+@@ -71,10 +88,29 @@ void epd_poweroff() { board->poweroff(nullptr); }
  void epd_clear() {
    assert(powered);
    ++clears;
@@ -1014,7 +1131,13 @@ index f88a84b..1b1828d 100644
  esp_err_t epd_lcd_init(const LcdEpdConfig_t*, int, int) { return ESP_OK; }
  void epd_lcd_set_prefill_lines(int) {}
  void epd_lcd_deinit() {}
-@@ -91,14 +124,30 @@ EpdRect epd_difference_image_cropped(const uint8_t* to, const uint8_t* from, Epd
++#if FREEINK_DEVICE_PAPERDIY
++void epd_lcd_deinit_for_shutdown() {}
++#endif
+ void epd_leading_skip_discard() {}
+ void epd_difference_column_range(EpdRect area, int* first, int* end) {
+   *first = area.x;
+@@ -91,14 +127,30 @@ EpdRect epd_difference_image_cropped(const uint8_t* to, const uint8_t* from, Epd
      lines[y] = std::memcmp(to + y * 8, from + y * 8, 8) != 0;
      changed |= lines[y];
    }
@@ -1049,7 +1172,7 @@ index f88a84b..1b1828d 100644
    lastMode = mode & 0x3F;
    return failDraw ? EPD_DRAW_EMPTY_LINE_QUEUE : EPD_DRAW_SUCCESS;
  }
-@@ -115,7 +164,11 @@ void checkGrayPacking(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
+@@ -115,7 +167,11 @@ void checkGrayPacking(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
        if (bits & 1) base[pixel / 8] |= mask;
        if (bits & 2) lsb[pixel / 8] |= mask;
        if (bits & 4) msb[pixel / 8] |= mask;
@@ -1061,7 +1184,7 @@ index f88a84b..1b1828d 100644
      }
      driver.displayGrayscaleBaseWithContext(bus, base, freeink::RefreshMode::Full, false,
                                             freeink::RefreshContext::Normal);
-@@ -149,6 +202,31 @@ void checkNativeGray(freeink::EpdiyLcdDriver& driver) {
+@@ -149,6 +205,31 @@ void checkNativeGray(freeink::EpdiyLcdDriver& driver) {
    frame = driver.beginGrayscale16();
    memset(frame, 0, 16);
    assert(driver.commitGrayscale16(proxy) && lastMode == MODE_GC16);
@@ -1093,7 +1216,7 @@ index f88a84b..1b1828d 100644
    assert(allocation_calls == allocations);
  }
  
-@@ -170,6 +248,203 @@ void checkHighlevel() {
+@@ -170,6 +251,203 @@ void checkHighlevel() {
    assert(std::memcmp(hl.front_fb, hl.back_fb, 16) == 0);
  }
  
@@ -1297,7 +1420,7 @@ index f88a84b..1b1828d 100644
  int main(int argc, char** argv) {
    if (argc > 1 && std::strcmp(argv[1], "highlevel") == 0) {
      checkHighlevel();
-@@ -206,11 +481,52 @@ int main(int argc, char** argv) {
+@@ -206,11 +484,52 @@ int main(int argc, char** argv) {
      driver.copyGrayscaleLsb(bus, gray);
      driver.copyGrayscaleMsb(bus, gray);
      driver.displayGray(bus, gray, true, nullptr, false);
