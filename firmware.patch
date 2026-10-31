@@ -277,7 +277,7 @@ index 00777a37..4ceddeb1 100644
 +  UiTransition
 +};
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..ac634618 100644
+index 2d854fe5..8be26de5 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
 @@ -1,6 +1,35 @@
@@ -316,18 +316,19 @@ index 2d854fe5..ac634618 100644
  #if FREEINK_DEVICE_READPICO
  #include <BoardReadPico.h>
  #include <Logging.h>
-@@ -44,6 +73,10 @@ void HalDisplay::begin(bool seamless) {
+@@ -44,6 +73,11 @@ void HalDisplay::begin(bool seamless) {
  #endif
  
    einkDisplay.begin();
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  einkDisplay.setRefreshAuditObserver(logPaperDiyAudit);
-+  LOG_INF("PD-AUDIT", "free-trace packet-v2: shutdown-park-v1 pmic-snapshot-v1 filebrowser-policy-v1 wake-drain-v1");
++  LOG_INF("PD-AUDIT",
++          "free-trace packet-v2: shutdown-stage-v1 park-v1 pmic-snapshot-v1 filebrowser-policy-v1 wake-drain-v1");
 +#endif
  
  #if FREEINK_DEVICE_READPICO
    // The facade publishes the driver's real geometry (EpdiyLcdDriver::geometry():
-@@ -98,6 +131,8 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
+@@ -98,6 +132,8 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
  namespace {
  EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context) {
    switch (context) {
@@ -336,7 +337,7 @@ index 2d854fe5..ac634618 100644
      case DisplayRefreshContext::Normal:
        return EInkDisplay::RefreshContext::Normal;
      case DisplayRefreshContext::ContinuousReading:
-@@ -112,19 +147,60 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
+@@ -112,19 +148,60 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
  }  // namespace
  
  void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen, DisplayRefreshContext context) {
@@ -397,7 +398,7 @@ index 2d854fe5..ac634618 100644
  }
  
  void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
-@@ -138,11 +214,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
+@@ -138,11 +215,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
  bool HalDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
  
  void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
@@ -413,7 +414,7 @@ index 2d854fe5..ac634618 100644
  }
  
  void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
-@@ -160,6 +240,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
+@@ -160,6 +241,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
  void HalDisplay::returnFrameBufferStorage() { einkDisplay.returnBuildStorage(); }
  
  bool HalDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback, bool turnOffScreen) {
@@ -423,7 +424,7 @@ index 2d854fe5..ac634618 100644
    if (gpio.deviceIsX3() && fallback == HALF_REFRESH) einkDisplay.requestResync();
    return einkDisplay.displayGrayscaleBase(mode, static_cast<EInkDisplay::RefreshMode>(fallback), turnOffScreen);
  }
-@@ -169,6 +252,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
+@@ -169,6 +253,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
  }
  
  void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen, DisplayRefreshContext context) {
@@ -433,7 +434,7 @@ index 2d854fe5..ac634618 100644
    // X3: a HALF fallback means the caller wants a clean base (e.g. the sleep
    // cover, a full-screen swap from arbitrary prior content). Without this, the
    // X3 grayscale base takes its gentle differential happy path and the prior
-@@ -195,7 +281,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
+@@ -195,7 +282,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
  
  void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.cleanupGrayscaleBuffers(bwBuffer); }
  
@@ -447,7 +448,7 @@ index 2d854fe5..ac634618 100644
  
  void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
    einkDisplay.writeGrayscalePlaneStrip(lsbPlane ? EInkDisplay::GRAY_PLANE_LSB : EInkDisplay::GRAY_PLANE_MSB, rows,
-@@ -219,12 +310,46 @@ void HalDisplay::cancelGrayscale() {
+@@ -219,12 +311,46 @@ void HalDisplay::cancelGrayscale() {
  
  bool HalDisplay::displayCommitted() const { return einkDisplay.displayCommitted(); }
  
@@ -588,10 +589,23 @@ index 9ce8bab5..d5be222d 100644
    bool wasPressed(uint8_t buttonIndex) const;
    uint8_t physicalPressedMask() const;
 diff --git a/lib/hal/HalPowerManager.cpp b/lib/hal/HalPowerManager.cpp
-index 4d90e713..253896b4 100644
+index 4d90e713..2628891b 100644
 --- a/lib/hal/HalPowerManager.cpp
 +++ b/lib/hal/HalPowerManager.cpp
-@@ -25,9 +25,12 @@
+@@ -1,6 +1,12 @@
+ #include "HalPowerManager.h"
+ 
+ #include <BoardConfig.h>
++#ifndef FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS
++#define FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS 0
++#endif
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS > 0
++#include <esp_task_wdt.h>
++#endif
+ #if FREEINK_DEVICE_METALIO_EINK4
+ #include <MetalioEInk4Board.h>
+ #endif
+@@ -25,9 +31,12 @@
  #include "HalGPIO.h"
  #include "Waveshare397Power.h"
  
@@ -605,7 +619,53 @@ index 4d90e713..253896b4 100644
  
  HalPowerManager powerManager;  // Singleton instance
  
-@@ -224,13 +227,14 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+@@ -37,6 +46,45 @@ HalPowerManager powerManager;  // Singleton instance
+ static constexpr gpio_num_t XTEINK_C3_GPIO13 = GPIO_NUM_13;
+ 
+ namespace {
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS > 0
++// Diagnostic only. The display has already been parked/deinitialized; the only
++// intentional lifecycle change is when the existing PMIC shutdown is requested.
++void paperDiyObserveBeforeShutdown() {
++  constexpr uint32_t durationMs = FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS;
++  static_assert(durationMs <= 300000, "Shutdown observation must be bounded to five minutes");
++  const esp_err_t watchdogStatus = esp_task_wdt_status(nullptr);
++  const bool watched = watchdogStatus == ESP_OK;
++  uint8_t pmicWatchdog = 0;
++  const bool pmicRead = freeink::m5pm1::readReg(freeink::m5pm1::REG_WDT_CNT, &pmicWatchdog);
++  const uint32_t started = static_cast<uint32_t>(millis());
++  LOG_INF("PD-OFF-STAGE", "begin planned_ms=%u uptime_ms=%u task_wdt=%d pmic_wdt_ok=%u pmic_wdt=%02x", durationMs,
++          started, watchdogStatus, static_cast<unsigned>(pmicRead), pmicWatchdog);
++  if (!pmicRead || pmicWatchdog != 0 ||
++      (!watched && watchdogStatus != ESP_ERR_NOT_FOUND && watchdogStatus != ESP_ERR_INVALID_STATE)) {
++    LOG_ERR("PD-OFF-STAGE", "aborted elapsed_ms=0: watchdog state unsuitable; continue original shutdown");
++    return;
++  }
++  uint32_t lastReport = 0;
++  while (true) {
++    const uint32_t elapsed = static_cast<uint32_t>(millis()) - started;
++    if (elapsed >= durationMs) {
++      LOG_INF("PD-OFF-STAGE", "end elapsed_ms=%u; original PMIC request follows", elapsed);
++      return;
++    }
++    if (watched && esp_task_wdt_reset() != ESP_OK) {
++      LOG_ERR("PD-OFF-STAGE", "aborted elapsed_ms=%u: task watchdog feed failed; continue original shutdown", elapsed);
++      return;
++    }
++    if (elapsed - lastReport >= 30000) {
++      LOG_INF("PD-OFF-STAGE", "tick elapsed_ms=%u; no PMIC shutdown request sent", elapsed);
++      lastReport = elapsed;
++    }
++    const uint32_t remaining = durationMs - elapsed;
++    delay(remaining < 250 ? remaining : 250);
++  }
++}
++#endif
++
+ #if !FREEINK_DEVICE_READPICO
+ struct StandbyRetention {
+   int8_t pin;
+@@ -224,13 +272,14 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
  #if FREEINK_DEVICE_WAVESHARE_EPAPER_397
    Waveshare397Power::waitForPowerButtonRelease();
  #endif
@@ -622,7 +682,7 @@ index 4d90e713..253896b4 100644
    // wake to protect: their "off" is a board-owned shutdown (M5PM1 / the CW32L010
    // PMU) that drops the rail, and tearing HWCDC down first would swallow the very
    // handoff diagnostics those boards need when the shutdown fails.
-@@ -300,16 +304,51 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+@@ -300,16 +349,54 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
    while (digitalRead(FALLBACK_WAKE_PIN) == LOW) delay(50);
    freeink::PowerManager::armWakeOnPins(1ULL << FALLBACK_WAKE_PIN, true);
    freeink::PowerManager::deepSleep();
@@ -633,6 +693,9 @@ index 4d90e713..253896b4 100644
    // device down; a button click then restarts it through a cold boot.
 -  if (freeink::m5pm1::requestShutdown()) {
 +#if FREEINK_DEVICE_PAPERDIY
++#if FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS > 0
++  paperDiyObserveBeforeShutdown();
++#endif
 +  // Read-only shutdown evidence. The mask marks successful reads; register
 +  // values are not measurements of the rails after host power disappears.
 +  const uint8_t offRegisters[] = {0x00, 0x01, 0x02, 0x03, 0x06, 0x07, 0x10, 0x11, 0x13, 0x16};
@@ -678,10 +741,10 @@ index 4d90e713..253896b4 100644
    // immediately wake the device again), then arms the wake source and sleeps.
    freeink::PowerManager::deepSleepUntilPowerButton();
 diff --git a/platformio.ini b/platformio.ini
-index baacb3e2..52456a40 100644
+index baacb3e2..bdbed2cf 100644
 --- a/platformio.ini
 +++ b/platformio.ini
-@@ -1139,3 +1139,42 @@ build_flags =
+@@ -1139,3 +1139,43 @@ build_flags =
    -DCROSSPOINT_VERSION=\"${crosspoint.version}-lilygo\"
    -DENABLE_SERIAL_LOG
    -DLOG_LEVEL=2
@@ -721,6 +784,7 @@ index baacb3e2..52456a40 100644
 +build_flags =
 +  ${paperdiy_hardware.build_flags}
 +  -DFREEINK_PAPERDIY_REFRESH_AUDIT=1
++  -DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=180000
 +  -DCROSSPOINT_VERSION=\"${crosspoint.version}-paperdiy\"
 +  -DENABLE_SERIAL_LOG
 +  -DLOG_LEVEL=2
@@ -4113,7 +4177,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..a3790389 100644
+index b0b49733..6246df30 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -4125,7 +4189,7 @@ index b0b49733..a3790389 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -151,6 +153,18 @@ add_test(NAME ReadingStatsNetworkMemory
+@@ -151,6 +153,20 @@ add_test(NAME ReadingStatsNetworkMemory
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_reading_stats_network_memory.py)
  add_test(NAME WifiFontRecovery
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_wifi_font_recovery.py)
@@ -4141,10 +4205,12 @@ index b0b49733..a3790389 100644
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_filebrowser_profile.py)
 +add_test(NAME PaperDiyShutdownPark
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_shutdown_park.py)
++add_test(NAME PaperDiyShutdownStage
++  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_shutdown_stage.py)
  add_test(NAME HalClockSntp
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_hal_clock_sntp.py)
  add_test(NAME InxStyleCompatibility
-@@ -246,3 +260,19 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +262,19 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -4404,7 +4470,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,1039 @@
+@@ -0,0 +1,1082 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -5443,6 +5509,49 @@ new file mode 100644
 +on USB and battery. Keep each group connected consistently; log final frame,
 +park/resource nodes and PMIC snapshot. Do not combine new waveforms or extra
 +clears with this experiment. Flash and capture stay user-controlled.
++
++## Staged host shutdown diagnostic (2026-10-31)
++
++The41155777260 parking trial still darkened in USB-connected and battery-only
++trials. A controlled USB capture bound darkening at roughly60/90/120seconds to
++a complete finalGC16 frame, all three GPIO-preserve/resource-release nodes and
++PMIC snapshot HOLD00/MODE04/OUT04/DRV1b/FUNC00/HW05/SW54. The branch ran and
++GPIO2 retention was not configured. No post-cut rail voltage was measured.
++
++Only env:paperdiy opts into FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=180000. Its HAL
++default is0; other boards never enter observation. The call is after unchanged
++final drawing/display teardown and generic peripheral cleanup, before the
++existing PMIC snapshot/request. No SDK, waveform, GPIO lifecycle, PYG2, VCOM,
++pixel clock, renderer, navigation or UI30 changes are made this round. Earlier
++FileBrowser policy-continuity and shutdown GPIO parking remain included.
++
++The main task waits in at-most250ms yielding chunks with wrap-safe uint32_t
++elapsed time, begin/end nodes and30second heartbeats. No drawing, button read,
++register write, task or heap allocation is introduced in the helper. It queries
++the current TWDT subscription and only feeds a subscribed task; no watchdog is
++added, removed, enabled, disabled or reconfigured. Arduino delay calls vTaskDelay.
++PMIC watchdog is read once and must be known zero. Unknown/nonzero PMIC WDT,
++unexpected task status or failed feeding aborts observation and continues the
++original shutdown, explicitly logged as an invalid interval. A compile-time
++bound rejects waits over five minutes. Stack state consists of bounded scalars.
++
++During observation the system loop does not process A/B or software power
++gestures; hardware emergency behavior is not changed. Observe without pressing
++buttons. The sleep image appears before actual host power-off: the delay is a
++diagnostic, not normal-use acceptance or a standby-power measurement. The prior
++boost-off and parking remain; host-alive does not mean all panel rails are on.
++SleepActivity inherits zero idle-render delay and the main loop stays in the
++HAL; the helper does not issue render notifications.
++
++The TWDT API was checked against local ESP-IDF headers and official docs:
++https://docs.espressif.com/projects/esp-idf/en/v5.4/esp32s3/api-reference/system/wdts.html
++
++Marker: shutdown-stage-v1 park-v1 pmic-snapshot-v1 filebrowser-policy-v1
++wake-drain-v1. Separate the0..180seconds after the final sleep image from the
++period after the logged PMIC request. Darkening before request means final host
++cut is unnecessary, but does not alone prove a waveform error; darkening only
++afterwards prioritizes the PMIC/rail handoff. Repeat identical starting content
++if ambiguous and retain logs through disconnect; do not reboot to erase evidence.
 +
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
@@ -10599,6 +10708,160 @@ new file mode 100644
 +'''
 +            variant = code.replace('// @HAL_SHUTDOWN@', hal if board else '')
 +            run(variant.replace('// @MAIN@', main), paperdiy=board)
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/test/test_paperdiy_shutdown_stage.py b/test/test_paperdiy_shutdown_stage.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_shutdown_stage.py
+@@ -0,0 +1,149 @@
++"""Actual HAL staged shutdown with virtual time, watchdog faults and board gates."""
++from test_paperdiy_power_clicks import ROOT, method, run
++import re
++import subprocess
++import unittest
++
++
++def stage_code():
++    source = (ROOT/'lib/hal/HalPowerManager.cpp').read_text(encoding='utf-8')
++    helper = method(source, 'void paperDiyObserveBeforeShutdown()')
++    shutdown = method(source, 'void HalPowerManager::startDeepSleep(')
++    pmic = method((ROOT/'freeink-sdk/libs/hardware/BoardConfig/include/M5Pm1.h').read_text(encoding='utf-8'),
++                  'inline bool requestShutdown(')
++    return r'''
++#include <cassert>
++#include <cstdint>
++#include <string>
++#include <vector>
++#define ENABLE_SERIAL_LOG 1
++#define SOC_PM_SUPPORT_EXT1_WAKEUP 1
++constexpr int HIGH=1,LOW=0,OUTPUT=3,XTEINK_C3_GPIO13=13;
++constexpr int ESP_OK=0,ESP_ERR_NOT_FOUND=1,ESP_ERR_INVALID_STATE=2;
++using esp_err_t=int;using gpio_num_t=int;
++uint32_t clockMs=0,start=0;
++int status=ESP_OK,feeds=0,feedFailureAt=0,pmicWdt=0,errors=0,ticks=0,begins=0,ends=0,aborts=0;
++int statusQueries=0,pmicWdtReads=0;
++bool pmicRead=true,requested=true,offOk=true,requestSent=false,prepared=false,rails=false;
++std::vector<std::string> events;
++uint32_t millis(){return clockMs;}
++template<class... Args>void info(const char* tag,const char* fmt,Args... args){
++ ((void)args,...);
++ if(std::string(tag)=="PD-OFF-STAGE"){
++  if(std::string(fmt).find("begin ")==0){++begins;events.push_back("begin");}
++  if(std::string(fmt).find("tick ")==0)++ticks;
++  if(std::string(fmt).find("end ")==0){++ends;events.push_back("end");}
++ }
++}
++template<class... Args>void error(const char* tag,const char*,Args... args){
++ ((void)args,...);++errors;if(std::string(tag)=="PD-OFF-STAGE"){++aborts;events.push_back("abort");}
++}
++#define LOG_INF(...) info(__VA_ARGS__)
++#define LOG_ERR(...) error(__VA_ARGS__)
++int esp_task_wdt_status(void* task){assert(!task);++statusQueries;return status;}
++int esp_task_wdt_reset(){assert(status==ESP_OK);++feeds;return feeds==feedFailureAt?99:ESP_OK;}
++void delay(uint32_t n){
++ if(!requestSent&&n!=120){assert(n>0&&n<=250&&prepared&&rails);}
++ if(n==120)events.push_back("request-delay");
++ clockMs+=n;
++}
++void gpio_hold_dis(int){}void gpio_hold_en(int){}void pinMode(int,int){}
++void digitalWrite(int,int){}int digitalRead(int){return HIGH;}
++struct {void end(){events.push_back("console-end");}}logSerial;
++struct {void setOn(bool on){assert(!on);}}Frontlight;
++namespace BoardConfig {
++struct{struct{int8_t latch0=-1,latch1=-1;}power;struct{int up=4,down=3;}input;}ACTIVE;
++}
++struct HalGPIO{void prepareForDeepSleep(){prepared=true;}};
++namespace freeink {
++namespace m5pm1 {
++constexpr int REG_GPIO_OUT=0x11,REG_SYS_CMD=0x0c,SYS_CMD_SHUTDOWN=0xa1,REG_WDT_CNT=0x0a;
++bool readReg(int reg,uint8_t* b){
++ assert(!requestSent);
++ if(reg==REG_WDT_CNT){assert(prepared&&rails);++pmicWdtReads;*b=pmicWdt;return pmicRead;}
++ *b=reg==REG_GPIO_OUT?4:0;return true;
++}
++bool writeReg(int reg,int value){
++ assert(reg==REG_SYS_CMD&&value==SYS_CMD_SHUTDOWN&&!requestSent);
++ requestSent=true;events.push_back("request");return requested;
++}
++// @PMIC@
++}
++namespace paperdiy{bool setEpdPower(bool on){assert(!on&&requestSent);events.push_back("off");return offOk;}}
++struct PowerManager {
++ static void powerDownRailsForSleep(){assert(prepared);rails=true;}
++ static void armWakeOnPins(uint64_t mask){assert(mask==24);}
++ static void deepSleep(){events.push_back("sleep");}
++ static void deepSleepUntilPowerButton(){events.push_back("sleep");}
++};
++}
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS > 0
++// @HELPER@
++#endif
++struct HalPowerManager{void startDeepSleep(HalGPIO&)const;};
++// @SHUTDOWN@
++void reset(uint32_t t){
++ clockMs=start=t;feeds=errors=ticks=begins=ends=aborts=statusQueries=pmicWdtReads=0;
++ prepared=rails=requestSent=false;events.clear();status=ESP_OK;pmicWdt=0;pmicRead=true;feedFailureAt=0;
++}
++int main(){
++ (void)LOW;(void)OUTPUT;(void)XTEINK_C3_GPIO13;(void)Frontlight;(void)logSerial;
++ for(uint32_t t:{uint32_t(0),uint32_t(0xfffffe00)})
++ for(int wdt:{ESP_OK,ESP_ERR_NOT_FOUND,ESP_ERR_INVALID_STATE})
++ for(bool req:{false,true})for(bool off:{false,true}){
++  reset(t);status=wdt;requested=req;offOk=off;
++  HalGPIO gpio;HalPowerManager{}.startDeepSleep(gpio);
++  constexpr bool enabled=FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS>0;
++  const uint32_t elapsed=clockMs-start;
++  if(enabled){
++   assert(begins==1&&ends==1&&aborts==0&&statusQueries==1&&pmicWdtReads==1);
++   assert(ticks==(FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS-1)/30000);
++   assert(feeds==(wdt==ESP_OK?(FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS+249)/250:0));
++  }else assert(!begins&&!ends&&!aborts&&!feeds&&!statusQueries&&!pmicWdtReads);
++  assert(elapsed==(enabled?FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS:0)+120+(req?1000:0));
++  assert(requestSent&&events.back()=="sleep");
++  assert(errors==(FREEINK_DEVICE_PAPERDIY&&!off));
++  if(enabled){
++   auto end=std::find(events.begin(),events.end(),"end"),q=std::find(events.begin(),events.end(),"request");
++   assert(end<q);
++  }
++ }
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_SHUTDOWN_STAGE_MS > 0
++ for(int fault=0;fault<4;++fault){
++  reset(100);requested=offOk=true;
++  if(fault==0)pmicRead=false;
++  if(fault==1)pmicWdt=5;
++  if(fault==2)status=99;
++  if(fault==3)feedFailureAt=3;
++  HalGPIO gpio;HalPowerManager{}.startDeepSleep(gpio);
++  assert(begins==1&&aborts==1&&ends==0&&errors==1&&requestSent);
++  assert(clockMs-start==(fault==3?500u:0u)+1120);
++  assert(events.back()=="sleep");
++ }
++#endif
++}
++'''.replace('#include <cassert>', '#include <cassert>\n#include <algorithm>').replace('// @PMIC@', pmic).replace('// @HELPER@', helper).replace('// @SHUTDOWN@', shutdown)
++
++
++class ShutdownStageTest(unittest.TestCase):
++    def test_actual_hal_stage_clock_watchdog_failures_and_board_isolation(self):
++        code = stage_code()
++        for board, duration in ((1, 180000), (1, 1001), (1, 0), (0, 180000)):
++            run(code, extra=[f'-DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS={duration}',
++                             f'-DFREEINK_DEVICE_PAPERMONO={1-board}'], paperdiy=board)
++
++    def test_trial_flag_and_untouched_display_and_button_path(self):
++        ini = (ROOT/'platformio.ini').read_text(encoding='utf-8')
++        section = ini.split('[env:paperdiy]', 1)[1].split('\n[', 1)[0]
++        assert '-DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=180000' in section
++        assert ini.count('-DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=') == 1
++        body = method((ROOT/'lib/hal/HalPowerManager.cpp').read_text(encoding='utf-8'),
++                      'void paperDiyObserveBeforeShutdown()')
++        assert len(re.findall(r'freeink::m5pm1::readReg\(', body)) == 1
++        for forbidden in ('writeReg(', 'setEpdPower(', 'display.', 'renderer.', 'gpio.', 'readButtonStatus(',
++                          'esp_task_wdt_init(', 'esp_task_wdt_add(', 'esp_task_wdt_delete('):
++            assert forbidden not in body
 +
 +
 +if __name__ == '__main__':
