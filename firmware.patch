@@ -113,7 +113,7 @@ index e08284b7..e342f910 100644
    if (nextRefreshOverridePending) {
      effectiveRefreshMode = nextRefreshOverride;
 diff --git a/lib/GfxRenderer/GfxRenderer.h b/lib/GfxRenderer/GfxRenderer.h
-index 8471d5ac..8bad9d8a 100644
+index 8471d5ac..0bed3d75 100644
 --- a/lib/GfxRenderer/GfxRenderer.h
 +++ b/lib/GfxRenderer/GfxRenderer.h
 @@ -85,6 +85,9 @@ class GfxRenderer {
@@ -126,7 +126,15 @@ index 8471d5ac..8bad9d8a 100644
    std::vector<uint8_t*> bwBufferChunks;
    std::map<int, EpdFontFamily> fontMap;
    // Mutable because ensureSdCardFontReady() is const (called from layout code
-@@ -259,6 +262,15 @@ class GfxRenderer {
+@@ -250,6 +253,7 @@ class GfxRenderer {
+   int getScreenWidth() const;
+   int getScreenHeight() const;
+   void tapToLogical(float nx, float ny, int& outX, int& outY) const;
++  void prepareSleepClean() const { display.prepareSleepClean(); }
+   void displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH,
+                      DisplayRefreshContext context = DisplayRefreshContext::Normal) const;
+   // Force the next displayBuffer() to use `mode`, overriding its argument once.
+@@ -259,6 +263,15 @@ class GfxRenderer {
    }
    void clearNextRefreshOverride() const { nextRefreshOverridePending = false; }
    void requestNextFullRefresh() const { requestNextRefresh(HalDisplay::FULL_REFRESH); }
@@ -142,7 +150,7 @@ index 8471d5ac..8bad9d8a 100644
    // One-shot: the next displayBuffer()/displayBufferAsync() call uses `mode`
    // instead of what its caller asked for, then the override clears itself.
    // Lets a closing overlay (the control center's refresh tile) hand a
-@@ -293,6 +305,10 @@ class GfxRenderer {
+@@ -293,6 +306,10 @@ class GfxRenderer {
    // void displayWindow(int x, int y, int width, int height) const;
    void invertScreen() const;
    void clearScreen(uint8_t color = 0xFF) const;
@@ -153,7 +161,7 @@ index 8471d5ac..8bad9d8a 100644
    void getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const;
  
    // Tiled grayscale strip target. While active, drawPixel() and clearScreen()
-@@ -534,6 +550,7 @@ class GfxRenderer {
+@@ -534,6 +551,7 @@ class GfxRenderer {
    uint8_t getGrayscaleLevels() const;
    bool beginGrayscale16();
    bool commitGrayscale16() const;
@@ -277,13 +285,16 @@ index 00777a37..4ceddeb1 100644
 +  UiTransition
 +};
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..2283963f 100644
+index 2d854fe5..9d40a1b2 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
-@@ -1,6 +1,35 @@
+@@ -1,5 +1,37 @@
  #include <HalDisplay.h>
  #include <HalGPIO.h>
- 
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++#include <EpdiyLcd.h>
++#endif
++
 +#if FREEINK_DEVICE_PAPERDIY
 +#include <Logging.h>
 +
@@ -312,24 +323,23 @@ index 2d854fe5..2283963f 100644
 +PaperDiyRefreshBudget paperDiyRefreshBudget;
 +}
 +#endif
-+
+ 
  #if FREEINK_DEVICE_READPICO
  #include <BoardReadPico.h>
- #include <Logging.h>
-@@ -44,6 +73,12 @@ void HalDisplay::begin(bool seamless) {
+@@ -44,6 +76,12 @@ void HalDisplay::begin(bool seamless) {
  #endif
  
    einkDisplay.begin();
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  einkDisplay.setRefreshAuditObserver(logPaperDiyAudit);
 +  LOG_INF("PD-AUDIT",
-+          "free-trace packet-v2: shutdown-neutral-v1 wait-600s park-v1 pmic-snapshot-v1 filebrowser-policy-v1 "
++          "free-trace packet-v2: sleep-gate-timing-v1 park-v1 pmic-snapshot-v1 filebrowser-policy-v1 "
 +          "wake-drain-v1");
 +#endif
  
  #if FREEINK_DEVICE_READPICO
    // The facade publishes the driver's real geometry (EpdiyLcdDriver::geometry():
-@@ -98,6 +133,8 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
+@@ -98,6 +136,8 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
  namespace {
  EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context) {
    switch (context) {
@@ -338,7 +348,7 @@ index 2d854fe5..2283963f 100644
      case DisplayRefreshContext::Normal:
        return EInkDisplay::RefreshContext::Normal;
      case DisplayRefreshContext::ContinuousReading:
-@@ -112,19 +149,60 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
+@@ -112,19 +152,60 @@ EInkDisplay::RefreshContext convertRefreshContext(DisplayRefreshContext context)
  }  // namespace
  
  void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen, DisplayRefreshContext context) {
@@ -399,7 +409,7 @@ index 2d854fe5..2283963f 100644
  }
  
  void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
-@@ -138,11 +216,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
+@@ -138,11 +219,15 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
  bool HalDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
  
  void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
@@ -415,7 +425,20 @@ index 2d854fe5..2283963f 100644
  }
  
  void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
-@@ -160,6 +242,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
+@@ -153,6 +238,12 @@ bool HalDisplay::isInverted() const { return einkDisplay.isInverted(); }
+ 
+ void HalDisplay::deepSleep() { einkDisplay.deepSleep(); }
+ 
++void HalDisplay::prepareSleepClean() {
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++  freeink::epdiyLcdRequestTimedSleepClean();
++#endif
++}
++
+ uint8_t* HalDisplay::getFrameBuffer() const { return einkDisplay.getFrameBuffer(); }
+ 
+ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisplay.lendBuildStorage(sizeOut); }
+@@ -160,6 +251,9 @@ uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisp
  void HalDisplay::returnFrameBufferStorage() { einkDisplay.returnBuildStorage(); }
  
  bool HalDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback, bool turnOffScreen) {
@@ -425,7 +448,7 @@ index 2d854fe5..2283963f 100644
    if (gpio.deviceIsX3() && fallback == HALF_REFRESH) einkDisplay.requestResync();
    return einkDisplay.displayGrayscaleBase(mode, static_cast<EInkDisplay::RefreshMode>(fallback), turnOffScreen);
  }
-@@ -169,6 +254,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
+@@ -169,6 +263,9 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
  }
  
  void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen, DisplayRefreshContext context) {
@@ -435,7 +458,7 @@ index 2d854fe5..2283963f 100644
    // X3: a HALF fallback means the caller wants a clean base (e.g. the sleep
    // cover, a full-screen swap from arbitrary prior content). Without this, the
    // X3 grayscale base takes its gentle differential happy path and the prior
-@@ -195,7 +283,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
+@@ -195,7 +292,12 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
  
  void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.cleanupGrayscaleBuffers(bwBuffer); }
  
@@ -449,7 +472,7 @@ index 2d854fe5..2283963f 100644
  
  void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
    einkDisplay.writeGrayscalePlaneStrip(lsbPlane ? EInkDisplay::GRAY_PLANE_LSB : EInkDisplay::GRAY_PLANE_MSB, rows,
-@@ -219,12 +312,46 @@ void HalDisplay::cancelGrayscale() {
+@@ -219,12 +321,46 @@ void HalDisplay::cancelGrayscale() {
  
  bool HalDisplay::displayCommitted() const { return einkDisplay.displayCommitted(); }
  
@@ -498,20 +521,21 @@ index 2d854fe5..2283963f 100644
  
  uint16_t HalDisplay::getDisplayWidthBytes() const { return einkDisplay.getDisplayWidthBytes(); }
 diff --git a/lib/hal/HalDisplay.h b/lib/hal/HalDisplay.h
-index 68001659..2e12ec82 100644
+index 68001659..9316d02c 100644
 --- a/lib/hal/HalDisplay.h
 +++ b/lib/hal/HalDisplay.h
-@@ -148,6 +148,9 @@ class HalDisplay {
+@@ -148,6 +148,10 @@ class HalDisplay {
    bool canUseTextTransition() const;
    void cancelGrayscale();
    bool displayCommitted() const;
++  void prepareSleepClean();
 +#if FREEINK_DEVICE_PAPERDIY
 +  void requestDisplayRecovery();
 +#endif
  
    // Runtime geometry passthrough — the authoritative source for every layout
    // decision (GfxRenderer reads exactly these in its begin()). Prefer them over
-@@ -158,11 +161,16 @@ class HalDisplay {
+@@ -158,11 +162,16 @@ class HalDisplay {
    uint8_t getGrayscaleLevels() const;
    uint8_t* beginGrayscale16();
    bool commitGrayscale16();
@@ -742,10 +766,10 @@ index 4d90e713..5b37bcf6 100644
    // immediately wake the device again), then arms the wake source and sleeps.
    freeink::PowerManager::deepSleepUntilPowerButton();
 diff --git a/platformio.ini b/platformio.ini
-index baacb3e2..fffc9520 100644
+index baacb3e2..8457d98e 100644
 --- a/platformio.ini
 +++ b/platformio.ini
-@@ -1139,3 +1139,44 @@ build_flags =
+@@ -1139,3 +1139,43 @@ build_flags =
    -DCROSSPOINT_VERSION=\"${crosspoint.version}-lilygo\"
    -DENABLE_SERIAL_LOG
    -DLOG_LEVEL=2
@@ -785,8 +809,7 @@ index baacb3e2..fffc9520 100644
 +build_flags =
 +  ${paperdiy_hardware.build_flags}
 +  -DFREEINK_PAPERDIY_REFRESH_AUDIT=1
-+  -DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=600000
-+  -DFREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME=1
++  -DFREEINK_PAPERDIY_TIMED_SLEEP_CLEAN=1
 +  -DCROSSPOINT_VERSION=\"${crosspoint.version}-paperdiy\"
 +  -DENABLE_SERIAL_LOG
 +  -DLOG_LEVEL=2
@@ -1863,6 +1886,18 @@ index fd2bb855..01bcbe5a 100644
    if (!mappedInput.wasReleased(previousButton) && !mappedInput.wasReleased(nextButton)) return;
  
    selectMainTab(mainTab_.load() == MainTab::Shelf ? MainTab::Manage : MainTab::Shelf);
+diff --git a/src/activities/boot_sleep/SleepActivity.cpp b/src/activities/boot_sleep/SleepActivity.cpp
+index ef70afb0..e50e9ea4 100644
+--- a/src/activities/boot_sleep/SleepActivity.cpp
++++ b/src/activities/boot_sleep/SleepActivity.cpp
+@@ -689,6 +689,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
+     renderer.invertScreen();
+   }
+ 
++  renderer.prepareSleepClean();
+   renderer.displayBuffer(kSleepClean);
+ }
+ 
 diff --git a/src/activities/home/FileBrowserActivity.cpp b/src/activities/home/FileBrowserActivity.cpp
 index 5615bf06..ed279b40 100644
 --- a/src/activities/home/FileBrowserActivity.cpp
@@ -4179,7 +4214,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..ef2d132a 100644
+index b0b49733..462926ea 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -4191,7 +4226,7 @@ index b0b49733..ef2d132a 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -151,6 +153,22 @@ add_test(NAME ReadingStatsNetworkMemory
+@@ -151,6 +153,24 @@ add_test(NAME ReadingStatsNetworkMemory
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_reading_stats_network_memory.py)
  add_test(NAME WifiFontRecovery
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_wifi_font_recovery.py)
@@ -4211,10 +4246,12 @@ index b0b49733..ef2d132a 100644
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_shutdown_stage.py)
 +add_test(NAME PaperDiyShutdownNeutral
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_shutdown_neutral.py)
++add_test(NAME PaperDiySleepGateTiming
++  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_sleep_gate_timing.py)
  add_test(NAME HalClockSntp
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_hal_clock_sntp.py)
  add_test(NAME InxStyleCompatibility
-@@ -246,3 +264,19 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +266,19 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -4234,6 +4271,18 @@ index b0b49733..ef2d132a 100644
 +add_test(NAME PaperDiyFooterHints COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_hints.py)
 +add_test(NAME PaperDiyFooterGeometry COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_footer_geometry.py)
 +add_test(NAME PaperDiyRecordActions COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_record_actions.py)
+diff --git a/test/gfx_two_bit_mapping/stubs/HalDisplay.h b/test/gfx_two_bit_mapping/stubs/HalDisplay.h
+index 2cd69c9c..19215547 100644
+--- a/test/gfx_two_bit_mapping/stubs/HalDisplay.h
++++ b/test/gfx_two_bit_mapping/stubs/HalDisplay.h
+@@ -5,6 +5,7 @@ class HalDisplay {
+   enum class GrayscaleMode { Overlay, Absolute };
+   struct GrayscaleCapabilities {};
+   enum RefreshMode { FULL_REFRESH, HALF_REFRESH, FAST_REFRESH };
++  void prepareSleepClean() {}
+ 
+   static constexpr unsigned short DISPLAY_WIDTH = 800;
+   static constexpr unsigned short DISPLAY_HEIGHT = 480;
 diff --git a/test/inx_navigation/test_theme_menus.py b/test/inx_navigation/test_theme_menus.py
 index c8de42d8..15aff39f 100644
 --- a/test/inx_navigation/test_theme_menus.py
@@ -4474,7 +4523,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,1155 @@
+@@ -0,0 +1,1215 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -5630,6 +5679,66 @@ new file mode 100644
 +byte00, all rows, one completed scan, semaphore wait, returned buffer and image
 +history invariance at16x4,960x540 and1216x684. Hardware/optical retention remains
 +unproven until measured; successful software scans alone cannot validate it.
++
++
++## Sleep GC16 gate-time contract repair (2026-10-31)
++
++The30-phase ED047TC1 GC16 table has phase_times from8 to300, in0.1us CKV
++HIGH units. Upstream d84d26e output_i2s/render_i2s.c passes ctx.frame_time to
++i2s_write_row and pulse_ckv_ticks; its ordinary gate LOW is50ticks (5us).
++Our LCD path prepared ctx.frame_time but never consumed it: CKV HIGH stayed
++at config60ticks (6us). Both30scan completion and correct target/history hashes
++can hold while these waveform timing weights are lost. This is a reproducible
++software adaptation defect; the original LCD upstream also lacks this contract,
++so importing that path does not calibrate a non-NULL timing table automatically.
++
++The baseline executable test compiles the actual LCD update loop, supplies the
++pinned table's prepared phase times, and fails its runtime trace assertion because
++no per-phase gate request is made. The corrected loop passes the same test.
++This identifies a concrete execution mismatch, not yet the unique physical
++cause of all fading/ghosting seen on the device.
++
++Enable FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN=1 only forPaperDIY. The default
++light/dark splash sleep render requests a one-shot throughGfxRenderer/HAL.
++Only that next Full/Half uses the unchanged table times; a non-clean submission,
++powerOn failure, draw failure, End/reinit consume/reset the token. Other sleep
++styles are unchanged and must not be claimed repaired. Ordinary reader/UI,
++manual/periodic clean and other boards keep their existing timing/LUT behavior.
++
++At each timed phase the LCD driver sets CKV HIGH to that exact tick count,
++including8; it extends the end porch when needed to retain at least50ticks LOW.
++Pixel-clock, geometry and LUT bytes do not change. The LCD/CKV period remains
++synchronous. For the960x540/8bit/20MHz target, the fixed data porch is126ticks;
++8ticks HIGH fits with118LOW, while300HIGH requires350total/50LOW.
++Restoration sets phase time0 and reinstates config60/high and original porch.
++
++VSYNC can arrive before the finite CKV tail. Track CKV start, clear the S3 TX
++DONE/LOOP_END raw completion flags, and check completion before modifying RMT
++memory. Bound a faulty wait to1000 one-microsecond polls, force-stop and reject
++the phase on timeout. No blind long settling delay or watchdog policy change.
++These APIs were checked against local Espressif S3 RMT LL/register headers;
++completion uses channel masks, not the legacy channel*3 interrupt layout.
++On draw/error exit restore fixed timing; numeric audit reports phases, min/max
++CKV ticks and reset state before the original power-off handoff.
++
++No new allocation or task: one pending boolean, one render enable boolean,
++three audit integers and two bounded scalar fields in the existing LCD singleton.
++Raw completion bookkeeping applies to CKV starts in this opted-in build;
++ordinary phase durations and output data remain unchanged.
++
++Remove the600second shutdown-stage and neutral-frame opt-ins. Their source
++regressions remain testable, but runtime reverts to normal immediate handoff.
++Marker sleep-gate-timing-v1; no wait-600s. A valid default-sleep capture should
++show timed-sleep-clean phases30 gate_min8 gate_max300 reset1, then the existing
++park/release/PMIC request, without a10minute observation window or HOLD scan.
++
++Tests execute the real LCD loop and gate geometry at8..1000ticks, check invalid
++values, completion waits/timeouts, porch bounds, reset and underrun exits.
++The complete original SDK transaction suite also compiles the opt-in version:
++all existing reader/UI checks first assert zero timed draws, then exercise the
++sleep one-shot, failed power/draw, End/reinit and a deliberately sticky token.
++Optical retention still requires device confirmation; software tests do not
++measure actual voltage or ink reflectance. PreserveUI30 and factoryVCOM.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -10837,8 +10946,8 @@ new file mode 100644
 +    def test_opt_in_only_and_no_normal_draw_change(self):
 +        ini=(ROOT/'platformio.ini').read_text(encoding='utf-8')
 +        section=ini.split('[env:paperdiy]',1)[1].split('\n[',1)[0]
-+        assert '-DFREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME=1' in section
-+        assert ini.count('-DFREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME=')==1
++        assert '-DFREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME=' not in section
++        assert ini.count('-DFREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME=')==0
 +        src=(LCD/'src/EpdiyLcd.cpp').read_text(encoding='utf-8')
 +        assert '#define FREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME 0' in src
 +        body=method(src,'void epdiyLcdDeepSleep()')
@@ -11074,8 +11183,8 @@ new file mode 100644
 +    def test_trial_flag_and_untouched_display_and_button_path(self):
 +        ini = (ROOT/'platformio.ini').read_text(encoding='utf-8')
 +        section = ini.split('[env:paperdiy]', 1)[1].split('\n[', 1)[0]
-+        assert '-DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=600000' in section
-+        assert ini.count('-DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=') == 1
++        assert '-DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=' not in section
++        assert ini.count('-DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=') == 0
 +        body = method((ROOT/'lib/hal/HalPowerManager.cpp').read_text(encoding='utf-8'),
 +                      'void paperDiyObserveBeforeShutdown()')
 +        assert len(re.findall(r'freeink::m5pm1::readReg\(', body)) == 1
@@ -11090,6 +11199,138 @@ new file mode 100644
 +
 +
 +if __name__ == '__main__':
++    unittest.main()
+diff --git a/test/test_paperdiy_sleep_gate_timing.py b/test/test_paperdiy_sleep_gate_timing.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_sleep_gate_timing.py
+@@ -0,0 +1,127 @@
++"""Sleep-only waveform time consumption and LCD gate geometry; not optical simulation."""
++from test_paperdiy_power_clicks import ROOT, method, run
++import re
++import unittest
++
++LCD=ROOT/'freeink-sdk/libs/display/EpdiyLcd'
++
++
++def loop_code():
++    body=method((LCD/'src/epdiy/src/output_lcd/render_lcd.c').read_text(encoding='utf-8'),'void lcd_do_update(')
++    times=re.search(r'const int epd_wp_epdiy_ED047TC1_2_0_times\[30\] = \{([^}]+)',
++                    (LCD/'src/paperdiy/ed047tc1.h').read_text())[1]
++    return r'''
++#include <cassert>
++#include <algorithm>
++#include <cstdint>
++#include <vector>
++#define IRAM_ATTR
++constexpr int NUM_RENDER_THREADS=2,portMAX_DELAY=0,EPD_DRAW_SUCCESS=0,EPD_DRAW_NO_PHASES_AVAILABLE=16;
++struct RenderContext_t {int frame_time=0,current_frame=0,cycle_frames=30,error=0;
++ const int* phase_times=nullptr;void* frame_done=nullptr;void* feed_tasks[2]{};void* feed_done_smphr[2]{};
++ int line_queues[2]{};};
++using frame_done_func_t=void(*)(RenderContext_t*);
++static bool s_use_waveform_timing;
++static int s_timing_phases,s_timing_min,s_timing_max;
++std::vector<int> gates;int gate=60,notify=0,takes=0,failAt=-1,errorAt=-1,resets=0;
++bool epd_lcd_set_phase_gate_time(int t){gates.push_back(t);if(t&&int(gates.size())==failAt)return false;gate=t;return true;}
++void epd_set_mode(int){}
++void handle_lcd_frame_done(RenderContext_t*){}
++void epd_lcd_frame_done_cb(frame_done_func_t,RenderContext_t*){}
++void epd_lcd_line_source_cb(void*,void*){}
++void prepare_context_for_next_frame(RenderContext_t* c){c->frame_time=c->phase_times?c->phase_times[c->current_frame]:120;}
++void paperdiy_prepare_feed(RenderContext_t* c){if(c->current_frame==errorAt)c->error=1;}
++void xTaskNotifyGive(void*){++notify;}
++int xPortGetCoreID(){return 0;}
++void xSemaphoreTake(void*,int){++takes;}
++void lq_reset(int*){++resets;}
++void vTaskDelay(int){}
++// @BODY@
++int main(){
++ (void)EPD_DRAW_NO_PHASES_AVAILABLE;
++ int times[30]={@TIMES@};
++ for(bool enabled:{false,true})for(bool hasTimes:{false,true})for(int fault:{0,1,2}){
++  RenderContext_t ctx;ctx.phase_times=hasTimes?times:nullptr;
++  s_use_waveform_timing=enabled;gates.clear();gate=60;notify=takes=resets=0;
++  failAt=fault==1?3:-1;errorAt=fault==2?2:-1;
++  lcd_do_update(&ctx);
++  assert(s_use_waveform_timing==enabled);
++  bool timed=enabled&&hasTimes;
++  if(timed){
++   int count=fault?3:30;assert(int(gates.size())==count+1&&gates.back()==0&&gate==0);
++   for(int n=0;n<count;++n)assert(gates[n]==times[n]);
++   assert(s_timing_phases==(fault==1?2:count));
++   assert(s_timing_min==*std::min_element(times,times+s_timing_phases));
++   assert(s_timing_max==*std::max_element(times,times+s_timing_phases));
++  }else assert(gates.empty()&&gate==60);
++  if(fault==2)assert(ctx.current_frame==2&&resets==2);
++  else if(fault==1&&timed)assert(ctx.current_frame==2&&ctx.error!=0);
++  else assert(ctx.current_frame==30);
++ }
++}
++'''.replace('// @BODY@',body).replace('@TIMES@',times)
++
++
++def geometry_code():
++    src=(LCD/'src/epdiy/src/output_lcd/lcd_driver.c').read_text(encoding='utf-8')
++    bodies='\n'.join(method(src,sig) for sig in (
++        'static void rebuild_line_geometry(', 'static void ckv_rmt_build_signal()',
++        'bool epd_lcd_set_phase_gate_time(', 'int epd_lcd_phase_gate_time('))
++    return r'''
++#include <cassert>
++#include <cstdint>
++#include <initializer_list>
++constexpr int CKV_MIN_LOW_TIME=9,RMT_CKV_CHAN=0,TAG=0;
++#define ESP_LOGE(...) (++errors)
++struct {struct {struct {int le_high_time=4,line_front_porch=4,line_end=4,ckv_high_time=60;}line;
++ int pixel_clock=20000000;}config;int lcd_res_h=240,line_cycles=0,line_time_01us=0,line_length_us=0;
++ int phase_gate_time=0,ckv_high_time=0;bool initialized=true,phase_ckv_pending=false;}lcd;
++using LcdLineTiming_t=decltype(lcd.config.line);
++int high=0,low=0,writes=0,waits=0,stops=0,errors=0,readyAfter=0;
++bool rmt_compat_tx_completed(int){return waits>=readyAfter;}
++void rmt_compat_tx_stop(int){++stops;}
++void esp_rom_delay_us(int n){assert(n==1);++waits;}
++void rmt_compat_write_single_item(int,uint16_t h,bool hl,uint16_t l,bool ll,bool term){
++ assert(hl&&!ll&&term&&!lcd.phase_ckv_pending);high=h;low=l;++writes;}
++// @BODIES@
++int main(){
++ (void)TAG;
++ rebuild_line_geometry(20);ckv_rmt_build_signal();
++ const auto baseCycles=lcd.line_cycles,baseHigh=high,baseLow=low;
++ assert(baseHigh==60);
++ for(int time:{8,10,15,20,30,40,50,100,200,300,1000}){
++  lcd.phase_ckv_pending=true;waits=0;readyAfter=3;
++  assert(epd_lcd_set_phase_gate_time(time));assert(waits==3&&stops==0);
++  assert(high==time&&low>=50&&lcd.line_cycles>=baseCycles);
++  assert(high+low==lcd.line_time_01us&&epd_lcd_phase_gate_time()==time);
++  assert(epd_lcd_set_phase_gate_time(0));assert(high==baseHigh&&low==baseLow&&lcd.line_cycles==baseCycles);
++ }
++ for(int invalid:{-1,1001,1000000}){int old=writes;assert(!epd_lcd_set_phase_gate_time(invalid)&&writes==old);}
++ lcd.initialized=false;assert(!epd_lcd_set_phase_gate_time(20));lcd.initialized=true;
++ lcd.phase_ckv_pending=true;waits=0;readyAfter=1001;
++ assert(!epd_lcd_set_phase_gate_time(300)&&waits==1000&&stops==1&&errors==1);
++ assert(epd_lcd_set_phase_gate_time(0)&&high==baseHigh);
++}
++'''.replace('// @BODIES@',bodies)
++
++
++class SleepGateTimingTest(unittest.TestCase):
++    def test_actual_lcd_loop_consumes_times_and_restores_after_failures(self):
++        run(loop_code(),extra=['-DFREEINK_PAPERDIY_TIMED_SLEEP_CLEAN=1','-DFREEINK_PAPERDIY_REFRESH_AUDIT=1'])
++
++    def test_actual_gate_pulses_porch_restore_and_completion_timeout(self):
++        run(geometry_code(),extra=['-DFREEINK_PAPERDIY_TIMED_SLEEP_CLEAN=1'])
++
++    def test_scope_and_normal_shutdown_flags(self):
++        ini=(ROOT/'platformio.ini').read_text(encoding='utf-8')
++        assert ini.count('-DFREEINK_PAPERDIY_TIMED_SLEEP_CLEAN=1')==1
++        assert '-DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=' not in ini
++        assert '-DFREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME=' not in ini
++        sleep=(ROOT/'src/activities/boot_sleep/SleepActivity.cpp').read_text(encoding='utf-8')
++        body=method(sleep,'void SleepActivity::renderDefaultSleepScreen()')
++        assert sleep.count('renderer.prepareSleepClean();')==1
++        assert body.index('renderer.prepareSleepClean();')<body.index('renderer.displayBuffer(kSleepClean);')
++
++
++if __name__=='__main__':
 +    unittest.main()
 diff --git a/test/test_paperdiy_ui_profiles.py b/test/test_paperdiy_ui_profiles.py
 new file mode 100644

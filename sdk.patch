@@ -1,5 +1,5 @@
 diff --git a/libs/display/EpdiyLcd/include/EpdiyLcd.h b/libs/display/EpdiyLcd/include/EpdiyLcd.h
-index b8ebaef..dc5f20a 100644
+index b8ebaef..392d67b 100644
 --- a/libs/display/EpdiyLcd/include/EpdiyLcd.h
 +++ b/libs/display/EpdiyLcd/include/EpdiyLcd.h
 @@ -69,7 +69,7 @@ struct EpdiyLcdConfig {
@@ -11,7 +11,14 @@ index b8ebaef..dc5f20a 100644
  
  /// 初始化总线并挂上波形。width/height 是面板扫描尺寸（本板 1216x684）。
  ///
-@@ -89,9 +89,18 @@ void epdiyLcdEnd();
+@@ -85,13 +85,25 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
+ 
+ /// 释放总线与帧缓冲。/ Release the bus and the framebuffer.
+ void epdiyLcdEnd();
++// One-shot: use waveform gate times for the next sleep Full/Half submission.
++// No-op outside the explicit PaperDIY sleep timing build; never changes LUTs.
++void epdiyLcdRequestTimedSleepClean();
+ 
  // Borrow the existing front framebuffer. No allocation. Commit uses GL16 and
  // promotes an unknown baseline to GC16; cancellation never changes the glass.
  uint8_t* epdiyLcdBeginGrayscale16();
@@ -32,7 +39,7 @@ index b8ebaef..dc5f20a 100644
  /// epdiyLcdBegin 的 `blackIsOne` 给定。
  /// / Push one frame. `fb` is 1 bpp MSB-first, width/8 bytes per row, height rows;
 diff --git a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
-index 72f56ea..cbfe062 100644
+index 72f56ea..13e29dd 100644
 --- a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 +++ b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 @@ -9,6 +9,9 @@
@@ -69,10 +76,13 @@ index 72f56ea..cbfe062 100644
  }
  
  namespace freeink {
-@@ -54,10 +67,156 @@ bool g_nativeGrayActive = false;
+@@ -54,10 +67,159 @@ bool g_nativeGrayActive = false;
  bool g_initialized = false;
  bool g_powerReady = false;
  bool g_baselineKnown = false;
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++bool g_timedSleepCleanPending = false;
++#endif
 +#if FREEINK_DEVICE_PAPERDIY
 +// Scoped to the final shutdown call; ordinary End/init-failure cleanup is unchanged.
 +bool g_shutdownDeinit = false;
@@ -226,7 +236,7 @@ index 72f56ea..cbfe062 100644
  // 1bpp 行 → 4bpp 行的展开表：一个输入字节出 4 个输出字节。
  // epdiy 是每字节两个像素，偶数列在低半字节、奇数列在高半字节，15 = 白。
  // / Expansion table: one 1 bpp input byte becomes four 4 bpp bytes. epdiy packs
-@@ -125,7 +284,18 @@ bool boardInit(uint32_t epdRowWidth) {
+@@ -125,7 +287,18 @@ bool boardInit(uint32_t epdRowWidth) {
    return true;
  }
  
@@ -246,7 +256,7 @@ index 72f56ea..cbfe062 100644
  
  // XOE 与 MODE 在 FCA9555 上，由 powerOn/powerOff 按顺序持有；本板没有 epdiy 假设的
  // 那个通用控制寄存器，所以这里是空实现。
-@@ -181,10 +351,14 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
+@@ -181,10 +354,14 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
  
    // 波形必须在 epd_hl_init 之前建好：E0470_WAVEFORM 的相位数据由它填。
    // / The waveform must be built before epd_hl_init(): it fills E0470_WAVEFORM.
@@ -262,7 +272,7 @@ index 72f56ea..cbfe062 100644
      ESP_LOGE("EpdiyLcd", "LCD renderer initialization failed");
      return false;
    }
-@@ -203,7 +377,7 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
+@@ -203,7 +380,7 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
      return false;
    }
  
@@ -271,7 +281,17 @@ index 72f56ea..cbfe062 100644
    g_fb4 = epd_hl_get_framebuffer(&g_hl);
    if (g_fb4 == nullptr) {
      epdiyLcdEnd();
-@@ -262,6 +436,22 @@ void epdiyLcdEnd() {
+@@ -247,6 +424,9 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
+ }
+ 
+ void epdiyLcdEnd() {
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++  g_timedSleepCleanPending = false;
++#endif
+   if (!g_initialized) return;
+   epd_deinit();
+   epd_hl_deinit(&g_hl);
+@@ -262,6 +442,22 @@ void epdiyLcdEnd() {
  namespace {
  
  enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
@@ -294,7 +314,7 @@ index 72f56ea..cbfe062 100644
    switch (mode) {
      case EpdiyLcdRefresh::Full:
        return static_cast<enum EpdDrawMode>(MODE_GC16 | PREVIOUSLY_WHITE);
-@@ -272,6 +462,7 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
+@@ -272,6 +468,7 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
      default:
        return static_cast<enum EpdDrawMode>(MODE_DU | PREVIOUSLY_WHITE);
    }
@@ -302,7 +322,7 @@ index 72f56ea..cbfe062 100644
  }
  
  // 文字转页换用对角线全保持的那张表：未变化的像素完全不驱动，所以不会把黑像素先擦白
-@@ -281,7 +472,13 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
+@@ -281,7 +478,13 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
  // and push it back to black, and that erase is the flash a turn shows. Every other
  // profile keeps the table epd_hl_init attached.
  const EpdWaveform* waveformFor(EpdiyLcdRefresh mode) {
@@ -316,10 +336,14 @@ index 72f56ea..cbfe062 100644
  }
  
  // 1bpp 页 -> epdiy 4bpp。展开表把调用方的位约定翻成 epdiy 的灰度级；本玻璃实测
-@@ -314,15 +511,30 @@ void recordConversion(int64_t startedUs) {
+@@ -314,15 +517,34 @@ void recordConversion(int64_t startedUs) {
  #endif
  
  bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++  const bool timedSleep = g_timedSleepCleanPending && (mode == EpdiyLcdRefresh::Full || mode == EpdiyLcdRefresh::Half);
++  g_timedSleepCleanPending = false;
++#endif
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  RefreshAudit audit(mode);
 +#endif
@@ -347,7 +371,7 @@ index 72f56ea..cbfe062 100644
      memset(g_hl.back_fb, 0xFF, static_cast<size_t>(epd_width()) / 2 * epd_height());
      mode = EpdiyLcdRefresh::Full;
    }
-@@ -333,14 +545,31 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -333,14 +555,49 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    const EpdWaveform* waveform = waveformFor(mode);
    const bool swapWaveform = waveform != g_hl.waveform;
    if (swapWaveform) epd_hl_waveform(&g_hl, waveform);
@@ -378,8 +402,26 @@ index 72f56ea..cbfe062 100644
 +  audit.whole = wholeScreenClean;
 +  audit.beginDraw();
 +#endif
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++  const bool previousTiming = epd_lcd_set_waveform_timing(timedSleep);
++#endif
 +  const auto err = wholeScreenClean ? epd_hl_update_screen_full(&g_hl, drawModeFor(mode), temperature)
 +                                    : epd_hl_update_screen(&g_hl, drawModeFor(mode), temperature);
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++  epd_lcd_set_waveform_timing(previousTiming);
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++  if (timedSleep && g_refreshAuditObserver != nullptr) {
++    int phases = 0, minimum = 0, maximum = 0;
++    epd_lcd_timing_progress(&phases, &minimum, &maximum);
++    char line[144];
++    snprintf(line, sizeof(line),
++             "[PD-OFF-DISPLAY] stage=timed-sleep-clean seq=%u phases=%d gate_min=%d gate_max=%d reset=%u",
++             static_cast<unsigned>(g_refreshAuditSequence), phases, minimum, maximum,
++             static_cast<unsigned>(epd_lcd_phase_gate_time() == 0));
++    g_refreshAuditObserver(line);
++  }
++#endif
++#endif
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  audit.endDraw();
 +#endif
@@ -387,7 +429,7 @@ index 72f56ea..cbfe062 100644
  #if FREEINK_READPICO_DIAGNOSTICS
    int diffMs, drawMs, copyMs;
    epd_hl_last_timing(&diffMs, &drawMs, &copyMs);
-@@ -351,18 +580,25 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -351,18 +608,25 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    // serial port in this build, while the board libraries' esp_rom_vprintf does. Only
    // compiled in development builds.
    esp_rom_printf("[EPDF] frame #%u mode=%u result=%u convert=%uus max_convert=%uus diff=%dms scan=%dms copy=%dms\r\n",
@@ -416,7 +458,7 @@ index 72f56ea..cbfe062 100644
  uint8_t* epdiyLcdBeginGrayscale16() {
    if (!epdiyLcdReady() || g_nativeGrayActive) return nullptr;
    g_nativeGrayActive = true;
-@@ -370,10 +606,15 @@ uint8_t* epdiyLcdBeginGrayscale16() {
+@@ -370,10 +634,15 @@ uint8_t* epdiyLcdBeginGrayscale16() {
    return g_fb4;
  }
  
@@ -433,7 +475,7 @@ index 72f56ea..cbfe062 100644
    epdiyLcdStashBase(bwProxy);
    return true;
  }
-@@ -386,6 +627,15 @@ void epdiyLcdCancelGrayscale16() {
+@@ -386,6 +655,15 @@ void epdiyLcdCancelGrayscale16() {
    }
  }
  
@@ -449,7 +491,7 @@ index 72f56ea..cbfe062 100644
  bool epdiyLcdDraw(const uint8_t* fb, EpdiyLcdRefresh mode, bool turnOff) {
    if (!g_started || fb == nullptr || g_fb4 == nullptr || g_cfg == nullptr) return false;
  
-@@ -415,6 +665,9 @@ void epdiyLcdStashBase(const uint8_t* fb) {
+@@ -415,6 +693,9 @@ void epdiyLcdStashBase(const uint8_t* fb) {
  }
  
  bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mode, bool turnOff) {
@@ -459,7 +501,7 @@ index 72f56ea..cbfe062 100644
    if (!g_started || g_fb4 == nullptr || g_cfg == nullptr) return false;
    if (g_base == nullptr || lsb == nullptr || msb == nullptr) return false;
  
-@@ -423,10 +676,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
+@@ -423,10 +704,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
  #endif
    // The existing 2-bit coverage maps directly to four panel tones. A set base
    // bit is white (15); selector masks choose the two calibrated mid tones.
@@ -477,7 +519,7 @@ index 72f56ea..cbfe062 100644
  
    const int w = static_cast<int>(epd_width());
    const int h = static_cast<int>(epd_height());
-@@ -464,8 +722,61 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
+@@ -464,8 +750,67 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
  
  void epdiyLcdDeepSleep() {
    if (!g_started) return;
@@ -536,14 +578,28 @@ index 72f56ea..cbfe062 100644
 +#endif
 +  g_shutdownDeinit = false;
 +#endif
++}
++
++void epdiyLcdRequestTimedSleepClean() {
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++  g_timedSleepCleanPending = g_started;
++#endif
  }
  
  bool epdiyLcdReady() { return g_started && g_fb4 != nullptr; }
 diff --git a/libs/display/EpdiyLcd/src/epdiy/include/epd_lcd.h b/libs/display/EpdiyLcd/src/epdiy/include/epd_lcd.h
-index 7880dd3..3e0ef33 100644
+index 7880dd3..57f94ce 100644
 --- a/libs/display/EpdiyLcd/src/epdiy/include/epd_lcd.h
 +++ b/libs/display/EpdiyLcd/src/epdiy/include/epd_lcd.h
-@@ -35,8 +35,15 @@ typedef struct {
+@@ -4,6 +4,7 @@
+ #include <esp_err.h>
+ #include <stddef.h>
+ #include <stdint.h>
++#include <stdbool.h>
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -35,8 +36,24 @@ typedef struct {
  
  esp_err_t epd_lcd_init(const LcdEpdConfig_t* config, int display_width, int display_height);
  void epd_lcd_deinit(void);
@@ -553,6 +609,15 @@ index 7880dd3..3e0ef33 100644
 +#endif
  void epd_lcd_set_pixel_clock_MHz(int frequency);
  void epd_lcd_set_line_timing(const LcdLineTiming_t* timing);
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++// Opt-in only around the final sleep clean. Gate time is in 0.1us, not PCLK cycles.
++bool epd_lcd_set_waveform_timing(bool enabled);
++bool epd_lcd_set_phase_gate_time(int gate_time_01us);
++int epd_lcd_phase_gate_time(void);
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++void epd_lcd_timing_progress(int* phases, int* minimum, int* maximum);
++#endif
++#endif
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +void epd_lcd_audit_counts(uint32_t* started, uint32_t* done);
 +#endif
@@ -607,11 +672,58 @@ index d697b96..9b0ca61 100644
 -);
 \ No newline at end of file
 +);
+diff --git a/libs/display/EpdiyLcd/src/epdiy/src/output_common/rmt_compat.c b/libs/display/EpdiyLcd/src/epdiy/src/output_common/rmt_compat.c
+index e895855..947ec1d 100644
+--- a/libs/display/EpdiyLcd/src/epdiy/src/output_common/rmt_compat.c
++++ b/libs/display/EpdiyLcd/src/epdiy/src/output_common/rmt_compat.c
+@@ -165,6 +165,19 @@ void IRAM_ATTR rmt_compat_tx_start(rmt_compat_channel_t channel) {
+     rmt_ll_tx_start(&RMT, channel);
+ }
+ 
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++void IRAM_ATTR rmt_compat_tx_clear_completion(rmt_compat_channel_t channel) {
++    rmt_ll_clear_interrupt_status(&RMT, RMT_LL_EVENT_TX_DONE(channel) | RMT_LL_EVENT_TX_LOOP_END(channel));
++}
++
++bool IRAM_ATTR rmt_compat_tx_completed(rmt_compat_channel_t channel) {
++    return (rmt_ll_tx_get_interrupt_status_raw(&RMT, channel)
++            & (RMT_LL_EVENT_TX_DONE(channel) | RMT_LL_EVENT_TX_LOOP_END(channel))) != 0;
++}
++
++void rmt_compat_tx_stop(rmt_compat_channel_t channel) { rmt_ll_tx_stop(&RMT, channel); }
++#endif
++
+ void IRAM_ATTR rmt_compat_tx_reset_mem(rmt_compat_channel_t channel) {
+     rmt_ll_tx_reset_pointer(&RMT, channel);
+ }
+diff --git a/libs/display/EpdiyLcd/src/epdiy/src/output_common/rmt_compat.h b/libs/display/EpdiyLcd/src/epdiy/src/output_common/rmt_compat.h
+index d10b35f..7083a33 100644
+--- a/libs/display/EpdiyLcd/src/epdiy/src/output_common/rmt_compat.h
++++ b/libs/display/EpdiyLcd/src/epdiy/src/output_common/rmt_compat.h
+@@ -52,6 +52,11 @@ void rmt_compat_tx_enable_loop(rmt_compat_channel_t channel, bool enable);
+ void rmt_compat_tx_start(rmt_compat_channel_t channel);
+ void rmt_compat_tx_reset_mem(rmt_compat_channel_t channel);
+ void rmt_compat_tx_configure_finite_loop(rmt_compat_channel_t channel, uint32_t count);
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++void rmt_compat_tx_clear_completion(rmt_compat_channel_t channel);
++bool rmt_compat_tx_completed(rmt_compat_channel_t channel);
++void rmt_compat_tx_stop(rmt_compat_channel_t channel);
++#endif
+ 
+ // Interrupts
+ int rmt_compat_get_irq_source(void);
 diff --git a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c
-index e30e1f8..51a31a6 100644
+index e30e1f8..991d84a 100644
 --- a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c
 +++ b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/lcd_driver.c
-@@ -163,6 +163,13 @@ typedef struct {
+@@ -160,9 +160,20 @@ typedef struct {
+ 
+     /// The number of lines of the display
+     int display_lines;
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++    int phase_gate_time;
++    bool phase_ckv_pending;
++#endif
  } s3_lcd_t;
  
  static s3_lcd_t lcd = { 0 };
@@ -625,12 +737,94 @@ index e30e1f8..51a31a6 100644
  
  void IRAM_ATTR epd_lcd_line_source_cb(line_cb_func_t line_source, void* payload) {
      lcd.line_source_cb = line_source;
-@@ -261,11 +268,11 @@ static void init_ckv_rmt() {
+@@ -191,6 +202,10 @@ static IRAM_ATTR bool fill_bounce_buffer(uint8_t* buffer) {
+ }
+ 
+ static void IRAM_ATTR start_ckv_cycles(int cycles) {
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++    rmt_compat_tx_clear_completion(RMT_CKV_CHAN);
++    lcd.phase_ckv_pending = true;
++#endif
+     rmt_compat_tx_configure_finite_loop(RMT_CKV_CHAN, cycles);
+     rmt_compat_tx_reset_mem(RMT_CKV_CHAN);
+     rmt_compat_tx_start(RMT_CKV_CHAN);
+@@ -211,6 +226,14 @@ static void rebuild_line_geometry(int pclk_mhz) {
+     const LcdLineTiming_t* t = &lcd.config.line;
+     int end = t->line_end > 0 ? t->line_end : 4;
+     lcd.line_cycles = lcd.lcd_res_h + t->le_high_time + t->line_front_porch + end;
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++    if (lcd.phase_gate_time > 0) {
++        // The I2S waveform contract is CKV HIGH in 0.1us. Keep at least its
++        // 5us gate-low interval, extending only the end porch if data is faster.
++        int timed_cycles = ((lcd.phase_gate_time + 50) * pclk_mhz + 9) / 10;
++        if (timed_cycles > lcd.line_cycles) lcd.line_cycles = timed_cycles;
++    }
++#endif
+     lcd.line_time_01us = (lcd.line_cycles * 10 + pclk_mhz / 2) / pclk_mhz;
+     if (lcd.line_time_01us < 1) lcd.line_time_01us = 1;
+     lcd.line_length_us = (lcd.line_time_01us + 9) / 10;
+@@ -224,6 +247,17 @@ static void ckv_rmt_build_signal() {
+     }
+ 
+     int high_time = lcd.config.line.ckv_high_time;
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++    if (lcd.phase_gate_time > 0) {
++        // Do not clamp the waveform's 0.8us pulse to the legacy 0.9us minimum.
++        // rebuild_line_geometry has already reserved this pulse plus 5us LOW.
++        rmt_compat_write_single_item(
++            RMT_CKV_CHAN, lcd.phase_gate_time, true, total_time - lcd.phase_gate_time, false, true
++        );
++        lcd.ckv_high_time = lcd.phase_gate_time;
++        return;
++    }
++#endif
+     if (high_time > total_time - CKV_MIN_LOW_TIME) {
+         high_time = total_time - CKV_MIN_LOW_TIME;
+     }
+@@ -237,6 +271,33 @@ static void ckv_rmt_build_signal() {
+     );
+ }
+ 
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++bool epd_lcd_set_phase_gate_time(int gate_time_01us) {
++    if (!lcd.initialized || gate_time_01us < 0 || gate_time_01us > 1000) return false;
++    // LCD VSYNC completion can precede the last few CKV pulses. Never rewrite
++    // RMT memory until that finite loop finishes. Bound a hardware fault to1ms.
++    if (lcd.phase_ckv_pending) {
++        int waited = 0;
++        while (!rmt_compat_tx_completed(RMT_CKV_CHAN) && waited < 1000) {
++            esp_rom_delay_us(1);
++            ++waited;
++        }
++        lcd.phase_ckv_pending = false;
++        if (waited == 1000) {
++            rmt_compat_tx_stop(RMT_CKV_CHAN);
++            ESP_LOGE(TAG, "CKV completion timeout before phase timing change");
++            if (gate_time_01us != 0) return false;
++        }
++    }
++    lcd.phase_gate_time = gate_time_01us;
++    rebuild_line_geometry(lcd.config.pixel_clock / 1000000);
++    ckv_rmt_build_signal();
++    return true;
++}
++
++int epd_lcd_phase_gate_time(void) { return lcd.phase_gate_time; }
++#endif
++
+ /**
+  * Configure the RMT peripheral for use as the CKV clock.
+  */
+@@ -261,11 +322,15 @@ static void init_ckv_rmt() {
  /**
   * Reset the CKV RMT configuration.
   */
 -static void deinit_ckv_rmt() {
 +static void deinit_ckv_rmt(bool release_gpio) {
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++    lcd.phase_ckv_pending = false;
++    lcd.phase_gate_time = 0;
++#endif
      rmt_compat_reset_module();
      rmt_compat_enable_periph_clock(false);
      rmt_compat_enable_module(false);
@@ -639,7 +833,7 @@ index e30e1f8..51a31a6 100644
  }
  
  __attribute__((optimize("O3"))) IRAM_ATTR static void lcd_isr_vsync(void* args) {
-@@ -283,6 +290,9 @@ __attribute__((optimize("O3"))) IRAM_ATTR static void lcd_isr_vsync(void* args)
+@@ -283,6 +348,9 @@ __attribute__((optimize("O3"))) IRAM_ATTR static void lcd_isr_vsync(void* args)
          if (lcd.batches >= batches_needed) {
              lcd_ll_stop(lcd.hal.dev);
              if (lcd.frame_done_cb != NULL) {
@@ -649,7 +843,7 @@ index e30e1f8..51a31a6 100644
                  (*lcd.frame_done_cb)(lcd.frame_cb_payload);
              }
          } else {
-@@ -449,7 +459,7 @@ static esp_err_t init_bus_gpio() {
+@@ -449,7 +517,7 @@ static esp_err_t init_bus_gpio() {
   * Reset bus GPIO pin functions.
   */
  static void deinit_bus_gpio() {
@@ -658,7 +852,7 @@ index e30e1f8..51a31a6 100644
          gpio_reset_pin(lcd.config.bus.data[i]);
      }
  
-@@ -738,21 +748,27 @@ err:
+@@ -738,21 +806,27 @@ err:
      return ret;
  }
  
@@ -689,7 +883,7 @@ index e30e1f8..51a31a6 100644
  void epd_lcd_set_line_timing(const LcdLineTiming_t* timing) {
      if (timing == NULL) return;
      lcd.config.line = *timing;
-@@ -804,6 +820,9 @@ void epd_lcd_set_pixel_clock_MHz(int frequency) {
+@@ -804,6 +878,9 @@ void epd_lcd_set_pixel_clock_MHz(int frequency) {
  }
  
  void IRAM_ATTR epd_lcd_start_frame() {
@@ -700,10 +894,34 @@ index e30e1f8..51a31a6 100644
  
      // hsync: pulse width, back porch, active width, front porch
 diff --git a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/render_lcd.c b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/render_lcd.c
-index 48ceddf..a5437af 100644
+index 48ceddf..c968a55 100644
 --- a/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/render_lcd.c
 +++ b/libs/display/EpdiyLcd/src/epdiy/src/output_lcd/render_lcd.c
-@@ -35,9 +35,17 @@ retrieve_line_isr(RenderContext_t* ctx, uint8_t* buf) {
+@@ -27,6 +27,23 @@
+ #include "lcd_driver.h"
+ #include "render_lcd.h"
+ 
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++static bool s_use_waveform_timing;
++bool epd_lcd_set_waveform_timing(bool enabled) {
++    bool previous = s_use_waveform_timing;
++    s_use_waveform_timing = enabled;
++    return previous;
++}
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++static int s_timing_phases, s_timing_min, s_timing_max;
++void epd_lcd_timing_progress(int* phases, int* minimum, int* maximum) {
++    *phases = s_timing_phases;
++    *minimum = s_timing_min;
++    *maximum = s_timing_max;
++}
++#endif
++#endif
++
+ // declare vector optimized line mask application.
+ void epd_apply_line_mask_VE(uint8_t* line, const uint8_t* mask, int mask_len);
+ 
+@@ -35,9 +52,17 @@ retrieve_line_isr(RenderContext_t* ctx, uint8_t* buf) {
      if (ctx->lines_consumed >= ctx->lines_total) {
          return false;
      }
@@ -721,7 +939,7 @@ index 48ceddf..a5437af 100644
          memset(buf, 0x00, ctx->display_width / 4);
          ctx->lines_consumed += 1;
          return pdFALSE;
-@@ -48,7 +56,11 @@ retrieve_line_isr(RenderContext_t* ctx, uint8_t* buf) {
+@@ -48,7 +73,11 @@ retrieve_line_isr(RenderContext_t* ctx, uint8_t* buf) {
      BaseType_t awoken = pdFALSE;
  
      if (lq_read(lq, buf) != 0) {
@@ -733,7 +951,7 @@ index 48ceddf..a5437af 100644
          memset(buf, 0x00, ctx->display_width / 4);
      }
  
-@@ -59,6 +71,10 @@ retrieve_line_isr(RenderContext_t* ctx, uint8_t* buf) {
+@@ -59,6 +88,10 @@ retrieve_line_isr(RenderContext_t* ctx, uint8_t* buf) {
      return awoken;
  }
  
@@ -744,17 +962,40 @@ index 48ceddf..a5437af 100644
  /// start the next frame in the current update cycle
  static void IRAM_ATTR handle_lcd_frame_done(RenderContext_t* ctx) {
      epd_lcd_frame_done_cb(NULL, NULL);
-@@ -76,6 +92,9 @@ void lcd_do_update(RenderContext_t* ctx) {
+@@ -72,10 +105,32 @@ static void IRAM_ATTR handle_lcd_frame_done(RenderContext_t* ctx) {
+ 
+ void lcd_do_update(RenderContext_t* ctx) {
+     epd_set_mode(1);
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++    const bool timed = s_use_waveform_timing && ctx->phase_times != NULL;
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++    if (timed) s_timing_phases = s_timing_min = s_timing_max = 0;
++#endif
++#endif
+ 
      for (uint8_t k = 0; k < ctx->cycle_frames; k++) {
          epd_lcd_frame_done_cb((frame_done_func_t)handle_lcd_frame_done, ctx);
          prepare_context_for_next_frame(ctx);
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++        if (timed) {
++            if (!epd_lcd_set_phase_gate_time(ctx->frame_time)) {
++                ctx->error |= EPD_DRAW_NO_PHASES_AVAILABLE;
++                break;
++            }
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++            if (s_timing_phases == 0 || ctx->frame_time < s_timing_min) s_timing_min = ctx->frame_time;
++            if (ctx->frame_time > s_timing_max) s_timing_max = ctx->frame_time;
++            ++s_timing_phases;
++#endif
++        }
++#endif
 +#if FREEINK_DEVICE_PAPERDIY
 +        paperdiy_prepare_feed(ctx);
 +#endif
  
          // start both feeder tasks
          xTaskNotifyGive(ctx->feed_tasks[!xPortGetCoreID()]);
-@@ -88,6 +107,15 @@ void lcd_do_update(RenderContext_t* ctx) {
+@@ -88,6 +143,15 @@ void lcd_do_update(RenderContext_t* ctx) {
              xSemaphoreTake(ctx->feed_done_smphr[i], portMAX_DELAY);
          }
  
@@ -770,7 +1011,17 @@ index 48ceddf..a5437af 100644
          ctx->current_frame++;
  
          // make the watchdog happy.
-@@ -186,6 +214,13 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+@@ -97,6 +161,9 @@ void lcd_do_update(RenderContext_t* ctx) {
+     epd_lcd_line_source_cb(NULL, NULL);
+     epd_lcd_frame_done_cb(NULL, NULL);
+ 
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++    if (timed) epd_lcd_set_phase_gate_time(0);
++#endif
+     epd_set_mode(0);
+ }
+ 
+@@ -186,6 +253,13 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
      LineQueue_t* lq = &ctx->line_queues[thread_id];
      int l = 0;
  
@@ -784,7 +1035,7 @@ index 48ceddf..a5437af 100644
      // if there is an error, start the frame but don't feed data.
      if (ctx->error) {
          memset(ctx->line_threads, 0, ctx->lines_total);
-@@ -194,6 +229,7 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+@@ -194,6 +268,7 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
          ESP_LOGW("epd_lcd", "draw frame draw initiated, but an error flag is set: %X", ctx->error);
          return;
      }
@@ -792,7 +1043,7 @@ index 48ceddf..a5437af 100644
  
      // line must be able to hold 2-pixel-per-byte or 1-pixel-per-byte data
      memset(input_line, 0x00, ctx->display_width);
-@@ -203,12 +239,23 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+@@ -203,12 +278,23 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
      const uint8_t* ptr_start;
      get_buffer_params(ctx, &bytes_per_line, &ptr_start, &min_y, &max_y, &_ppB);
  
@@ -817,7 +1068,7 @@ index 48ceddf..a5437af 100644
          ctx->line_threads[l] = thread_id;
  
          // queue is sufficiently filled to fill both bounce buffers, frame
-@@ -217,21 +264,34 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+@@ -217,21 +303,34 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
              epd_lcd_line_source_cb((line_cb_func_t)&retrieve_line_isr, ctx);
              epd_lcd_start_frame();
          }
@@ -852,7 +1103,7 @@ index 48ceddf..a5437af 100644
              continue;
          }
  
-@@ -245,10 +305,19 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+@@ -245,10 +344,19 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
          uint8_t* buf = NULL;
          while (buf == NULL) {
              // break in case of errors
@@ -872,7 +1123,7 @@ index 48ceddf..a5437af 100644
  
              buf = lq_current(lq);
          }
-@@ -259,7 +328,13 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
+@@ -259,7 +367,13 @@ lcd_calculate_frame(RenderContext_t* ctx, int thread_id) {
          epd_apply_line_mask_VE(buf, ctx->line_mask, ctx->display_width / 4);
  
          lq_commit(lq);
@@ -1051,10 +1302,10 @@ index 4ea1960..f42019f 100644
 +        subprocess.run([str(binary)], check=True)
 +    print("PaperDIY real LCD start/VSYNC audit counters and resource failures passed")
 diff --git a/libs/display/EpdiyLcd/test/host/test_transactions.py b/libs/display/EpdiyLcd/test/host/test_transactions.py
-index 059bbfa..6d8c0b2 100644
+index 059bbfa..9e2f101 100644
 --- a/libs/display/EpdiyLcd/test/host/test_transactions.py
 +++ b/libs/display/EpdiyLcd/test/host/test_transactions.py
-@@ -104,18 +104,53 @@ inline void xSemaphoreGiveRecursive(SemaphoreHandle_t m) { m->unlock(); }
+@@ -104,18 +104,65 @@ inline void xSemaphoreGiveRecursive(SemaphoreHandle_t m) { m->unlock(); }
          queue_check = root / "queue-check.o"
          subprocess.run(["cc", "-std=c11", *flags, "-c", str(HERE / "queue.c"),
                          "-o", str(queue_check)], check=True)
@@ -1064,12 +1315,13 @@ index 059bbfa..6d8c0b2 100644
 +        waveform = root / "paperdiy-waveform.o"
 +        subprocess.run(["cc", "-std=c11", "-DFREEINK_DEVICE_PAPERDIY=1", *flags, "-c",
 +                        str(LCD / "src/paperdiy/PaperDiyWaveform.c"), "-o", str(waveform)], check=True)
-+        for diagnostics, paperdiy, audit in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 1, 1)):
-+            binary = root / f"display-test-{diagnostics}-{paperdiy}-{audit}"
++        for diagnostics, paperdiy, audit, timing in ((0, 0, 0, 0), (1, 0, 0, 0), (0, 1, 0, 0), (0, 1, 1, 0), (0, 1, 1, 1)):
++            binary = root / f"display-test-{diagnostics}-{paperdiy}-{audit}-{timing}"
 +            command = ["c++", "-std=c++20", *flags, "-DFREEINK_EPDIY_LCD_CONFIG=testConfig",
                          f"-DFREEINK_READPICO_DIAGNOSTICS={diagnostics}",
 +                        f"-DFREEINK_DEVICE_PAPERDIY={paperdiy}",
 +                        f"-DFREEINK_PAPERDIY_REFRESH_AUDIT={audit}",
++                        f"-DFREEINK_PAPERDIY_TIMED_SLEEP_CLEAN={timing}",
                              str(HERE / "transactions.cpp"), str(LCD / "src/EpdiyLcd.cpp"),
                              str(display / "src/driver/EpdiyLcdDriver.cpp"), str(highlevel), str(queue), str(queue_check),
 -                            "-Wl,--wrap=calloc", "-o", str(binary)], check=True)
@@ -1109,10 +1361,21 @@ index 059bbfa..6d8c0b2 100644
 +                result = subprocess.run([str(recovery_binary)], capture_output=True, text=True)
 +                assert result.returncode != 0, "Omitted panel-baseline recovery escaped detection"
 +                print("PaperDIY omitted-recovery negative control rejected")
++                if timing:
++                    sticky = root / "EpdiyLcd-sticky-sleep-timing.cpp"
++                    sticky.write_text(text.replace("  g_timedSleepCleanPending = false;",
++                                                   "  /* negative: leak one-shot into later frames */"), encoding="utf-8")
++                    sticky_binary = root / "sticky-sleep-timing-negative"
++                    sticky_command = [str(sticky) if x == str(source) else
++                                      str(sticky_binary) if x == str(binary) else x for x in command]
++                    subprocess.run(sticky_command, check=True)
++                    result = subprocess.run([str(sticky_binary)], capture_output=True, text=True)
++                    assert result.returncode != 0 and "timedDraws" in result.stderr, result.stderr
++                    print("PaperDIY sticky sleep timing negative control rejected")
          (root / "Wire.h").write_text((HERE / "pmu_wire.h").read_text())
          (root / "esp_timer.h").write_text("""#pragma once
  #include <stdint.h>
-@@ -136,7 +171,7 @@ static inline int64_t esp_timer_get_time(void) { return 0; }
+@@ -136,7 +183,7 @@ static inline int64_t esp_timer_get_time(void) { return 0; }
          run_resources(root, includes)
          from test_waveform_trim import run as run_waveform_trim
          run_waveform_trim()
@@ -1122,7 +1385,7 @@ index 059bbfa..6d8c0b2 100644
  
  if __name__ == "__main__":
 diff --git a/libs/display/EpdiyLcd/test/host/transactions.cpp b/libs/display/EpdiyLcd/test/host/transactions.cpp
-index f88a84b..52fabe8 100644
+index f88a84b..46811e6 100644
 --- a/libs/display/EpdiyLcd/test/host/transactions.cpp
 +++ b/libs/display/EpdiyLcd/test/host/transactions.cpp
 @@ -5,10 +5,17 @@
@@ -1143,9 +1406,14 @@ index f88a84b..52fabe8 100644
  void check_queue(void);
  }
  
-@@ -17,8 +24,18 @@ bool railsOk = true;
+@@ -16,9 +23,23 @@ namespace {
+ bool railsOk = true;
  bool powered = false;
  bool failDraw = false;
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++bool waveformTiming = false;
++int timedDraws = 0;
++#endif
  int draws = 0, clears = 0;
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +uint32_t auditStarts = 0, auditDones = 0;
@@ -1162,7 +1430,27 @@ index f88a84b..52fabe8 100644
  const EpdBoardDefinition* board = nullptr;
  EpdiyHighlevelState* state = nullptr;
  bool powerOn() {
-@@ -71,10 +88,29 @@ void epd_poweroff() { board->poweroff(nullptr); }
+@@ -57,6 +78,19 @@ const EpdDisplay_t* epd_get_display() { return &E0470_DISPLAY; }
+ int epd_width() { return 16; }
+ int epd_height() { return 2; }
+ EpdRect epd_full_screen() { return {0, 0, 16, 2}; }
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++bool epd_lcd_set_waveform_timing(bool enabled) {
++  const bool previous = waveformTiming;
++  waveformTiming = enabled;
++  return previous;
++}
++int epd_lcd_phase_gate_time() { return 0; }
++void epd_lcd_timing_progress(int* phases, int* minimum, int* maximum) {
++  *phases = 30;
++  *minimum = 8;
++  *maximum = 300;
++}
++#endif
+ enum EpdRotation epd_get_rotation() { return EPD_ROT_LANDSCAPE; }
+ bool epd_init(const EpdBoardDefinition* b, const EpdDisplay_t*, enum EpdInitOptions) {
+   board = b;
+@@ -71,10 +105,29 @@ void epd_poweroff() { board->poweroff(nullptr); }
  void epd_clear() {
    assert(powered);
    ++clears;
@@ -1171,7 +1459,7 @@ index f88a84b..52fabe8 100644
 +  auditStarts += 78;
 +  auditDones += 78;
 +#endif
- }
++}
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +void epd_lcd_audit_counts(uint32_t* started, uint32_t* done) {
 +  *started = auditStarts;
@@ -1181,7 +1469,7 @@ index f88a84b..52fabe8 100644
 +void epd_audit_draw_progress(int* expected, int* completed) {
 +  *expected = auditExpected;
 +  *completed = auditCompleted;
-+}
+ }
 +#endif
  esp_err_t epd_lcd_init(const LcdEpdConfig_t*, int, int) { return ESP_OK; }
  void epd_lcd_set_prefill_lines(int) {}
@@ -1192,7 +1480,7 @@ index f88a84b..52fabe8 100644
  void epd_leading_skip_discard() {}
  void epd_difference_column_range(EpdRect area, int* first, int* end) {
    *first = area.x;
-@@ -91,14 +127,30 @@ EpdRect epd_difference_image_cropped(const uint8_t* to, const uint8_t* from, Epd
+@@ -91,14 +144,36 @@ EpdRect epd_difference_image_cropped(const uint8_t* to, const uint8_t* from, Epd
      lines[y] = std::memcmp(to + y * 8, from + y * 8, 8) != 0;
      changed |= lines[y];
    }
@@ -1209,6 +1497,12 @@ index f88a84b..52fabe8 100644
    assert(powered);
    ++draws;
 -  for (int p = 0; p < 32; ++p) lastTo[p] = diff[p] >> 4;
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++  if (waveformTiming) {
++    assert((mode & 0x3F) == MODE_GC16);
++    ++timedDraws;
++  }
++#endif
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  auditExpected = (mode & 0x3F) == MODE_DU ? 5 : 30;
 +  if (waveform == &PAPERDIY_UI_WAVEFORM || waveform == &PAPERDIY_UI_TRANSITION_WAVEFORM) auditExpected = 15;
@@ -1227,7 +1521,7 @@ index f88a84b..52fabe8 100644
    lastMode = mode & 0x3F;
    return failDraw ? EPD_DRAW_EMPTY_LINE_QUEUE : EPD_DRAW_SUCCESS;
  }
-@@ -115,7 +167,11 @@ void checkGrayPacking(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
+@@ -115,7 +190,11 @@ void checkGrayPacking(freeink::EpdiyLcdDriver& driver, freeink::EpdBus& bus) {
        if (bits & 1) base[pixel / 8] |= mask;
        if (bits & 2) lsb[pixel / 8] |= mask;
        if (bits & 4) msb[pixel / 8] |= mask;
@@ -1239,7 +1533,7 @@ index f88a84b..52fabe8 100644
      }
      driver.displayGrayscaleBaseWithContext(bus, base, freeink::RefreshMode::Full, false,
                                             freeink::RefreshContext::Normal);
-@@ -149,6 +205,31 @@ void checkNativeGray(freeink::EpdiyLcdDriver& driver) {
+@@ -149,6 +228,31 @@ void checkNativeGray(freeink::EpdiyLcdDriver& driver) {
    frame = driver.beginGrayscale16();
    memset(frame, 0, 16);
    assert(driver.commitGrayscale16(proxy) && lastMode == MODE_GC16);
@@ -1271,7 +1565,7 @@ index f88a84b..52fabe8 100644
    assert(allocation_calls == allocations);
  }
  
-@@ -170,6 +251,203 @@ void checkHighlevel() {
+@@ -170,6 +274,203 @@ void checkHighlevel() {
    assert(std::memcmp(hl.front_fb, hl.back_fb, 16) == 0);
  }
  
@@ -1475,7 +1769,7 @@ index f88a84b..52fabe8 100644
  int main(int argc, char** argv) {
    if (argc > 1 && std::strcmp(argv[1], "highlevel") == 0) {
      checkHighlevel();
-@@ -206,11 +484,52 @@ int main(int argc, char** argv) {
+@@ -206,11 +507,52 @@ int main(int argc, char** argv) {
      driver.copyGrayscaleLsb(bus, gray);
      driver.copyGrayscaleMsb(bus, gray);
      driver.displayGray(bus, gray, true, nullptr, false);
@@ -1528,6 +1822,41 @@ index f88a84b..52fabe8 100644
    const int before = draws;
    assert(freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
    assert(freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
+@@ -228,4 +570,34 @@ int main(int argc, char** argv) {
+   assert(draws == failed + 1 && clears == dirtyClears + 1 && lastMode == MODE_GC16);
+ 
+   check_queue();
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_TIMED_SLEEP_CLEAN
++  assert(timedDraws == 0 && !waveformTiming);  // All existing reader/UI paths stayed legacy.
++  freeink::epdiyLcdRequestTimedSleepClean();
++  assert(freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
++  assert(timedDraws == 1 && !waveformTiming);
++  assert(freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
++  assert(timedDraws == 1 && !waveformTiming);
++  freeink::epdiyLcdRequestTimedSleepClean();
++  assert(freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Fast, true));
++  assert(freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
++  assert(timedDraws == 1);  // A non-clean consumes the one-shot without leaking it.
++  freeink::epdiyLcdRequestTimedSleepClean();
++  railsOk = false;
++  assert(!freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
++  railsOk = true;
++  assert(freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
++  assert(timedDraws == 1 && !waveformTiming);
++  freeink::epdiyLcdRequestTimedSleepClean();
++  failDraw = true;
++  assert(!freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
++  failDraw = false;
++  assert(timedDraws == 2 && !waveformTiming);
++  assert(freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
++  assert(timedDraws == 2 && !waveformTiming);
++  freeink::epdiyLcdRequestTimedSleepClean();
++  freeink::epdiyLcdEnd();
++  assert(freeink::epdiyLcdBegin(freeink::testConfig(),16,2,true));
++  assert(freeink::epdiyLcdDraw(fb, freeink::EpdiyLcdRefresh::Full, true));
++  assert(timedDraws == 2 && !waveformTiming);
++#endif
+ }
 diff --git a/libs/display/FreeInkDisplay/include/FreeInkDisplay.h b/libs/display/FreeInkDisplay/include/FreeInkDisplay.h
 index 444ad15..f616f92 100644
 --- a/libs/display/FreeInkDisplay/include/FreeInkDisplay.h
