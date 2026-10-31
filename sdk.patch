@@ -32,7 +32,7 @@ index b8ebaef..dc5f20a 100644
  /// epdiyLcdBegin 的 `blackIsOne` 给定。
  /// / Push one frame. `fb` is 1 bpp MSB-first, width/8 bytes per row, height rows;
 diff --git a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
-index 72f56ea..e56bca0 100644
+index 72f56ea..cbfe062 100644
 --- a/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 +++ b/libs/display/EpdiyLcd/src/EpdiyLcd.cpp
 @@ -9,6 +9,9 @@
@@ -45,10 +45,13 @@ index 72f56ea..e56bca0 100644
  #if FREEINK_READPICO_DIAGNOSTICS
  #include <esp_timer.h>
  // rom console rather than ESP_LOGI: on this build ESP_LOG does not reach the serial
-@@ -24,6 +27,10 @@ extern "C" int esp_rom_printf(const char* format, ...);
+@@ -24,6 +27,13 @@ extern "C" int esp_rom_printf(const char* format, ...);
  #include <esp_log.h>
  
  #include <cstring>
++#ifndef FREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME
++#define FREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME 0
++#endif
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +#include <algorithm>
 +#include <cstdio>
@@ -56,7 +59,7 @@ index 72f56ea..e56bca0 100644
  
  extern "C" {
  // 未带 extern "C" 守卫的 epdiy 头（见本库 README 的清单）在这里统一包住；
-@@ -37,6 +44,9 @@ extern "C" {
+@@ -37,6 +47,9 @@ extern "C" {
  #include "epdiy/src/epd_display.h"
  #include "epdiy/src/epd_highlevel.h"
  #include "epdiy/src/epdiy.h"
@@ -66,7 +69,7 @@ index 72f56ea..e56bca0 100644
  }
  
  namespace freeink {
-@@ -54,10 +64,156 @@ bool g_nativeGrayActive = false;
+@@ -54,10 +67,156 @@ bool g_nativeGrayActive = false;
  bool g_initialized = false;
  bool g_powerReady = false;
  bool g_baselineKnown = false;
@@ -223,7 +226,7 @@ index 72f56ea..e56bca0 100644
  // 1bpp 行 → 4bpp 行的展开表：一个输入字节出 4 个输出字节。
  // epdiy 是每字节两个像素，偶数列在低半字节、奇数列在高半字节，15 = 白。
  // / Expansion table: one 1 bpp input byte becomes four 4 bpp bytes. epdiy packs
-@@ -125,7 +281,18 @@ bool boardInit(uint32_t epdRowWidth) {
+@@ -125,7 +284,18 @@ bool boardInit(uint32_t epdRowWidth) {
    return true;
  }
  
@@ -243,7 +246,7 @@ index 72f56ea..e56bca0 100644
  
  // XOE 与 MODE 在 FCA9555 上，由 powerOn/powerOff 按顺序持有；本板没有 epdiy 假设的
  // 那个通用控制寄存器，所以这里是空实现。
-@@ -181,10 +348,14 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
+@@ -181,10 +351,14 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
  
    // 波形必须在 epd_hl_init 之前建好：E0470_WAVEFORM 的相位数据由它填。
    // / The waveform must be built before epd_hl_init(): it fills E0470_WAVEFORM.
@@ -259,7 +262,7 @@ index 72f56ea..e56bca0 100644
      ESP_LOGE("EpdiyLcd", "LCD renderer initialization failed");
      return false;
    }
-@@ -203,7 +374,7 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
+@@ -203,7 +377,7 @@ bool epdiyLcdBegin(const EpdiyLcdConfig& cfg, uint16_t width, uint16_t height, b
      return false;
    }
  
@@ -268,7 +271,7 @@ index 72f56ea..e56bca0 100644
    g_fb4 = epd_hl_get_framebuffer(&g_hl);
    if (g_fb4 == nullptr) {
      epdiyLcdEnd();
-@@ -262,6 +433,22 @@ void epdiyLcdEnd() {
+@@ -262,6 +436,22 @@ void epdiyLcdEnd() {
  namespace {
  
  enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
@@ -291,7 +294,7 @@ index 72f56ea..e56bca0 100644
    switch (mode) {
      case EpdiyLcdRefresh::Full:
        return static_cast<enum EpdDrawMode>(MODE_GC16 | PREVIOUSLY_WHITE);
-@@ -272,6 +459,7 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
+@@ -272,6 +462,7 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
      default:
        return static_cast<enum EpdDrawMode>(MODE_DU | PREVIOUSLY_WHITE);
    }
@@ -299,7 +302,7 @@ index 72f56ea..e56bca0 100644
  }
  
  // 文字转页换用对角线全保持的那张表：未变化的像素完全不驱动，所以不会把黑像素先擦白
-@@ -281,7 +469,13 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
+@@ -281,7 +472,13 @@ enum EpdDrawMode drawModeFor(EpdiyLcdRefresh mode) {
  // and push it back to black, and that erase is the flash a turn shows. Every other
  // profile keeps the table epd_hl_init attached.
  const EpdWaveform* waveformFor(EpdiyLcdRefresh mode) {
@@ -313,7 +316,7 @@ index 72f56ea..e56bca0 100644
  }
  
  // 1bpp 页 -> epdiy 4bpp。展开表把调用方的位约定翻成 epdiy 的灰度级；本玻璃实测
-@@ -314,15 +508,30 @@ void recordConversion(int64_t startedUs) {
+@@ -314,15 +511,30 @@ void recordConversion(int64_t startedUs) {
  #endif
  
  bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
@@ -344,7 +347,7 @@ index 72f56ea..e56bca0 100644
      memset(g_hl.back_fb, 0xFF, static_cast<size_t>(epd_width()) / 2 * epd_height());
      mode = EpdiyLcdRefresh::Full;
    }
-@@ -333,14 +542,31 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -333,14 +545,31 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    const EpdWaveform* waveform = waveformFor(mode);
    const bool swapWaveform = waveform != g_hl.waveform;
    if (swapWaveform) epd_hl_waveform(&g_hl, waveform);
@@ -384,7 +387,7 @@ index 72f56ea..e56bca0 100644
  #if FREEINK_READPICO_DIAGNOSTICS
    int diffMs, drawMs, copyMs;
    epd_hl_last_timing(&diffMs, &drawMs, &copyMs);
-@@ -351,18 +577,25 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
+@@ -351,18 +580,25 @@ bool pushFrame(EpdiyLcdRefresh mode, bool turnOff) {
    // serial port in this build, while the board libraries' esp_rom_vprintf does. Only
    // compiled in development builds.
    esp_rom_printf("[EPDF] frame #%u mode=%u result=%u convert=%uus max_convert=%uus diff=%dms scan=%dms copy=%dms\r\n",
@@ -413,7 +416,7 @@ index 72f56ea..e56bca0 100644
  uint8_t* epdiyLcdBeginGrayscale16() {
    if (!epdiyLcdReady() || g_nativeGrayActive) return nullptr;
    g_nativeGrayActive = true;
-@@ -370,10 +603,15 @@ uint8_t* epdiyLcdBeginGrayscale16() {
+@@ -370,10 +606,15 @@ uint8_t* epdiyLcdBeginGrayscale16() {
    return g_fb4;
  }
  
@@ -430,7 +433,7 @@ index 72f56ea..e56bca0 100644
    epdiyLcdStashBase(bwProxy);
    return true;
  }
-@@ -386,6 +624,15 @@ void epdiyLcdCancelGrayscale16() {
+@@ -386,6 +627,15 @@ void epdiyLcdCancelGrayscale16() {
    }
  }
  
@@ -446,7 +449,7 @@ index 72f56ea..e56bca0 100644
  bool epdiyLcdDraw(const uint8_t* fb, EpdiyLcdRefresh mode, bool turnOff) {
    if (!g_started || fb == nullptr || g_fb4 == nullptr || g_cfg == nullptr) return false;
  
-@@ -415,6 +662,9 @@ void epdiyLcdStashBase(const uint8_t* fb) {
+@@ -415,6 +665,9 @@ void epdiyLcdStashBase(const uint8_t* fb) {
  }
  
  bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mode, bool turnOff) {
@@ -456,7 +459,7 @@ index 72f56ea..e56bca0 100644
    if (!g_started || g_fb4 == nullptr || g_cfg == nullptr) return false;
    if (g_base == nullptr || lsb == nullptr || msb == nullptr) return false;
  
-@@ -423,10 +673,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
+@@ -423,10 +676,15 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
  #endif
    // The existing 2-bit coverage maps directly to four panel tones. A set base
    // bit is white (15); selector masks choose the two calibrated mid tones.
@@ -474,9 +477,51 @@ index 72f56ea..e56bca0 100644
  
    const int w = static_cast<int>(epd_width());
    const int h = static_cast<int>(epd_height());
-@@ -465,7 +720,19 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
+@@ -464,8 +722,61 @@ bool epdiyLcdDrawGray(const uint8_t* lsb, const uint8_t* msb, EpdiyLcdRefresh mo
+ 
  void epdiyLcdDeepSleep() {
    if (!g_started) return;
++#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME
++  // Shutdown-only experiment: flush the source/gate scan with HOLD (00), not
++  // another black/white phase. The LCD push path borrows an existing idle feed
++  // buffer and waits for its one full scan. Never change the image/history or
++  // run this on an unknown/failed baseline. Normal turns/End are untouched.
++  if (g_baselineKnown) {
++    if (!g_powerReady) epd_poweron();
++    if (g_powerReady) {
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++      uint32_t starts = 0, dones = 0, afterStarts = 0, afterDones = 0;
++      epd_lcd_audit_counts(&starts, &dones);
++      traceShutdown("neutral-hold-begin");
++#endif
++      // In this LCD implementation color 2 selects the all-zero HOLD pattern;
++      // its 'time' argument is unused. Geometry and frame clock stay unchanged.
++      epd_push_pixels(epd_full_screen(), 0, 2);
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++      epd_lcd_audit_counts(&afterStarts, &afterDones);
++      if (afterStarts - starts != 1 || afterDones - dones != 1) {
++        ESP_LOGE("EpdiyLcd", "Shutdown neutral hold scan count mismatch");
++      }
++      if (g_refreshAuditObserver != nullptr) {
++        char line[144];
++        snprintf(line, sizeof(line), "[PD-OFF-DISPLAY] stage=neutral-hold-complete seq=%u scan=%u/%u expected=1",
++                 static_cast<unsigned>(g_refreshAuditSequence), static_cast<unsigned>(afterStarts - starts),
++                 static_cast<unsigned>(afterDones - dones));
++        g_refreshAuditObserver(line);
++      }
++#endif
++    } else {
++      ESP_LOGE("EpdiyLcd", "Shutdown neutral hold skipped: panel power-on failed");
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++      traceShutdown("neutral-hold-skipped-power");
++#endif
++    }
++  } else {
++#if FREEINK_PAPERDIY_REFRESH_AUDIT
++    traceShutdown("neutral-hold-skipped-baseline");
++#endif
++  }
++#endif
    (void)epd_poweroff();
 +#if FREEINK_DEVICE_PAPERDIY
 +  g_shutdownDeinit = true;
@@ -515,10 +560,20 @@ index 7880dd3..3e0ef33 100644
  #ifdef __cplusplus
  }
 diff --git a/libs/display/EpdiyLcd/src/epdiy/src/epdiy.h b/libs/display/EpdiyLcd/src/epdiy/src/epdiy.h
-index 29ca722..4fbd8f5 100644
+index 29ca722..397d51c 100644
 --- a/libs/display/EpdiyLcd/src/epdiy/src/epdiy.h
 +++ b/libs/display/EpdiyLcd/src/epdiy/src/epdiy.h
-@@ -544,6 +544,10 @@ void epd_set_leading_skip(bool enable);
+@@ -487,7 +487,8 @@ const EpdGlyph* epd_get_glyph(const EpdFont* font, uint32_t code_point);
+  *
+  * @param area: The area to darken / lighten.
+  * @param time: The time in us to apply voltage to each pixel.
+- * @param color: 1: lighten, 0: darken.
++ * @param color: 1: lighten, 0: darken. The LCD implementation also accepts 2
++ *              for one all-zero HOLD scan (no black/white drive); time is unused there.
+  */
+ void epd_push_pixels(EpdRect area, short time, int color);
+ 
+@@ -544,6 +545,10 @@ void epd_set_leading_skip(bool enable);
  
  /** 最近一次 `epd_draw_base` 因上面的优化跳过的相位数。 */
  int epd_last_leading_skip(void);

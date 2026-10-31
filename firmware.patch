@@ -277,7 +277,7 @@ index 00777a37..4ceddeb1 100644
 +  UiTransition
 +};
 diff --git a/lib/hal/HalDisplay.cpp b/lib/hal/HalDisplay.cpp
-index 2d854fe5..1f3fe5f1 100644
+index 2d854fe5..2283963f 100644
 --- a/lib/hal/HalDisplay.cpp
 +++ b/lib/hal/HalDisplay.cpp
 @@ -1,6 +1,35 @@
@@ -322,9 +322,9 @@ index 2d854fe5..1f3fe5f1 100644
    einkDisplay.begin();
 +#if FREEINK_DEVICE_PAPERDIY && FREEINK_PAPERDIY_REFRESH_AUDIT
 +  einkDisplay.setRefreshAuditObserver(logPaperDiyAudit);
-+  LOG_INF(
-+      "PD-AUDIT",
-+      "free-trace packet-v2: shutdown-stage-v2 wait-600s park-v1 pmic-snapshot-v1 filebrowser-policy-v1 wake-drain-v1");
++  LOG_INF("PD-AUDIT",
++          "free-trace packet-v2: shutdown-neutral-v1 wait-600s park-v1 pmic-snapshot-v1 filebrowser-policy-v1 "
++          "wake-drain-v1");
 +#endif
  
  #if FREEINK_DEVICE_READPICO
@@ -742,10 +742,10 @@ index 4d90e713..5b37bcf6 100644
    // immediately wake the device again), then arms the wake source and sleeps.
    freeink::PowerManager::deepSleepUntilPowerButton();
 diff --git a/platformio.ini b/platformio.ini
-index baacb3e2..ae95dc14 100644
+index baacb3e2..fffc9520 100644
 --- a/platformio.ini
 +++ b/platformio.ini
-@@ -1139,3 +1139,43 @@ build_flags =
+@@ -1139,3 +1139,44 @@ build_flags =
    -DCROSSPOINT_VERSION=\"${crosspoint.version}-lilygo\"
    -DENABLE_SERIAL_LOG
    -DLOG_LEVEL=2
@@ -786,6 +786,7 @@ index baacb3e2..ae95dc14 100644
 +  ${paperdiy_hardware.build_flags}
 +  -DFREEINK_PAPERDIY_REFRESH_AUDIT=1
 +  -DFREEINK_PAPERDIY_SHUTDOWN_STAGE_MS=600000
++  -DFREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME=1
 +  -DCROSSPOINT_VERSION=\"${crosspoint.version}-paperdiy\"
 +  -DENABLE_SERIAL_LOG
 +  -DLOG_LEVEL=2
@@ -4178,7 +4179,7 @@ index 8e155f8e..62b463b2 100644
  #define CROSSPOINT_BOARD_NAME "papermono"
  #elif FREEINK_DEVICE_STICKY
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index b0b49733..6246df30 100644
+index b0b49733..ef2d132a 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -137,6 +137,8 @@ add_test(NAME WeReadLogout
@@ -4190,7 +4191,7 @@ index b0b49733..6246df30 100644
  add_test(NAME BuiltinFontShrink
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_builtin_font_shrink.py)
  add_test(NAME PioarduinoCache
-@@ -151,6 +153,20 @@ add_test(NAME ReadingStatsNetworkMemory
+@@ -151,6 +153,22 @@ add_test(NAME ReadingStatsNetworkMemory
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_reading_stats_network_memory.py)
  add_test(NAME WifiFontRecovery
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_wifi_font_recovery.py)
@@ -4208,10 +4209,12 @@ index b0b49733..6246df30 100644
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_shutdown_park.py)
 +add_test(NAME PaperDiyShutdownStage
 +  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_shutdown_stage.py)
++add_test(NAME PaperDiyShutdownNeutral
++  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_paperdiy_shutdown_neutral.py)
  add_test(NAME HalClockSntp
    COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_hal_clock_sntp.py)
  add_test(NAME InxStyleCompatibility
-@@ -246,3 +262,19 @@ add_test(NAME TxtCoverCopy
+@@ -246,3 +264,19 @@ add_test(NAME TxtCoverCopy
  
  add_test(NAME CjkGenerationTransaction COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/tests/test_cjk_generation_transaction.py)
  add_test(NAME PowerConfirmRelease COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/test_power_confirm_release.py ${crosspoint_simulator_SOURCE_DIR})
@@ -4471,7 +4474,7 @@ diff --git a/docs/engineering/paperdiy.md b/docs/engineering/paperdiy.md
 new file mode 100644
 --- /dev/null
 +++ b/docs/engineering/paperdiy.md
-@@ -0,0 +1,1108 @@
+@@ -0,0 +1,1155 @@
 +# M5Stack PaperDIY experimental port
 +
 +Status: experimental. Earlier CrossMux candidates passed boot, SD, reading,
@@ -5580,6 +5583,53 @@ new file mode 100644
 +aborts still invalidate the intended duration. The main-loop sleep call delays
 +actual power-off by10minutes and does not process normal software gestures.
 +
++
++
++## Shutdown-only HOLD scan control (2026-10-31)
++
++The600s diagnostic completed its whole interval (19heartbeats) without abort,
++redraw or reboot. User reported oldHome outline at about60s, before any final
++system PMIC shutdown request. Final frame ec295278 completed30/30 with error0;
++this excludes final system cut as a necessary condition for that recurrence,
++not all panel power/drive causes. Extra B input changed prior history, so onset
++speed/severity is not a strict identical-start comparison.
++
++Reference M5GFX Panel_EPD.cpp1038..1059 has an idle/no-action scan before rail
++parking in its completion path. Current EpdiyLcdDeepSleep previously went
++straight to epd_poweroff then End. That difference motivates an experiment; it
++is not proof of electrical causality or a claim that two different drivers have
++identical phase semantics.
++
++The explicit PaperDIY-only FREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME=1 trial adds
++one all-zero HOLD output scan immediately before the shutdown's powerOff.
++Default0, other boards, ordinary pushes/End and init-failure cleanup are
++unchanged. It only runs with a trusted baseline. If an earlier turnOff already
++dropped the driver, use the existing board powerOn sequence once; a failed
++powerOn skips the scan and continues the original cleanup. This is an explicit
++possible extra boost cycle, not an assertion that previous power state is known
++from the UI. Waveform tables, history/framebuffer contents, VCOM, geometry and
++clock are unchanged; this adds a shutdown scan, not a black/white erase phase.
++
++The existing LCD epd_push_pixels color2 branch fills00, borrows feed buffer0
++with feed tasks idle, scans the full height synchronously, waits for frame_done
++and releases the borrowed pointer. No new allocation, task or persistent state
++is introduced. Numeric neutral-hold-begin/complete scan1/1 expected1 nodes bind
++the scan to the last refresh seq; they do not increment normal refresh/clean
++counts. Unknown baseline/power failure/count mismatch are visible and invalidate
++an optical comparison of this intervention.
++
++Keep the preceding600s observation and existing GPIO parking/PMIC request
++order unchanged so pre-request behavior remains comparable. This is still a
++slow-shutdown diagnostic, not normal power-off or standby-current acceptance.
++Marker shutdown-neutral-v1 wait-600s. PreserveUI30 and all ordinary reader/UI
++profiles. User self-flashes after binary verification; no agent device write.
++
++Actual shutdown execution tests cover prior driver on/off, trusted/unknown
++baseline, powerOn failure, repeated shutdown, audit on/off, opt-in off and
++nonPaperDIY isolation. Actual LCD fill/ISR/push functions check every emitted
++byte00, all rows, one completed scan, semaphore wait, returned buffer and image
++history invariance at16x4,960x540 and1216x684. Hardware/optical retention remains
++unproven until measured; successful software scans alone cannot validate it.
 diff --git a/lib/hal/PaperDiyRefreshBudget.h b/lib/hal/PaperDiyRefreshBudget.h
 new file mode 100644
 --- /dev/null
@@ -10657,6 +10707,149 @@ new file mode 100644
 +                        str(source), str(ROOT / 'lib/hal/HalDisplay.cpp'), '-o', str(executable)], check=True)
 +        subprocess.run([str(executable)], check=True)
 +print('HAL 30-update shared UI cadence, failed-commit retry, manual reset, reader contexts and non-DIY routing passed')
+diff --git a/test/test_paperdiy_shutdown_neutral.py b/test/test_paperdiy_shutdown_neutral.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_paperdiy_shutdown_neutral.py
+@@ -0,0 +1,138 @@
++"""Execute the real shutdown and LCD HOLD population/scan functions, no glass simulation."""
++from test_paperdiy_power_clicks import ROOT, method, run
++import unittest
++
++LCD = ROOT / 'freeink-sdk/libs/display/EpdiyLcd'
++
++
++def shutdown_code():
++    body = method((LCD/'src/EpdiyLcd.cpp').read_text(encoding='utf-8'), 'void epdiyLcdDeepSleep()')
++    return r'''
++#include <cassert>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++#include <algorithm>
++bool g_started=true, g_initialized=true, g_baselineKnown=true, g_powerReady=true;
++bool g_shutdownDeinit=false, powerOk=true;
++int powerOns=0, scans=0, offs=0, ends=0, errors=0, observations=0;
++uint32_t g_refreshAuditSequence=8, starts=10, dones=10;
++std::vector<std::string> events;
++uint8_t history[]={0x12,0xab,0x55,0xff}, target[]={0xf0,0x87,0x24,0x00};
++struct EpdRect { int x,y,width,height; };
++EpdRect epd_full_screen(){return {0,0,960,540};}
++void epd_poweron(){assert(g_started&&g_initialized);++powerOns;g_powerReady=powerOk;events.push_back("on");}
++void epd_push_pixels(EpdRect a,short time,int color){
++ assert(g_started&&g_initialized&&g_powerReady&&g_baselineKnown);
++ assert(a.x==0&&a.y==0&&a.width==960&&a.height==540&&time==0&&color==2);
++ assert(offs==0&&ends==0);++scans;++starts;++dones;events.push_back("hold");
++}
++void epd_poweroff(){++offs;g_powerReady=false;events.push_back("off");}
++void epdiyLcdEnd(){assert(offs==1);++ends;g_started=g_initialized=false;events.push_back("end");}
++void epd_lcd_audit_counts(uint32_t* a,uint32_t* b){*a=starts;*b=dones;}
++void traceShutdown(const char*){}
++void observer(const char* s){++observations;assert(strstr(s,"stage=neutral-hold-complete seq=8 scan=1/1 expected=1"));}
++void (*g_refreshAuditObserver)(const char*)=observer;
++#define ESP_LOGE(...) (++errors)
++// @BODY@
++int main(){
++ for(bool ready:{false,true})for(bool known:{false,true})for(bool power:{false,true}){
++  g_started=g_initialized=true;g_baselineKnown=known;g_powerReady=ready;powerOk=power;
++  powerOns=scans=offs=ends=errors=observations=0;events.clear();starts=dones=10;
++  const auto oldHistory=std::vector<uint8_t>(history,history+4), oldTarget=std::vector<uint8_t>(target,target+4);
++  epdiyLcdDeepSleep();
++  constexpr bool enabled=FREEINK_DEVICE_PAPERDIY&&FREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME;
++  bool attempted=enabled&&known;
++  bool expectedScan=attempted&&(ready||power);
++  assert(scans==int(expectedScan));assert(powerOns==int(attempted&&!ready));
++  assert(errors==int(attempted&&!ready&&!power));
++  assert(offs==1&&ends==1&&!g_started&&!g_initialized&&!g_shutdownDeinit);
++  assert(observations==int(expectedScan&&FREEINK_PAPERDIY_REFRESH_AUDIT));
++  if(expectedScan)assert(std::find(events.begin(),events.end(),"hold")<std::find(events.begin(),events.end(),"off"));
++  assert(std::equal(oldHistory.begin(),oldHistory.end(),history));
++  assert(std::equal(oldTarget.begin(),oldTarget.end(),target));
++  const auto old=events;epdiyLcdDeepSleep();assert(events==old);
++ }
++}
++'''.replace('// @BODY@', body)
++
++
++def lcd_hold_code():
++    source = (LCD/'src/epdiy/src/output_lcd/render_lcd.c').read_text(encoding='utf-8')
++    bodies = '\n'.join(method(source, sig) for sig in (
++        'static bool IRAM_ATTR\npush_pixels_isr(',
++        'static void push_pixels_populate_line(',
++        'void epd_push_pixels_lcd('))
++    wrapper = method((LCD/'src/epdiy/src/render.c').read_text(encoding='utf-8'), 'void epd_push_pixels(')
++    return r'''
++#include <cassert>
++#include <cstdint>
++#include <cstring>
++#include <vector>
++#include <initializer_list>
++#define IRAM_ATTR
++constexpr int pdFALSE=0,portMAX_DELAY=0,DARK_BYTE=0x55,CLEAR_BYTE=0xaa;
++struct EpdRect {int x,y,width,height;};
++struct RenderContext_t {int current_frame,lines_total,lines_consumed,display_width,display_height,frame_done;
++ EpdRect area;uint8_t* static_line_buffer;uint8_t* line_mask;uint8_t* feed_line_buffers[2];};
++using frame_done_func_t=void(*)(RenderContext_t*);
++using line_cb_func_t=bool(*)(RenderContext_t*,uint8_t*);
++RenderContext_t render_context{};frame_done_func_t doneCb=nullptr;line_cb_func_t lineCb=nullptr;
++RenderContext_t* donePayload=nullptr;RenderContext_t* linePayload=nullptr;
++int scans=0,rows=0,takes=0;bool complete=false,mode=false;
++void handle_lcd_frame_done(RenderContext_t*){complete=true;doneCb=nullptr;lineCb=nullptr;}
++void epd_lcd_frame_done_cb(frame_done_func_t f,RenderContext_t* c){doneCb=f;donePayload=c;}
++void epd_lcd_line_source_cb(line_cb_func_t f,RenderContext_t* c){lineCb=f;linePayload=c;}
++void epd_apply_line_mask(uint8_t* p,const uint8_t* m,int n){for(int i=0;i<n;++i)p[i]&=m[i];}
++void epd_set_mode(int n){mode=n;}
++void epd_lcd_start_frame(){
++ assert(mode&&lineCb&&doneCb);++scans;std::vector<uint8_t> row(render_context.display_width/4,0xff);
++ for(int y=0;y<render_context.display_height;++y){lineCb(linePayload,row.data());++rows;
++  for(auto b:row)assert(b==0);}
++ doneCb(donePayload);
++}
++void xSemaphoreTake(int,int){assert(complete);complete=false;++takes;}
++// @BODIES@
++// @WRAPPER@
++int main(){
++ for(auto size:{EpdRect{0,0,16,4},EpdRect{0,0,960,540},EpdRect{0,0,1216,684}}){
++  std::vector<uint8_t> feed(size.width,0xa5),mask(size.width/4,0x42);
++  render_context={};render_context.display_width=size.width;render_context.display_height=size.height;
++  render_context.feed_line_buffers[0]=feed.data();render_context.line_mask=mask.data();
++  scans=rows=takes=0;epd_push_pixels(size,0,2);
++  assert(scans==1&&rows==size.height&&takes==1&&!mode);
++  assert(render_context.static_line_buffer==nullptr&&render_context.lines_consumed==size.height);
++  assert(doneCb==nullptr&&lineCb==nullptr);
++ }
++}
++'''.replace('// @BODIES@', bodies).replace('// @WRAPPER@', wrapper)
++
++
++class ShutdownNeutralTest(unittest.TestCase):
++    def test_actual_shutdown_scope_order_failures_and_history(self):
++        for board, enabled, audit in ((1,1,1),(1,1,0),(1,0,1),(0,1,1)):
++            run(shutdown_code(), paperdiy=board, extra=[
++                f'-DFREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME={enabled}',
++                f'-DFREEINK_PAPERDIY_REFRESH_AUDIT={audit}'])
++
++    def test_actual_lcd_hold_pattern_full_scan_and_buffer_return(self):
++        run(lcd_hold_code())
++
++    def test_opt_in_only_and_no_normal_draw_change(self):
++        ini=(ROOT/'platformio.ini').read_text(encoding='utf-8')
++        section=ini.split('[env:paperdiy]',1)[1].split('\n[',1)[0]
++        assert '-DFREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME=1' in section
++        assert ini.count('-DFREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME=')==1
++        src=(LCD/'src/EpdiyLcd.cpp').read_text(encoding='utf-8')
++        assert '#define FREEINK_PAPERDIY_SHUTDOWN_NEUTRAL_FRAME 0' in src
++        body=method(src,'void epdiyLcdDeepSleep()')
++        assert src.count('epd_push_pixels(epd_full_screen(), 0, 2);')==1
++        assert 'epd_push_pixels(epd_full_screen(), 0, 2);' in body
++        for forbidden in ('malloc(', 'new ', 'epd_clear(', 'memset(', 'setVcom', 'setEpdPower('):
++            assert forbidden not in body
++
++
++if __name__ == '__main__':
++    unittest.main()
 diff --git a/test/test_paperdiy_shutdown_park.py b/test/test_paperdiy_shutdown_park.py
 new file mode 100644
 --- /dev/null
